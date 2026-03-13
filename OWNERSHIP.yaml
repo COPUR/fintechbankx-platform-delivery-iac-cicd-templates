@@ -1,0 +1,7 @@
+bounded_context: "platform"
+service_id: "svc-dly-templates"
+application_id: "app.dly.templates"
+data_owner_pattern: "N/A"
+event_namespace: "evt.dly.pipeline"
+owning_squad: "DevSecOps Enablement Squad"
+wave: "0"
