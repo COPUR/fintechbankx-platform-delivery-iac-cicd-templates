@@ -1,0 +1,28 @@
+stages:
+  - verify
+
+variables:
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+
+quality_gates:
+  stage: verify
+  image: eclipse-temurin:23-jdk
+  before_script:
+    - apt-get update && apt-get install -y curl ca-certificates gnupg
+    - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    - apt-get install -y nodejs
+    - chmod +x templates/ci/scripts/resolve-gradle-command.sh
+  script:
+    - GRADLE_CMD="$(bash templates/ci/scripts/resolve-gradle-command.sh)"
+    - $GRADLE_CMD clean test jacocoTestReport jacocoTestCoverageVerification --no-daemon
+    - if ls api/openapi/*.yaml >/dev/null 2>&1; then npx -y @redocly/cli@1.27.1 lint api/openapi/*.yaml; fi
+    - |
+      if command -v gitleaks >/dev/null 2>&1; then
+        gitleaks detect --source . --verbose
+      else
+        echo "gitleaks not installed in runner image; skip with warning."
+      fi
+  artifacts:
+    when: always
+    paths:
+      - build/reports/
