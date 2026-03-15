@@ -31,3 +31,9 @@ This template is the baseline for extracted microservice repos.
 - Application layer orchestrates use cases and depends only on domain ports.
 - Infrastructure layer implements adapters (REST, persistence, external connectors).
 
+## CI/CD Baseline
+- Add one of:
+  - `templates/ci/github/workflows/java23-quality-gates.yml`
+  - `templates/ci/gitlab/java23-quality-gates.yml`
+  - `templates/ci/jenkins/Jenkinsfile.java23-quality-gates`
+- Include `templates/ci/scripts/resolve-gradle-command.sh` in the repo root path used by pipeline.

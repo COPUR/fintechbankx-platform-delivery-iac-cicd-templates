@@ -1,0 +1,52 @@
+name: Java23 Quality Gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - dev
+      - staging
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 23
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '23'
+          cache: gradle
+
+      - name: Resolve Gradle command
+        id: gradle
+        run: echo "cmd=$(bash templates/ci/scripts/resolve-gradle-command.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Unit tests + coverage gate
+        run: ${{ steps.gradle.outputs.cmd }} clean test jacocoTestReport jacocoTestCoverageVerification --no-daemon
+
+      - name: OpenAPI lint
+        if: ${{ hashFiles('api/openapi/*.yaml') != '' }}
+        run: npx -y @redocly/cli@1.27.1 lint api/openapi/*.yaml
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-gate-reports
+          path: |
+            **/build/reports/**

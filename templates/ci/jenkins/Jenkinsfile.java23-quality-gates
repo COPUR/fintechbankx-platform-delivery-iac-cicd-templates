@@ -1,0 +1,67 @@
+pipeline {
+  agent any
+
+  tools {
+    jdk 'jdk23'
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+    timeout(time: 30, unit: 'MINUTES')
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Quality Gates') {
+      steps {
+        sh 'chmod +x templates/ci/scripts/resolve-gradle-command.sh'
+        sh '''
+          set -euo pipefail
+          GRADLE_CMD="$(bash templates/ci/scripts/resolve-gradle-command.sh)"
+          ${GRADLE_CMD} clean test jacocoTestReport jacocoTestCoverageVerification --no-daemon
+        '''
+      }
+    }
+
+    stage('OpenAPI Lint') {
+      when {
+        expression { fileExists('api/openapi') }
+      }
+      steps {
+        sh '''
+          set -euo pipefail
+          if ls api/openapi/*.yaml >/dev/null 2>&1; then
+            npx -y @redocly/cli@1.27.1 lint api/openapi/*.yaml
+          fi
+        '''
+      }
+    }
+
+    stage('Secret Scan') {
+      steps {
+        sh '''
+          set -euo pipefail
+          if command -v gitleaks >/dev/null 2>&1; then
+            gitleaks detect --source . --verbose
+          else
+            echo "gitleaks is not installed on this Jenkins agent."
+            exit 1
+          fi
+        '''
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: '**/build/reports/**', allowEmptyArchive: true
+      junit testResults: '**/build/test-results/test/*.xml', allowEmptyResults: true
+    }
+  }
+}
