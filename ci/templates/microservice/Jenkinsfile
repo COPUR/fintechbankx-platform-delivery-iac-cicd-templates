@@ -1,0 +1,105 @@
+pipeline {
+    agent any
+    options { timestamps() }
+
+    environment {
+        SERVICE_DIR = "${env.SERVICE_DIR}"
+        IMAGE_NAME = "${env.IMAGE_NAME}"
+        STRICT_DEPRECATED_ROOTS = "true"
+    }
+
+    stages {
+        stage('Validate Workspace') {
+            steps {
+                sh '''
+                  set -euo pipefail
+                  TARGET_DIR="${SERVICE_DIR:-.}"
+                  test -f "${TARGET_DIR}/build.gradle"
+                  test -x ./gradlew
+                '''
+            }
+        }
+        stage('Repository Governance') {
+            steps {
+                sh '''
+                  set -euo pipefail
+                  export STRICT_DEPRECATED_ROOTS="${STRICT_DEPRECATED_ROOTS:-true}"
+                  bash tools/validation/validate-repo-governance.sh
+
+                  python3 -m venv .venv-validation
+                  . .venv-validation/bin/activate
+                  python -m pip install --upgrade pip coverage
+                  python -m coverage run --source=tools/validation -m unittest discover -s tools/validation/tests -p 'test_*.py'
+                  python -m coverage report --include='*/repo_governance_validator.py' --fail-under=90
+                '''
+            }
+        }
+        stage('Quality Gate') {
+            steps {
+                sh '''
+                  set -euo pipefail
+                  TARGET_DIR="${SERVICE_DIR:-.}"
+                  ./gradlew -p "${TARGET_DIR}" --no-daemon clean check
+                '''
+            }
+        }
+        stage('Security Gate') {
+            steps {
+                sh '''
+                  set -euo pipefail
+                  TARGET_DIR="${SERVICE_DIR:-.}"
+                  mkdir -p "${TARGET_DIR}/build/reports/security"
+                  ./gradlew -p "${TARGET_DIR}" --no-daemon dependencies > "${TARGET_DIR}/build/reports/security/dependencies.txt"
+                  command -v trivy >/dev/null 2>&1
+                  trivy fs --exit-code 1 --severity HIGH,CRITICAL "${TARGET_DIR}"
+                  command -v gitleaks >/dev/null 2>&1
+                  gitleaks detect --no-git --source "${TARGET_DIR}" --exit-code 1
+                '''
+            }
+        }
+        stage('Build Image') {
+            steps {
+                sh '''
+                  set -euo pipefail
+                  TARGET_DIR="${SERVICE_DIR:-.}"
+                  IMAGE="${IMAGE_NAME:-${JOB_NAME}:${GIT_COMMIT}}"
+
+                  if command -v docker >/dev/null 2>&1; then
+                    DOCKERFILE="${TARGET_DIR}/infrastructure/Dockerfile"
+                    if [ -f "${DOCKERFILE}" ]; then
+                      docker build -t "${IMAGE}" -f "${DOCKERFILE}" "${TARGET_DIR}"
+                    else
+                      docker build -t "${IMAGE}" "${TARGET_DIR}"
+                    fi
+                  else
+                    echo "docker not installed; skipping image build"
+                  fi
+                '''
+            }
+        }
+        stage('Sign & Publish Image') {
+            when {
+                expression { return env.PUBLISH_IMAGE == 'true' }
+            }
+            steps {
+                sh '''
+                  set -euo pipefail
+                  IMAGE="${IMAGE_NAME:-${JOB_NAME}:${GIT_COMMIT}}"
+
+                  if command -v cosign >/dev/null 2>&1 && [ -n "${COSIGN_KEY:-}" ]; then
+                    cosign sign --key "${COSIGN_KEY}" "${IMAGE}"
+                  else
+                    echo "cosign key not configured; skipping image signing"
+                  fi
+
+                  if command -v docker >/dev/null 2>&1 && [ -n "${DOCKER_REGISTRY:-}" ] && [ -n "${DOCKER_USERNAME:-}" ] && [ -n "${DOCKER_PASSWORD:-}" ]; then
+                    echo "${DOCKER_PASSWORD}" | docker login "${DOCKER_REGISTRY}" --username "${DOCKER_USERNAME}" --password-stdin
+                    docker push "${IMAGE}"
+                  else
+                    echo "registry credentials not configured; skipping image publish"
+                  fi
+                '''
+            }
+        }
+    }
+}

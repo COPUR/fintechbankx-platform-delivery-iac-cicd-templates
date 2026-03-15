@@ -1,0 +1,567 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - master
+      - dev
+      - staging
+  push:
+    branches:
+      - master
+      - dev
+      - staging
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: "23"
+
+jobs:
+  repository-governance:
+    name: Repository Governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: tools/validation-node/package-lock.json
+
+      - name: Install Node validator dependencies
+        run: npm ci --prefix tools/validation-node
+
+      - name: Run governance validator TDD suite (90%+ coverage)
+        run: npm run test:governance:coverage --prefix tools/validation-node
+
+      - name: Validate repository governance
+        env:
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_SHA: ${{ github.sha }}
+          STRICT_DEPRECATED_ROOTS: "true"
+        run: bash tools/validation/validate-repo-governance.sh
+
+  anonymity-security-baseline:
+    name: Anonymity and Secret Hygiene Baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate anonymity and secret hygiene baseline
+        run: bash tools/validation/validate-anonymity-security.sh
+
+  validation-node-tests:
+    name: Validation Node Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: tools/validation-node/package-lock.json
+
+      - name: Install Node validator dependencies
+        run: npm ci --prefix tools/validation-node
+
+      - name: Run Node validator tests
+        run: npm test --prefix tools/validation-node
+
+  openapi-semver-compat:
+    name: OpenAPI SemVer Compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: tools/validation-node/package-lock.json
+
+      - name: Install Node validator dependencies
+        run: npm ci --prefix tools/validation-node
+
+      - name: Validate OpenAPI compatibility and versioning policy
+        env:
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: node tools/validation-node/src/bin/openapi-semver-compat-validator.mjs --root .
+
+  provider-consumer-contract:
+    name: Provider Consumer Contract Compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: tools/validation-node/package-lock.json
+
+      - name: Install Node validator dependencies
+        run: npm ci --prefix tools/validation-node
+
+      - name: Validate provider/consumer contracts
+        run: node tools/validation-node/src/bin/provider-consumer-contract-validator.mjs --root .
+
+  api-catalog-governance:
+    name: API Catalog and Route Governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: tools/validation-node/package-lock.json
+
+      - name: Install Node validator dependencies
+        run: npm ci --prefix tools/validation-node
+
+      - name: Validate API catalog sync and runtime route contracts
+        run: |
+          bash tools/validation/validate-api-catalog.sh
+          bash tools/validation/validate-runtime-route-contracts.sh
+
+      - name: Generate API catalog delivery artifact
+        run: |
+          mkdir -p build/reports/api-catalog
+          node tools/validation-node/src/bin/generate-api-catalog.mjs \
+            --root . \
+            --output build/reports/api-catalog/API_CATALOGUE.generated.md \
+            --write
+          sha256sum build/reports/api-catalog/API_CATALOGUE.generated.md > build/reports/api-catalog/API_CATALOGUE.generated.sha256
+
+      - name: Upload API catalog artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-catalog
+          path: build/reports/api-catalog/**
+          if-no-files-found: error
+
+  security-event-contract:
+    name: Security Event Contract Compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: tools/validation-node/package-lock.json
+
+      - name: Install Node validator dependencies
+        run: npm ci --prefix tools/validation-node
+
+      - name: Validate security event contracts
+        run: bash tools/validation/validate-security-event-contracts.sh
+
+  coverage-gates:
+    name: Coverage Gates (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: repository-governance
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+          - customer-context
+          - loan-context
+          - payment-context
+          - risk-context
+          - compliance-context
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: tools/validation-node/package-lock.json
+
+      - name: Install Node validator dependencies
+        run: npm ci --prefix tools/validation-node
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v3
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Enforce module coverage gates
+        env:
+          COVERAGE_THRESHOLD: "0.85"
+        run: bash tools/validation/validate-coverage-gates.sh --group "${{ matrix.group }}"
+
+      - name: Upload coverage gate summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-gates-${{ matrix.group }}
+          path: build/reports/coverage-gates/**
+          if-no-files-found: ignore
+
+  strict-mtls-baseline:
+    name: Strict mTLS Baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate strict mTLS baseline
+        run: bash tools/validation/validate-strict-mtls-baseline.sh
+
+  dependency-resilience-baseline:
+    name: Dependency Resilience Baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: tools/validation-node/package-lock.json
+
+      - name: Install Node validator dependencies
+        run: npm ci --prefix tools/validation-node
+
+      - name: Validate dependency resilience baseline
+        run: bash tools/validation/validate-dependency-resilience-baseline.sh
+
+  cache-degraded-mode-baseline:
+    name: Cache Degraded-Mode Baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: tools/validation-node/package-lock.json
+
+      - name: Install Node validator dependencies
+        run: npm ci --prefix tools/validation-node
+
+      - name: Validate cache degraded-mode baseline
+        run: bash tools/validation/validate-cache-degraded-mode-baseline.sh
+
+  supply-chain-baseline:
+    name: Supply Chain Baseline (SBOM + Signing + Provenance)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: tools/validation-node/package-lock.json
+
+      - name: Install Node validator dependencies
+        run: npm ci --prefix tools/validation-node
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v3
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build artifact for supply-chain gate
+        run: ./gradlew --no-daemon :amanahfi-platform:api-gateway:assemble
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Validate supply-chain baseline
+        run: |
+          bash tools/validation/validate-supply-chain-baseline.sh \
+            amanahfi-platform/api-gateway/build/libs/*.jar
+
+      - name: Upload supply-chain artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-baseline
+          path: build/reports/supply-chain/**
+          if-no-files-found: ignore
+
+  openapi-runtime-contract:
+    name: OpenAPI Runtime Contract Drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v3
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Run runtime OpenAPI contract drift tests
+        run: |
+          ./gradlew --no-daemon \
+            :loan-context:loan-infrastructure:test \
+            :payment-context:payment-infrastructure:test \
+            :customer-context:customer-infrastructure:test \
+            :risk-context:risk-infrastructure:test \
+            :compliance-context:compliance-infrastructure:test \
+            --tests "*OpenApiContractTest"
+
+  schema-contract-data-model:
+    name: Schema Contract Data Model
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v3
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Run schema-contract integration tests
+        run: |
+          tools/validation/validate-schema-contract-data-model.sh
+
+  openapi-runtime-contract-services:
+    name: OpenAPI Runtime Contract Drift (Service Modules)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: repository-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v3
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Validate service-level OpenAPI contract tests
+        run: |
+          ./gradlew -p services/openfinance-consent-authorization-service --no-daemon test --tests "*ConsentAuthorizationOpenApiContractTest"
+          ./gradlew -p services/openfinance-confirmation-of-payee-service --no-daemon test --tests "*ConfirmationOfPayeeOpenApiContractTest"
+          ./gradlew -p services/openfinance-personal-financial-data-service --no-daemon test --tests "*PersonalFinancialDataOpenApiContractTest"
+          ./gradlew -p services/openfinance-business-financial-data-service --no-daemon test --tests "*BusinessFinancialDataOpenApiContractTest"
+          ./gradlew -p services/openfinance-atm-directory-service --no-daemon test --tests "*AtmDirectoryOpenApiContractTest"
+          ./gradlew -p services/openfinance-open-products-service --no-daemon test --tests "*OpenProductsOpenApiContractTest"
+          ./gradlew -p services/openfinance-banking-metadata-service --no-daemon contractTest
+
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs:
+      - repository-governance
+      - validation-node-tests
+      - openapi-semver-compat
+      - provider-consumer-contract
+      - api-catalog-governance
+      - security-event-contract
+      - anonymity-security-baseline
+      - coverage-gates
+      - strict-mtls-baseline
+      - dependency-resilience-baseline
+      - cache-degraded-mode-baseline
+      - supply-chain-baseline
+      - openapi-runtime-contract
+      - schema-contract-data-model
+      - openapi-runtime-contract-services
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: tools/validation-node/package-lock.json
+
+      - name: Install Node validator dependencies
+        run: npm ci --prefix tools/validation-node
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v3
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Run quality gates
+        run: ./gradlew --no-daemon check
+
+      - name: Publish test telemetry summary
+        if: always()
+        run: |
+          node tools/validation-node/src/bin/generate-test-telemetry-summary.mjs --root . --top-failures 10 >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload build reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-reports
+          path: |
+            **/build/reports/**
+            **/build/test-results/**
+          if-no-files-found: ignore
+
+  architecture-scorecard:
+    name: Architecture Scorecard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build-and-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: tools/validation-node/package-lock.json
+
+      - name: Install Node validator dependencies
+        run: npm ci --prefix tools/validation-node
+
+      - name: Generate architecture scorecard
+        run: node tools/validation-node/src/bin/generate-architecture-scorecard.mjs --root .
+
+      - name: Upload architecture scorecard artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-scorecard
+          path: |
+            docs/enterprisearchitecture/implementation-development/transformation/outputs/architecture-scorecard-latest.md
+            docs/enterprisearchitecture/implementation-development/transformation/outputs/architecture-scorecard-latest.csv
+          if-no-files-found: error
+
+  dependency-review:
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
