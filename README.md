@@ -34,3 +34,18 @@ This repository provides reusable delivery templates for Java 23 microservices:
 
 - Coverage gate target is `>= 85%` line coverage.
 - OpenAPI lint and secret scanning are intended to be blocking gates for protected branches.
+
+## Strict mTLS Enforcement
+
+This repository includes the Wave 0 strict mTLS policy validator pattern:
+
+- Workflow: `.github/workflows/strict-mtls-enforcement.yml`
+- Validator: `scripts/validation/validate-strict-mtls.mjs`
+
+Run locally:
+
+```bash
+npm ci
+npm test
+npm run validate:strict-mtls
+```
