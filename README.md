@@ -1,51 +1,69 @@
-# Platform Delivery Templates
+# fintechbankx-platform-delivery-iac-cicd-templates
 
-DDD/EDA platform capability (`svc-dly-templates`)  
-Owner: DevSecOps Enablement Squad  
-Wave: 0
+Bu repo, FinTechBankX mikroservis dönüşümünde Spotify modeline göre tanımlanmış resmi servis alanıdır.
 
-## Phase-2 Deliverables
+## Sorumluluk ve Sahiplik
 
-This repository provides reusable delivery templates for Java 23 microservices:
+- **Tribe:** Platform & Security Tribe
+- **Squad:** Delivery & IaC Squad
+- **Repo Kümesi:** `platform-delivery`
+- **Bounded Context:** `platform`
+- **Ana Capability:** CI/CD templates and delivery standards
+- **Dönüşüm Wave:** 0
 
-- GitHub Actions quality gate workflow template
-- GitLab CI quality gate template
-- Jenkins quality gate pipeline template
-- Shared Gradle command resolver script for wrapper/non-wrapper repos
+Bu repo aşağıdaki yaklaşımı zorunlu olarak uygular:
 
-## Delivered Templates
+1. DDD bounded context sınırlarına bağlı geliştirme.
+2. Hexagonal (Ports & Adapters) mimari.
+3. Event-driven ve sözleşme-öncelikli entegrasyon.
+4. Güvenlik guardrail'leri (FAPI, mTLS, DPoP kapsamına göre).
+5. PR-only governance, zorunlu CI quality gate ve izlenebilirlik.
 
-- `templates/ci/github/workflows/java23-quality-gates.yml`
-- `templates/ci/gitlab/java23-quality-gates.yml`
-- `templates/ci/jenkins/Jenkinsfile.java23-quality-gates`
-- `templates/ci/scripts/resolve-gradle-command.sh`
-- `templates/microservice/*`
+## Kapsam
 
-## Adoption
+### In Scope
 
-1. Copy the template pipeline file for your CI platform into your service repo.
-2. Ensure the service repo includes `templates/ci/scripts/resolve-gradle-command.sh`.
-3. Run quality gates:
-   - `clean test jacocoTestReport jacocoTestCoverageVerification`
-   - OpenAPI lint (`api/openapi/*.yaml`) when present
-   - Secret scanning (`gitleaks`)
+- `CI/CD templates and delivery standards` kapsamında kod, sözleşme, test, runbook ve release artefaktları.
+- Bu bounded context'e ait servis içi iş kuralları.
+- Sadece API/event sözleşmeleri üzerinden diğer context'lerle entegrasyon.
 
-## Governance Notes
+### Out of Scope
 
-- Coverage gate target is `>= 85%` line coverage.
-- OpenAPI lint and secret scanning are intended to be blocking gates for protected branches.
+- Başka bounded context veritabanına doğrudan erişim.
+- Ortak “shared database” yaklaşımı.
+- Guardrail bypass eden manuel release adımları.
 
-## Strict mTLS Enforcement
+## Mühendislik Standartları
 
-This repository includes the Wave 0 strict mTLS policy validator pattern:
+- Java 23 / Gradle (repo tipine göre)
+- TDD öncelikli geliştirme
+- Minimum test coverage hedefi: **%85+**
+- OpenAPI/AsyncAPI sözleşme doğrulama
+- Structured logging, trace-id propagation, metrics baseline
 
-- Workflow: `.github/workflows/strict-mtls-enforcement.yml`
-- Validator: `scripts/validation/validate-strict-mtls.mjs`
+## Branching, Release ve Guardrail
 
-Run locally:
+- Korumalı branch seti: `main`, `dev`, `staging`
+- Zorunlu kontroller:
+  - `ci/build`
+  - `ci/test`
+  - `ci/security`
+  - `local-path-leak-check`
+  - `secret-pattern-scan`
+  - `readme-doc-link-check`
+- Wave 0 platform repolarında ek zorunlu kontrol: `strict-mtls`
 
-```bash
-npm ci
-npm test
-npm run validate:strict-mtls
-```
+## Dokümantasyon ve Referanslar
+
+- **Enterprise Architecture Repo:** https://github.com/COPUR/fintechbankx-governance-architecture-enablement-enterprise-architecture
+- **Spotify Tribe/Squad Repo Stratejisi:** https://github.com/COPUR/fintechbankx-governance-architecture-enablement-enterprise-architecture/blob/main/docs/enterprisearchitecture/implementation-development/transformation/SPOTIFY_TRIBE_SQUAD_REPOSITORY_STRATEGY.md
+- **Konsolide Backlog Board:** https://github.com/COPUR/fintechbankx-governance-architecture-enablement-enterprise-architecture/blob/main/docs/enterprisearchitecture/implementation-development/transformation/outputs/backlog-normalization-board-2026-03-17.md
+- **Cutover Closure Raporu:** https://github.com/COPUR/fintechbankx-governance-architecture-enablement-enterprise-architecture/blob/main/docs/enterprisearchitecture/implementation-development/transformation/outputs/phase-c-cutover-closure-report-2026-03-17.md
+- **Guardrail Hardening Raporu:** https://github.com/COPUR/fintechbankx-governance-architecture-enablement-enterprise-architecture/blob/main/docs/enterprisearchitecture/implementation-development/transformation/outputs/phase-b-context-hardening-pass-2026-03-17.md
+
+## Katkı Modeli
+
+1. Doğrudan `main` yazımı yok, yalnızca PR ile değişiklik.
+2. Mimari kararlarda ADR güncellemesi zorunlu.
+3. Sözleşme değişikliği varsa OpenAPI/AsyncAPI ve testler birlikte güncellenir.
+4. Güvenlik ve anonimlik kuralları ihlal eden içerik merge edilmez.
