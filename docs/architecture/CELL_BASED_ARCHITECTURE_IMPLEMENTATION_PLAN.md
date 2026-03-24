@@ -2,8 +2,8 @@
 
 ## Repository
 
-- Name: \
-- Generated: \
+- Name: fintechbankx-platform-delivery-iac-cicd-templates
+- Generated: 2026-03-24
 
 ## Objective
 
