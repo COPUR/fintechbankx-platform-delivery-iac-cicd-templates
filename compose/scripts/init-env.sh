@@ -10,7 +10,9 @@
 #   admin, loan_officer, compliance_officer, auditor and customer,
 #   PARITY_SECRET_PARITY_SUITE (parity-suite client) and
 #   PARITY_SECRET_SVC_LN_LOAN_LIFECYCLE / PARITY_SECRET_SVC_PAY_INITIATION_SETTLEMENT
-#   (the same values the realm import gives those service clients), and renders
+#   (the same values the realm import gives those service clients),
+#   PARITY_TPP_CLIENT_ID and PARITY_TPP_PRIVATE_JWK (private JWK, RSA PS256, of
+#   the parity-tpp client; generated here, never committed), and renders
 #   <cache-dir>/parity/parity-fixtures.json from compose/keycloak/ for the
 #   parity-fixtures-import service.
 # Every credential is random (openssl), dev-only and never committed. Existing
@@ -156,6 +158,21 @@ if [ "$parity" = true ]; then
   done
   secret PARITY_SECRET_PARITY_SUITE
   parity_realm_keys+=(PARITY_SECRET_PARITY_SUITE)
+  # Keycloak-mode TPP actor: key pair generated here; the private JWK stays in
+  # .env (mode 600), only the public JWKS goes into the rendered realm layer.
+  put PARITY_TPP_CLIENT_ID parity-tpp
+  if [ -z "${existing[PARITY_TPP_PRIVATE_JWK]+set}" ]; then
+    tpp_jwk="$(node -e '
+      const c = require("crypto");
+      const { privateKey } = c.generateKeyPairSync("rsa", { modulusLength: 2048 });
+      const jwk = privateKey.export({ format: "jwk" });
+      const thumb = c.createHash("sha256").update(JSON.stringify({ e: jwk.e, kty: jwk.kty, n: jwk.n })).digest("base64url");
+      process.stdout.write(JSON.stringify({ kty: jwk.kty, kid: thumb, use: "sig", alg: "PS256", n: jwk.n, e: jwk.e,
+        d: jwk.d, p: jwk.p, q: jwk.q, dp: jwk.dp, dq: jwk.dq, qi: jwk.qi }));')" || die "cannot generate the parity-tpp key pair"
+  else
+    tpp_jwk=""
+  fi
+  put PARITY_TPP_PRIVATE_JWK "$tpp_jwk"
   # Same value the realm import gives the service client (never a second secret).
   for svc in SVC_LN_LOAN_LIFECYCLE SVC_PAY_INITIATION_SETTLEMENT; do
     value["PARITY_SECRET_$svc"]="${value[FBX_OIDC_SECRET_$svc]}"
@@ -200,9 +217,13 @@ for name in "${parity_realm_keys[@]}"; do put "$name" "${value[$name]}"; done
 write "$out_dir/realm.env" "$realm_start" "${#order[@]}"
 
 if [ "$parity" = true ]; then
+  tpp_jwks="$(node -e '
+    const k = JSON.parse(process.argv[1]);
+    process.stdout.write(JSON.stringify({ keys: [{ kty: k.kty, kid: k.kid, use: k.use, alg: k.alg, n: k.n, e: k.e }] }));' \
+    "${value[PARITY_TPP_PRIVATE_JWK]}")" || die "PARITY_TPP_PRIVATE_JWK in $out_dir/.env is not a JWK"
   node "$compose_dir/scripts/render-parity-fixtures.mjs" \
     --template "$compose_dir/keycloak/parity-fixtures.template.json" \
-    --realm "$realm" --out "$cache_dir/parity/parity-fixtures.json"
+    --realm "$realm" --out "$cache_dir/parity/parity-fixtures.json" --tpp-jwks "$tpp_jwks"
 fi
 
 echo "[init-env] wrote $out_dir/.env and $out_dir/realm.env (${#realm_placeholders[@]} realm placeholders)"

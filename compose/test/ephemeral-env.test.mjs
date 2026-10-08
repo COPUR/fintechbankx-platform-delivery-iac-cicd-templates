@@ -71,6 +71,7 @@ test("ephemeral-env: parity fixtures, SQL fixtures, seed hook and service env, i
   // The env file stays a file reference; generated credentials are masked in logs.
   assert.match(steps[exportEnv].run, /FBX_ENV_FILE=/);
   assert.match(steps[init].run, /add-mask/);
+  assert.match(steps[init].run, /PARITY_TPP_PRIVATE_JWK/, "private JWK members are masked too");
 });
 
 test("ephemeral-env: monolith from a pinned image or built from the caller's context", () => {

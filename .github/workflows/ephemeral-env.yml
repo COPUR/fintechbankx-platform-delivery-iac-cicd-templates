@@ -42,7 +42,8 @@ name: ephemeral-env
 #   FBX_BASE_URL_<SERVICE> (e.g. FBX_BASE_URL_LN_LOAN_LIFECYCLE=http://127.0.0.1:18010),
 #   FBX_MONOLITH_BASE_URL, FBX_OIDC_ISSUER, FBX_KAFKA_BOOTSTRAP, FBX_ENV_FILE
 #   (generated credentials, for client-credentials tokens; with parity-fixtures
-#   also PARITY_USERNAME_<ACTOR>, PARITY_PASSWORD_<ACTOR> and PARITY_SECRET_<CLIENT>)
+#   also PARITY_USERNAME_<ACTOR>, PARITY_PASSWORD_<ACTOR>, PARITY_SECRET_<CLIENT>,
+#   PARITY_TPP_CLIENT_ID and PARITY_TPP_PRIVATE_JWK; see compose/README.md)
 #   and FBX_RESULTS_DIR (anything written there is uploaded). Every generated
 #   credential is masked in the logs.
 #
@@ -283,6 +284,12 @@ jobs:
             value="${line#*=}"
             [ "${#value}" -ge 16 ] && echo "::add-mask::$value"
           done < "$FBX_COMPOSE/.env"
+          # The parity TPP private JWK is one JSON line; also mask each private member.
+          while IFS= read -r member; do
+            [ -n "$member" ] && echo "::add-mask::$member"
+          done < <(node -e '
+            const line = require("fs").readFileSync(process.argv[1], "utf8").split("\n").find((l) => l.startsWith("PARITY_TPP_PRIVATE_JWK="));
+            if (line) { const k = JSON.parse(line.slice(line.indexOf("=") + 1)); for (const m of ["d", "p", "q", "dp", "dq", "qi"]) if (k[m]) console.log(k[m]); }' "$FBX_COMPOSE/.env")
 
       - name: Start stack and wait for health
         env:

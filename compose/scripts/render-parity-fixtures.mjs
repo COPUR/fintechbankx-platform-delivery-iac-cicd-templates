@@ -6,8 +6,11 @@
 // components copied with enabled=false, because compose runs no OpenLDAP and an
 // unreachable directory must not break local-user lookups. The output is read
 // by the parity-fixtures-import service (keycloak-config-cli, no-delete mode).
+// Client parity-tpp gets the public JWKS (--tpp-jwks, generated at init; no
+// private key ever reaches this file) and the audience mappers and client scopes
+// of the realm's TPP template (of-tpp-conformance-template).
 //
-// usage: render-parity-fixtures.mjs --template FILE --realm FILE --out FILE
+// usage: render-parity-fixtures.mjs --template FILE --realm FILE --out FILE [--tpp-jwks JSON]
 import fs from "node:fs";
 import path from "node:path";
 
@@ -40,6 +43,26 @@ if (missing.length) {
   process.exit(1);
 }
 
+const tpp = layer.clients.find((c) => c.clientId === "parity-tpp");
+if (tpp) {
+  const tppTemplate = (realm.clients ?? []).find((c) => c.clientId === "of-tpp-conformance-template");
+  if (!tppTemplate) {
+    console.error("[parity-fixtures] the identity realm has no of-tpp-conformance-template client (audiences and scopes of parity-tpp); use an identity ref that has it");
+    process.exit(1);
+  }
+  if (!args["tpp-jwks"]) { console.error("[parity-fixtures] --tpp-jwks is required for parity-tpp"); process.exit(2); }
+  const jwks = JSON.parse(args["tpp-jwks"]);
+  const privateMembers = ["d", "p", "q", "dp", "dq", "qi", "k"];
+  if (!Array.isArray(jwks.keys) || !jwks.keys.length || jwks.keys.some((k) => privateMembers.some((m) => m in k))) {
+    console.error("[parity-fixtures] --tpp-jwks must be a public JWKS");
+    process.exit(2);
+  }
+  tpp.attributes["jwks.string"] = JSON.stringify(jwks);
+  tpp.protocolMappers = (tppTemplate.protocolMappers ?? []).filter((m) => m.protocolMapper === "oidc-audience-mapper");
+  tpp.defaultClientScopes = tppTemplate.defaultClientScopes ?? [];
+  tpp.optionalClientScopes = tppTemplate.optionalClientScopes ?? [];
+}
+
 const storage = "org.keycloak.storage.UserStorageProvider";
 const ldap = (realm.components?.[storage] ?? [])
   .filter((c) => (c.providerId ?? "ldap") === "ldap")
@@ -52,4 +75,4 @@ fs.writeFileSync(args.out, JSON.stringify(layer, null, 2) + "\n");
 // whatever umask the caller runs under.
 fs.chmodSync(path.dirname(args.out), 0o755);
 fs.chmodSync(args.out, 0o644);
-console.log(`[parity-fixtures] wrote ${args.out} (${layer.users.length} users, ${layer.clients.length} client, ${ldap.length} LDAP component(s) disabled)`);
+console.log(`[parity-fixtures] wrote ${args.out} (${layer.users.length} users, ${layer.clients.length} clients, ${ldap.length} LDAP component(s) disabled)`);

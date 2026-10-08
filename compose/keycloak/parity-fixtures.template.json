@@ -1,5 +1,5 @@
 {
-  "_comment": "Parity test actors for the local/ephemeral compose stack only (compose/scripts/init-env.sh --parity-fixtures). Layered onto the identity repo's realm by the parity-fixtures-import service after realm-import; never imported anywhere else. Customer actors are members of /customers (the group the customer service's fine-grained admin permission covers); staff actors are not. init-env renders it into .cache/parity/ and adds the realm's LDAP federation as disabled (no OpenLDAP in compose).",
+  "_comment": "Parity test actors for the local/ephemeral compose stack only (compose/scripts/init-env.sh --parity-fixtures). Layered onto the identity repo's realm by the parity-fixtures-import service after realm-import; never imported anywhere else. Customer actors are members of /customers (the group the customer service's fine-grained admin permission covers); staff actors are not. init-env renders it into .cache/parity/ and adds the realm's LDAP federation as disabled (no OpenLDAP in compose). Client parity-tpp is a Keycloak-mode open-finance TPP (private_key_jwt, DPoP-bound, client credentials only): init-env generates its keypair at runtime (private JWK only in .env), the renderer adds the public JWKS and copies audiences and client scopes from the realm's of-tpp-conformance-template.",
   "realm": "fintechbankx",
   "users": [
     {
@@ -248,6 +248,39 @@
         "customer-id"
       ],
       "optionalClientScopes": []
+    },
+    {
+      "clientId": "parity-tpp",
+      "name": "Regression parity TPP (ephemeral only)",
+      "description": "Open-finance TPP actor of the parity suite: private_key_jwt (PS256) client authentication, DPoP-bound access tokens, client credentials only. Ephemeral/local compose fixture only; its key pair is generated per environment and never committed.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-jwt",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "open-finance-tpp",
+        "fbx.tpp.token-binding": "dpop",
+        "dpop.bound.access.tokens": "true",
+        "use.jwks.url": "false",
+        "use.jwks.string": "true",
+        "token.endpoint.auth.signing.alg": "PS256",
+        "access.token.signed.response.alg": "PS256",
+        "access.token.lifespan": "300",
+        "use.refresh.tokens": "false",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      }
     }
   ]
 }

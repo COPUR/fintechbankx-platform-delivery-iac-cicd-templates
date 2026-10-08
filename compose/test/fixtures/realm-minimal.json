@@ -40,6 +40,49 @@
       "redirectUris": [
         "$(env:FBX_MOBILE_REDIRECT_URI)"
       ]
+    },
+    {
+      "clientId": "of-tpp-conformance-template",
+      "enabled": false,
+      "clientAuthenticatorType": "client-jwt",
+      "attributes": {
+        "fbx.client-type": "open-finance-tpp",
+        "dpop.bound.access.tokens": "true",
+        "token.endpoint.auth.signing.alg": "PS256"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-svc-of-consent-authorization",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-consent-authorization",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-of-personal-financial-data",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-personal-financial-data",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "acr"
+      ],
+      "optionalClientScopes": []
     }
   ],
   "groups": [

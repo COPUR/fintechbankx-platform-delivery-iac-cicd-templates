@@ -112,8 +112,8 @@ test("rendered parity fixture: actors, customer_id attribute, suite client, ever
     assert.ok(!(u.groups ?? []).some((g) => g === "/customers" || g.startsWith("/customers/")), `${u.username} must not be in /customers`);
   }
 
-  assert.equal(fx.clients.length, 1);
-  const c = fx.clients[0];
+  assert.equal(fx.clients.length, 2);
+  const c = fx.clients.find((x) => x.clientId === "parity-suite");
   assert.equal(c.clientId, "parity-suite");
   assert.equal(c.publicClient, false);
   assert.equal(c.secret, "$(env:PARITY_SECRET_PARITY_SUITE)");
@@ -251,6 +251,96 @@ test("parity fixtures need an identity realm that declares every fixture group",
   const res = run("bash", [initEnv, "--out-dir", out, "--realm", old, "--cache-dir", path.join(out, ".cache"), "--parity-fixtures"]);
   assert.notEqual(res.status, 0);
   assert.match(res.stderr, /\/customers/);
+});
+
+// --- parity TPP (Keycloak-mode open-finance actor) ---------------------------------
+
+const b64url = (b) => Buffer.from(b).toString("base64url");
+
+test("init-env --parity-fixtures creates the parity-tpp client with a runtime keypair", async () => {
+  const { out, cache, res } = generate(["--parity-fixtures"]);
+  assert.equal(res.status, 0, res.stderr);
+  const env = parseEnv(path.join(out, ".env"));
+  assert.equal(env.PARITY_TPP_CLIENT_ID, "parity-tpp");
+  const priv = JSON.parse(env.PARITY_TPP_PRIVATE_JWK);
+  assert.equal(priv.kty, "RSA");
+  assert.equal(priv.alg, "PS256");
+  assert.equal(priv.use, "sig");
+  assert.ok(priv.kid && priv.d && priv.n && priv.e, "private JWK with kid");
+  const fx = JSON.parse(fs.readFileSync(path.join(cache, "parity", "parity-fixtures.json"), "utf8"));
+  const tpp = fx.clients.find((x) => x.clientId === "parity-tpp");
+  assert.ok(tpp, "parity-tpp client missing");
+  assert.equal(tpp.publicClient, false);
+  assert.equal(tpp.clientAuthenticatorType, "client-jwt");
+  assert.equal(tpp.directAccessGrantsEnabled, false, "no password grant");
+  assert.equal(tpp.standardFlowEnabled, false);
+  assert.equal(tpp.implicitFlowEnabled, false);
+  assert.equal(tpp.serviceAccountsEnabled, true);
+  assert.ok(!("secret" in tpp), "no client secret");
+  assert.equal(tpp.attributes["fbx.client-type"], "open-finance-tpp");
+  assert.equal(tpp.attributes["dpop.bound.access.tokens"], "true");
+  assert.equal(tpp.attributes["token.endpoint.auth.signing.alg"], "PS256");
+  assert.equal(tpp.attributes["use.jwks.url"], "false");
+  assert.equal(tpp.attributes["use.jwks.string"], "true");
+  const jwks = JSON.parse(tpp.attributes["jwks.string"]);
+  assert.equal(jwks.keys.length, 1);
+  const pub = jwks.keys[0];
+  assert.deepEqual([pub.kid, pub.n, pub.e, pub.alg], [priv.kid, priv.n, priv.e, "PS256"]);
+  for (const k of ["d", "p", "q", "dp", "dq", "qi"]) assert.ok(!(k in pub), `public JWK must not carry ${k}`);
+  // the public key really belongs to the private key
+  const { createPrivateKey, createPublicKey, sign, verify, constants } = await import("node:crypto");
+  const msg = Buffer.from("parity-tpp");
+  const opts = { padding: constants.RSA_PKCS1_PSS_PADDING, saltLength: 32 };
+  const sig = sign("sha256", msg, { key: createPrivateKey({ key: priv, format: "jwk" }), ...opts });
+  assert.ok(verify("sha256", msg, { key: createPublicKey({ key: pub, format: "jwk" }), ...opts }, sig));
+  // audiences exactly as the realm's TPP template gives them
+  const realm = JSON.parse(fs.readFileSync(realmFixture, "utf8"));
+  const template = realm.clients.find((x) => x.clientId === "of-tpp-conformance-template");
+  const auds = (cl) => cl.protocolMappers.filter((m) => m.protocolMapper === "oidc-audience-mapper")
+    .map((m) => m.config["included.client.audience"]).sort();
+  assert.deepEqual(auds(tpp), auds(template));
+  assert.deepEqual(tpp.defaultClientScopes, template.defaultClientScopes);
+  // no private material in the rendered fixture
+  const text = fs.readFileSync(path.join(cache, "parity", "parity-fixtures.json"), "utf8");
+  assert.ok(!text.includes(priv.d));
+  // a re-run keeps the keypair (the running Keycloak already has the public key)
+  const again = run("bash", [initEnv, "--out-dir", out, "--realm", realmFixture, "--cache-dir", cache, "--parity-fixtures"]);
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(parseEnv(path.join(out, ".env")).PARITY_TPP_PRIVATE_JWK, env.PARITY_TPP_PRIVATE_JWK);
+  assert.equal(fs.readFileSync(path.join(cache, "parity", "parity-fixtures.json"), "utf8"), text);
+  // and a fresh environment gets a different key
+  const other = parseEnv(path.join(generate(["--parity-fixtures"]).out, ".env"));
+  assert.notEqual(JSON.parse(other.PARITY_TPP_PRIVATE_JWK).n, priv.n);
+});
+
+test("parity-tpp needs the realm's TPP template", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-realm-"));
+  const realm = JSON.parse(fs.readFileSync(realmFixture, "utf8"));
+  realm.clients = realm.clients.filter((x) => x.clientId !== "of-tpp-conformance-template");
+  const file = path.join(dir, "realm-without-tpp-template.json");
+  fs.writeFileSync(file, JSON.stringify(realm));
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-env-"));
+  const res = run("bash", [initEnv, "--out-dir", out, "--realm", file, "--cache-dir", path.join(out, ".cache"), "--parity-fixtures"]);
+  assert.notEqual(res.status, 0);
+  assert.match(res.stderr, /of-tpp-conformance-template/);
+});
+
+test("no private key material in tracked files", () => {
+  const { out, res } = generate(["--parity-fixtures"]);
+  assert.equal(res.status, 0, res.stderr);
+  const priv = JSON.parse(parseEnv(path.join(out, ".env")).PARITY_TPP_PRIVATE_JWK);
+  const repo = path.resolve(composeDir, "..");
+  const tracked = spawnSync("git", ["ls-files", "-z"], { cwd: repo, encoding: "utf8" }).stdout.split("\0").filter(Boolean);
+  const privateJwk = /"(d|dp|dq|qi)"\s*:\s*"[A-Za-z0-9_-]{40,}"/;
+  const pemHeader = new RegExp(["-----BEGIN", "(?:RSA |EC )?PRIVATE KEY-----"].join(" "));
+  for (const f of tracked) {
+    const file = path.join(repo, f);
+    if (!fs.existsSync(file) || fs.statSync(file).size > 2_000_000) continue;
+    const text = fs.readFileSync(file, "utf8");
+    assert.ok(!text.includes(priv.d), `${f} holds the generated private key`);
+    assert.doesNotMatch(text, privateJwk, `${f} holds a private JWK member`);
+    assert.doesNotMatch(text, pemHeader, `${f} holds a PEM private key`);
+  }
 });
 
 test("parity fixtures and compose never use the customer web client for staff", () => {
