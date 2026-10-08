@@ -114,6 +114,29 @@
           "CUST-12345678"
         ]
       }
+    },
+    {
+      "username": "parity-other-customer",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Other Customer",
+      "email": "parity-other-customer@parity.invalid",
+      "realmRoles": [
+        "customer"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_OTHER_CUSTOMER)",
+          "temporary": false
+        }
+      ],
+      "attributes": {
+        "customer_id": [
+          "CUST-99999999"
+        ]
+      }
     }
   ],
   "clients": [

@@ -27,7 +27,7 @@ const composeDoc = () => YAML.parse(fs.readFileSync(composeFile, "utf8"));
 const dockerCompose = run("docker", ["compose", "version"]).status === 0;
 
 const ACTORS = { banker: "banker", admin: "admin", loan_officer: "loan_officer",
-  compliance_officer: "compliance_officer", auditor: "auditor", customer: "customer" };
+  compliance_officer: "compliance_officer", auditor: "auditor", customer: "customer", other_customer: "customer" };
 const AUDIENCES = ["svc-ln-loan-lifecycle", "svc-pay-initiation-settlement", "svc-cus-profile-kyc",
   "svc-rsk-decisioning", "svc-cmp-evidence"];
 // Keycloak password policy of the identity realm: length(14), upper, lower, digit, special.
@@ -100,7 +100,10 @@ test("rendered parity fixture: actors, customer_id attribute, suite client, ever
   }
   const customer = fx.users.find((u) => u.username === "parity-customer");
   assert.deepEqual(customer.attributes, { customer_id: ["CUST-12345678"] });
-  for (const u of fx.users.filter((x) => x !== customer)) assert.ok(!u.attributes?.customer_id, `${u.username} has no customer_id`);
+  // Second customer for ownership-denial scenarios.
+  const other = fx.users.find((u) => u.username === "parity-other-customer");
+  assert.deepEqual(other.attributes, { customer_id: ["CUST-99999999"] });
+  for (const u of fx.users.filter((x) => x !== customer && x !== other)) assert.ok(!u.attributes?.customer_id, `${u.username} has no customer_id`);
 
   assert.equal(fx.clients.length, 1);
   const c = fx.clients[0];
@@ -229,4 +232,17 @@ test("docker compose config applies the service-env override and the parity prof
   // Without the profile the optional dependency is dropped and config still validates.
   res = run("docker", [...base, "--profile", "services", "--profile", "monolith", "config", "-q"], { env });
   assert.equal(res.status, 0, res.stderr);
+});
+
+test("parity fixtures need an identity realm that maps customer_id (identity PR #11 or later)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-realm-"));
+  const realm = JSON.parse(fs.readFileSync(realmFixture, "utf8"));
+  delete realm.clientScopes;
+  delete realm.userProfile;
+  const old = path.join(dir, "realm-without-customer-id.json");
+  fs.writeFileSync(old, JSON.stringify(realm));
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-env-"));
+  const res = run("bash", [initEnv, "--out-dir", out, "--realm", old, "--cache-dir", path.join(out, ".cache"), "--parity-fixtures"]);
+  assert.notEqual(res.status, 0);
+  assert.match(res.stderr, /customer_id/);
 });

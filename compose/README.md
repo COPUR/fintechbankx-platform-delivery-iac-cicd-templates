@@ -71,7 +71,7 @@ Credentials are random and land in `compose/.env` (mode 600, git-ignored;
 
 | Variable | Value |
 |---|---|
-| `PARITY_USERNAME_<ACTOR>` | `parity-<actor>` (`BANKER`, `ADMIN`, `LOAN_OFFICER`, `COMPLIANCE_OFFICER`, `AUDITOR`, `CUSTOMER`) |
+| `PARITY_USERNAME_<ACTOR>` | `parity-<actor>` (`BANKER`, `ADMIN`, `LOAN_OFFICER`, `COMPLIANCE_OFFICER`, `AUDITOR`, `CUSTOMER` with `customer_id` CUST-12345678, `OTHER_CUSTOMER` with CUST-99999999 for ownership-denial cases). The identity realm at `identity-ref` must declare `customer_id` (identity PR #11 or later), otherwise init fails |
 | `PARITY_PASSWORD_<ACTOR>` | password satisfying the realm policy |
 | `PARITY_SECRET_PARITY_SUITE` | `parity-suite` client secret |
 | `PARITY_SECRET_SVC_LN_LOAN_LIFECYCLE`, `PARITY_SECRET_SVC_PAY_INITIATION_SETTLEMENT` | the same secrets the realm import gives those service clients |

@@ -132,10 +132,19 @@ mapfile -t oidc_names < <(printf '%s\n' "${oidc_names[@]}" | sort -u)
 for name in "${oidc_names[@]}"; do secret "$name"; done
 
 # Parity test actors (ephemeral/local only, never in the identity repo's realm).
-parity_actors=(banker admin loan_officer compliance_officer auditor customer)
+parity_actors=(banker admin loan_officer compliance_officer auditor customer other_customer)
 parity_realm_keys=()
 if [ "$parity" = true ]; then
   command -v node >/dev/null || die "node is required for --parity-fixtures"
+  # The fixture users carry customer_id; the identity realm must declare it in
+  # the user profile and map it to the token (client scope customer-id,
+  # identity PR #11), or Keycloak drops the attribute and tokens lack it.
+  node -e '
+    const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const scope = (r.clientScopes || []).some((s) => s.name === "customer-id");
+    const attr = (r.userProfile?.attributes || []).some((a) => a.name === "customer_id");
+    process.exit(scope && attr ? 0 : 1);' "$realm" \
+    || die "--parity-fixtures: the identity realm does not declare customer_id (user profile) and client scope customer-id; use an identity ref that has them (identity-ref / FBX_IDENTITY_REF)"
   for actor in "${parity_actors[@]}"; do
     upper="$(echo "$actor" | tr 'a-z' 'A-Z')"
     put "PARITY_USERNAME_$upper" "parity-${actor//_/-}"
