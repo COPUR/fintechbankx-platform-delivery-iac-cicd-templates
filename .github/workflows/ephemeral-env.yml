@@ -1,0 +1,233 @@
+name: ephemeral-env
+
+# Reusable ephemeral environment on the runner: the shared compose runtime of
+# this repository (compose/: PostgreSQL per service, KRaft Kafka with the
+# catalog topics, Keycloak with the fintechbankx realm), the requested service
+# images and optionally the monolith side by side. Waits for every container to
+# be healthy, runs the caller's test command (e.g. a regression suite comparing
+# monolith and service responses), uploads results and logs, and always tears
+# the stack down.
+#
+# Callers must grant contents: read and id-token: write (ECR pulls via OIDC;
+# GitHub checks a called workflow's permissions statically).
+#
+# Usage (caller job):
+#   regression:
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/ephemeral-env.yml@main
+#     permissions:
+#       contents: read
+#       id-token: write
+#     with:
+#       profiles: lending observability
+#       service-images: |
+#         FBX_IMAGE_LN_LOAN_LIFECYCLE=<account>.dkr.ecr.me-central-1.amazonaws.com/fintechbankx/loan-lifecycle-service@sha256:<digest>
+#       monolith-image: <account>.dkr.ecr.me-central-1.amazonaws.com/elms/enterprise-loan-system@sha256:<digest>
+#       test-command: ./scripts/regression/compare-monolith.sh
+#       aws-role-to-assume: arn:aws:iam::<account>:role/<ci-ecr-pull-role>
+#
+# The test command runs in the caller's checkout with these variables:
+#   FBX_BASE_URL_<SERVICE> (e.g. FBX_BASE_URL_LN_LOAN_LIFECYCLE=http://127.0.0.1:18010),
+#   FBX_MONOLITH_BASE_URL, FBX_OIDC_ISSUER, FBX_KAFKA_BOOTSTRAP, FBX_ENV_FILE
+#   (generated credentials, for client-credentials tokens) and FBX_RESULTS_DIR
+#   (anything written there is uploaded).
+#
+# mode: only `compose` is implemented. `kind` (helm install of
+# charts/fintechbankx-service into a kind cluster) is a documented follow-up:
+# the chart needs the backing services reachable from the cluster first.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: compose (implemented) or kind (follow-up, fails with a message).
+        type: string
+        default: compose
+      profiles:
+        description: Space separated compose profiles (lending, payments, customer, riskcompliance, services, observability).
+        type: string
+        default: services
+      service-images:
+        description: Newline separated FBX_IMAGE_<SERVICE>=<image@digest or image:tag> lines (see compose/services.tsv). Unlisted services use fintechbankx/<service>:local.
+        type: string
+        default: ""
+      monolith-image:
+        description: Monolith image (digest or tag). Non-empty adds the monolith profile.
+        type: string
+        default: ""
+      monolith-spring-profiles:
+        type: string
+        default: docker
+      test-command:
+        description: Command run in the caller checkout once the stack is healthy.
+        type: string
+        required: true
+      working-directory:
+        description: Directory of the caller checkout to run the test command in.
+        type: string
+        default: "."
+      platform-repository:
+        type: string
+        default: COPUR/fintechbankx-platform-delivery-iac-cicd-templates
+      platform-ref:
+        description: Ref of this repository providing compose/.
+        type: string
+        default: main
+      identity-ref:
+        description: Ref of the identity repo for the realm.
+        type: string
+        default: main
+      kafka-ref:
+        description: Ref of the event-streaming repo for the topic catalog.
+        type: string
+        default: main
+      aws-region:
+        type: string
+        default: me-central-1
+      aws-role-to-assume:
+        description: Role allowed to pull the images from ECR. Empty = no registry login.
+        type: string
+        default: ""
+      wait-timeout-seconds:
+        type: number
+        default: 600
+      timeout-minutes:
+        type: number
+        default: 45
+
+permissions:
+  contents: read
+
+jobs:
+  ephemeral:
+    name: ephemeral-env/${{ inputs.mode }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: ephemeral-env-${{ github.repository }}-${{ github.ref }}-${{ inputs.profiles }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      FBX_COMPOSE: ${{ github.workspace }}/.fbx-platform/compose
+      FBX_RESULTS_DIR: ${{ github.workspace }}/.fbx-results
+    steps:
+      - name: Checkout caller
+        uses: actions/checkout@v4
+
+      - name: Checkout platform compose runtime
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.platform-repository }}
+          ref: ${{ inputs.platform-ref }}
+          path: .fbx-platform
+          sparse-checkout: compose
+
+      - name: Validate inputs and export images
+        env:
+          MODE: ${{ inputs.mode }}
+          SERVICE_IMAGES: ${{ inputs.service-images }}
+          MONOLITH_IMAGE: ${{ inputs.monolith-image }}
+          MONOLITH_PROFILES: ${{ inputs.monolith-spring-profiles }}
+          REQUESTED_PROFILES: ${{ inputs.profiles }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" != "compose" ]; then
+            echo "::error::mode '$MODE' is not implemented; only compose is (kind is a documented follow-up)"
+            exit 1
+          fi
+          image_ok() { [[ "$1" =~ ^[a-z0-9./_:-]+(@sha256:[a-f0-9]{64}|:[A-Za-z0-9._-]+)$ && ! "$1" =~ :latest$ ]]; }
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            if [[ ! "$line" =~ ^(FBX_IMAGE_[A-Z_]+)=(.+)$ ]]; then
+              echo "::error::service-images line must be FBX_IMAGE_<SERVICE>=<image>: $line"; exit 1
+            fi
+            var="${BASH_REMATCH[1]}"; image="${BASH_REMATCH[2]}"
+            grep -qP "\t${var}\t" "$FBX_COMPOSE/services.tsv" || { echo "::error::$var is not in compose/services.tsv"; exit 1; }
+            image_ok "$image" || { echo "::error::$var must be pinned by digest or an immutable tag (no latest): $image"; exit 1; }
+            echo "$var=$image" >> "$GITHUB_ENV"
+          done <<< "$SERVICE_IMAGES"
+          profiles="$REQUESTED_PROFILES"
+          if [ -n "$MONOLITH_IMAGE" ]; then
+            image_ok "$MONOLITH_IMAGE" || { echo "::error::monolith-image must be pinned: $MONOLITH_IMAGE"; exit 1; }
+            {
+              echo "FBX_MONOLITH_IMAGE=$MONOLITH_IMAGE"
+              echo "FBX_MONOLITH_SPRING_PROFILES=$MONOLITH_PROFILES"
+            } >> "$GITHUB_ENV"
+            profiles="$profiles monolith"
+          fi
+          echo "FBX_PROFILES_RESOLVED=$profiles" >> "$GITHUB_ENV"
+          mkdir -p "$FBX_RESULTS_DIR/logs"
+
+      - name: Configure AWS credentials (OIDC, image pulls)
+        if: ${{ inputs.aws-role-to-assume != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-to-assume }}
+          role-session-name: gha-ephemeral-${{ github.run_id }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Log in to Amazon ECR
+        if: ${{ inputs.aws-role-to-assume != '' }}
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Fetch platform assets and generate dev-only credentials
+        env:
+          FBX_IDENTITY_REF: ${{ inputs.identity-ref }}
+          FBX_KAFKA_REF: ${{ inputs.kafka-ref }}
+        run: |
+          set -euo pipefail
+          bash "$FBX_COMPOSE/fbx-local.sh" fetch
+          bash "$FBX_COMPOSE/fbx-local.sh" init
+
+      - name: Start stack and wait for health
+        env:
+          FBX_WAIT_TIMEOUT: ${{ inputs.wait-timeout-seconds }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # profiles are a space separated list
+          bash "$FBX_COMPOSE/fbx-local.sh" up $FBX_PROFILES_RESOLVED
+          bash "$FBX_COMPOSE/fbx-local.sh" compose ps
+
+      - name: Run test command
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          set -euo pipefail
+          while IFS=$'\t' read -r key service_id _ _ _ _ _ _ port; do
+            [[ -z "$key" || "$key" == \#* ]] && continue
+            if [ "$key" = monolith ]; then
+              export FBX_MONOLITH_BASE_URL="http://127.0.0.1:$port"
+            else
+              name="FBX_BASE_URL_$(echo "${service_id#svc-}" | tr 'a-z-' 'A-Z_')"
+              export "$name=http://127.0.0.1:$port"
+            fi
+          done < "$FBX_COMPOSE/services.tsv"
+          export FBX_OIDC_ISSUER=http://localhost:8180/realms/fintechbankx
+          export FBX_KAFKA_BOOTSTRAP=localhost:29092
+          export FBX_ENV_FILE="$FBX_COMPOSE/.env"
+          bash -c "$TEST_COMMAND"
+
+      - name: Collect container logs
+        if: ${{ always() }}
+        run: |
+          set +e
+          bash "$FBX_COMPOSE/fbx-local.sh" compose ps -a > "$FBX_RESULTS_DIR/logs/ps.txt" 2>&1
+          for svc in $(bash "$FBX_COMPOSE/fbx-local.sh" compose ps -a --services 2>/dev/null); do
+            bash "$FBX_COMPOSE/fbx-local.sh" compose logs --no-color --timestamps "$svc" > "$FBX_RESULTS_DIR/logs/$svc.log" 2>&1
+          done
+          exit 0
+
+      - name: Upload results and logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ephemeral-env-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.FBX_RESULTS_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Tear down
+        if: ${{ always() }}
+        run: bash "$FBX_COMPOSE/fbx-local.sh" down || true

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test scripts/validation/test/*.test.mjs",
+    "test": "node --test scripts/validation/test/*.test.mjs compose/test/*.test.mjs",
     "validate:strict-mtls": "node scripts/validation/validate-strict-mtls.mjs --path k8s --path security",
     "ci:strict-mtls": "npm run test && npm run validate:strict-mtls",
     "validate:chart": "bash scripts/ci/validate-chart.sh",

@@ -3,7 +3,9 @@ name: delivery-templates-ci
 # Validates this repository's own deliverables: every workflow (actionlint,
 # including the sample callers checked against the local reusable workflows),
 # the generic Helm chart (lint, template, kubeconform, negative cases,
-# strict-mTLS scan of the rendered output) and the Node validator tests.
+# strict-mTLS scan of the rendered output, helm-unittest) and the Node tests
+# (strict-mTLS validator, compose runtime incl. `docker compose config` and the
+# per-service database init against PostgreSQL 16, ephemeral-env structure).
 
 on:
   pull_request:
@@ -70,7 +72,26 @@ jobs:
   node-validation:
     name: delivery/node-validation
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16.6-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-throwaway
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # compose/test runs the per-service database init against this server.
+      FBX_TEST_PGHOST: localhost
+      FBX_TEST_PGPORT: "5432"
+      FBX_TEST_PGUSER: postgres
+      FBX_TEST_PGPASSWORD: ci-only-throwaway
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
