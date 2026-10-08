@@ -6,7 +6,7 @@ kubeconform only; no workflow here has run against AWS yet.
 ## 1. Pipeline shape
 
 ```
-pull_request:  java-service-ci + contract-checks + db-migration-verify + security
+pull_request:  java-service-ci (check + ArchUnit gate) + tdd-gate + contract-checks + db-migration-verify + security
 push to main:  same gates -> container-image (once) -> helm-deploy dev -> staging -> prod
 deploy/terraform changes: terraform.yml per environment (plan on PR, apply on main after approval)
 ```
@@ -26,6 +26,8 @@ what the caller job grants, whether or not a job inside it runs. Grant exactly:
 |---|---|
 | java-service-ci.yml | `contents: read` |
 | contract-checks.yml | `contents: read` |
+| tdd-gate.yml | `contents: read` |
+| ephemeral-env.yml | `contents: read`, `id-token: write` |
 | db-migration-verify.yml | `contents: read` |
 | security.yml | `contents: read`, `actions: read`, `security-events: write` |
 | container-image.yml | `contents: read`, `id-token: write` |
@@ -41,6 +43,22 @@ OIDC (image push/sign, deploy, plan, apply).
   `test` only with a recorded reason; `.ci/allow-gradle-fail` is ignored.
   `postgres-enabled: true` exports `TEST_DB_URL`, `TEST_DB_USERNAME`,
   `TEST_DB_PASSWORD` for a job-scoped container (throwaway credential = role name).
+- `java-service-ci` ArchUnit gate (ADR-028): always runs after `check` using
+  `tools/archunit-gate` from this repository at `platform-ref`. Set
+  `archunit-base-packages` (e.g. `com.bank.loan`, `com.enterprise.openfinance.consent`;
+  empty = every package owning a `.domain` package) and `archunit-layout`
+  (`multi-module`, `single-module` or `auto`). The four rules: domain free of
+  application, infrastructure, Spring, JPA, Kafka and Mongo; application free of
+  infrastructure; controllers and listeners use `domain.port.in`, not
+  application implementations; `domain.port.out` implementations live in
+  infrastructure. `archunit-report-only: true` is a visible, temporary escape
+  hatch for repositories still fixing their conformance row.
+- `tdd-gate` (ADR-029): a PR that changes `src/main/**` without any
+  `src/test/**` change fails unless labelled exactly `no-behaviour-change`.
+  Trigger the caller on `pull_request` types `labeled` and `unlabeled` too.
+- `ephemeral-env`: see [compose/README.md](../../compose/README.md); pass
+  service images as `FBX_IMAGE_<SERVICE>=<image@digest>` lines and a
+  `test-command`; the stack is always torn down.
 - `container-image`: `boot-jar-task` for Dockerfiles that copy `build/libs`;
   leave empty for multi-stage Dockerfiles (all five extracted services).
   `trivy-severity` defaults to `CRITICAL,HIGH` with `ignore-unfixed`; reviewed

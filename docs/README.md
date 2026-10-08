@@ -3,6 +3,8 @@
 Delivery platform documentation for `fintechbankx-platform-delivery-iac-cicd-templates`.
 
 - [Consuming the delivery workflows](delivery/CONSUMING_DELIVERY_WORKFLOWS.md): pipeline shape, permissions, inputs, AWS/GitHub setup
+- [Shared local / ephemeral runtime](../compose/README.md)
+- [ArchUnit gate](../tools/archunit-gate/README.md)
 - [Generic service Helm chart](../charts/fintechbankx-service/README.md)
 - [Microservice skeleton](../templates/microservice/README.md)
 - [Cell-based architecture plan](architecture/CELL_BASED_ARCHITECTURE_IMPLEMENTATION_PLAN.md)

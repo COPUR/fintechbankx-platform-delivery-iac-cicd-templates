@@ -22,6 +22,10 @@ deployed or released yet; consumers pin `@main` until the first tag.
 | Capability | Path | How a service uses it |
 |---|---|---|
 | Java 23 CI (gradle `check` with jacoco gate, optional PostgreSQL + `TEST_DB_URL`, controller guardrail) | [.github/workflows/java-service-ci.yml](.github/workflows/java-service-ci.yml) | `uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/java-service-ci.yml@main` |
+| ArchUnit gate (ADR-028: the four hexagonal rules on the service's compiled classes, both package layouts) | [tools/archunit-gate](tools/archunit-gate/README.md) | runs inside `java-service-ci.yml` after `check` |
+| TDD gate (ADR-029: `src/main` changes need `src/test` changes, opt-out label `no-behaviour-change`) | [.github/workflows/tdd-gate.yml](.github/workflows/tdd-gate.yml) | PR gate |
+| Ephemeral environment (compose runtime + service images + optional monolith, test command, always torn down) | [.github/workflows/ephemeral-env.yml](.github/workflows/ephemeral-env.yml) | regression / parity runs |
+| Shared local runtime (PostgreSQL per service, KRaft Kafka, Keycloak realm, OTel, service and monolith profiles) | [compose](compose/README.md) | `compose/fbx-local.sh up <profiles>` |
 | Container image (Buildx, Trivy, Syft SBOM, ECR via OIDC, SHA tag, cosign keyless) | [.github/workflows/container-image.yml](.github/workflows/container-image.yml) | outputs `image-digest`, `image-repository`, `image-tag` |
 | Helm deploy to EKS (lint, template, kubeconform, environment-gated `helm upgrade --install --atomic --wait` by digest) | [.github/workflows/helm-deploy.yml](.github/workflows/helm-deploy.yml) | one call per environment |
 | Terraform (fmt/validate, OIDC plan on S3 backend, plan artifact, optional PR comment, environment-gated apply) | [.github/workflows/terraform.yml](.github/workflows/terraform.yml) | for `deploy/terraform` |
@@ -40,7 +44,8 @@ Validate this repository locally:
 
 ```bash
 npm ci
-npm test && npm run validate:strict-mtls
+npm test && npm run validate:strict-mtls   # includes compose and tdd-gate tests
+npm run test:archunit-gate                 # JDK 21+
 npm run lint:workflows     # needs actionlint (and shellcheck for script checks)
 npm run validate:chart     # needs helm and kubeconform
 ```

@@ -5,7 +5,7 @@ name: service-pipeline
 # GitHub Actions is the primary delivery path; Jenkins and GitLab templates in
 # this repository are secondary.
 #
-#   pull_request: ci + contracts + db migration rehearsal + security
+#   pull_request: ci (check + ArchUnit gate) + tdd gate + contracts + db migration rehearsal + security
 #   push to main: the same gates, then image -> dev -> staging -> prod
 #
 # Repository variables (Settings > Secrets and variables > Variables):
@@ -21,6 +21,8 @@ name: service-pipeline
 on:
   pull_request:
     branches: [main, dev, staging]
+    # labeled/unlabeled re-run the tdd gate when no-behaviour-change is added or removed
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
   workflow_dispatch:
@@ -41,6 +43,14 @@ jobs:
       postgres-enabled: true
       postgres-db: db_ex_example_test
       postgres-user: example_test
+      archunit-base-packages: com.fintechbankx.example.capability
+      archunit-layout: single-module
+
+  tdd:
+    if: ${{ github.event_name == 'pull_request' }}
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/tdd-gate.yml@main
+    permissions:
+      contents: read
 
   contracts:
     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/contract-checks.yml@main
