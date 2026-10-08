@@ -66,3 +66,14 @@ sidecar.istio.io/inject: "true"
 {{- printf "%s:%s" $repo (required "image.tag or image.digest is required" .Values.image.tag) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+A PostgreSQL DB_URL must verify the server certificate and host name:
+sslmode=require encrypts but trusts any certificate.
+*/}}
+{{- define "fbx.validateDatabaseTls" -}}
+{{- $url := toString (default "" (index .Values.config "DB_URL")) -}}
+{{- if and (hasPrefix "jdbc:postgresql:" $url) (not (contains "sslmode=verify-full" $url)) -}}
+{{- fail "config.DB_URL must use sslmode=verify-full (with sslrootcert=<databaseCa.mountPath>/<databaseCa.key>)" -}}
+{{- end -}}
+{{- end -}}

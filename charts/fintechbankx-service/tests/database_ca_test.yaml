@@ -1,0 +1,58 @@
+suite: database CA bundle - Aurora sslmode=verify-full
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # The mesh repo's trust-manager Bundle rds-ca-bundle publishes ConfigMap
+  # rds-ca-bundle (key global-bundle.pem) in every service namespace; the
+  # terraform-modules aurora-postgresql jdbc_url trusts
+  # /etc/fintechbankx/rds-ca/global-bundle.pem (sslmode=verify-full).
+  - it: mounts ConfigMap rds-ca-bundle read-only at /etc/fintechbankx/rds-ca by default
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: database-ca
+            configMap:
+              name: rds-ca-bundle
+              items:
+                - {key: global-bundle.pem, path: global-bundle.pem}
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: {name: database-ca, mountPath: /etc/fintechbankx/rds-ca, readOnly: true}
+  - it: exposes the bundle path as DB_SSL_ROOT_CERT
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DB_SSL_ROOT_CERT, value: /etc/fintechbankx/rds-ca/global-bundle.pem}
+  - it: fails closed when the ConfigMap is missing (no optional volume)
+    template: templates/deployment.yaml
+    asserts:
+      - notExists: {path: "spec.template.spec.volumes[?(@.name == 'database-ca')].configMap.optional"}
+  - it: can be turned off for services without a relational database
+    template: templates/deployment.yaml
+    set:
+      databaseCa.enabled: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.volumes
+          content: {name: database-ca}
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DB_SSL_ROOT_CERT}
+          any: true
+  - it: rejects a DB_URL that does not verify the server certificate
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=require
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must use sslmode=verify-full"

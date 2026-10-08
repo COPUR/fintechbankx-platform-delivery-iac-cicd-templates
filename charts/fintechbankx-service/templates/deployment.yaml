@@ -1,3 +1,4 @@
+{{- include "fbx.validateDatabaseTls" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -103,6 +104,10 @@ spec:
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: {{ printf "service.namespace=%s,deployment.environment=%s" .Values.boundedContext (default "unset" .Values.environment) | quote }}
             {{- end }}
+            {{- if .Values.databaseCa.enabled }}
+            - name: DB_SSL_ROOT_CERT
+              value: {{ printf "%s/%s" (trimSuffix "/" .Values.databaseCa.mountPath) .Values.databaseCa.key | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -146,7 +151,20 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.databaseCa.enabled }}
+            - name: database-ca
+              mountPath: {{ .Values.databaseCa.mountPath }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
+        {{- if .Values.databaseCa.enabled }}
+        - name: database-ca
+          configMap:
+            name: {{ .Values.databaseCa.configMapName }}
+            items:
+              - key: {{ .Values.databaseCa.key }}
+                path: {{ .Values.databaseCa.key }}
+        {{- end }}

@@ -91,6 +91,20 @@ javaToolOptions: "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
 # Non-secret runtime settings, rendered into a ConfigMap and loaded with envFrom.
 config: {}
 
+# Amazon RDS / DocumentDB CA bundle for TLS with certificate verification
+# (Aurora JDBC sslmode=verify-full&sslrootcert=<mountPath>/<key>, the
+# terraform-modules aurora-postgresql jdbc_url output). The mesh platform repo's
+# trust-manager Bundle rds-ca-bundle publishes the ConfigMap in every service
+# namespace. The volume is not optional: a missing bundle keeps the pod from
+# starting instead of letting it connect without verification. The path is
+# also exported as DB_SSL_ROOT_CERT. A postgresql config.DB_URL must use
+# sslmode=verify-full (rendering fails otherwise).
+databaseCa:
+  enabled: true
+  configMapName: rds-ca-bundle
+  key: global-bundle.pem
+  mountPath: /etc/fintechbankx/rds-ca
+
 # Extra env entries (Kubernetes EnvVar objects).
 extraEnv: []
 

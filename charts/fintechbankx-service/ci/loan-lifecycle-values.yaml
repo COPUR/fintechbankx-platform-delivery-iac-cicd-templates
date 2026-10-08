@@ -10,7 +10,7 @@ image:
 serviceAccount:
   roleArn: arn:aws:iam::123456789012:role/staging-loan-lifecycle-service-workload
 config:
-  DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_staging?sslmode=require
+  DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_staging?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
   DB_USERNAME: loan_lifecycle_app
   KAFKA_SECURITY_PROTOCOL: SASL_SSL
   CUSTOMER_SERVICE_BASE_URL: http://customer-profile-kyc-service.customer.svc.cluster.local:8080
