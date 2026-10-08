@@ -7,13 +7,28 @@ name: contract-checks
 #             spec (one oasdiff error per line, as in customer-profile-kyc-core)
 #             is passed to --err-ignore; anything not listed still fails.
 #             scripts/ci/fapi-dpop-guard.sh runs when the repo has it.
-#   asyncapi: AsyncAPI CLI validate.
+#   asyncapi: the provider gate of ADR-019 section 5 (adr-runbooks): every
+#             top-level spec of the AsyncAPI directory (asyncapi/ or
+#             api/asyncapi/; shared fragments such as common/event-envelope.yaml
+#             live in subdirectories and are not specs) is validated with the
+#             pinned @asyncapi/cli, then compared with the merge base of
+#             origin/main by the asyncapi catalog's scripts/ci/asyncapi-breaking.mjs,
+#             fetched at the 40-hex commit asyncapi-catalog-ref and run unchanged
+#             (the directory is presented to it as asyncapi/). Always origin/main,
+#             also for stacked PRs. A spec that is not on main yet is skipped as
+#             new (first PR). Removing a spec that is on main is a finding.
+#             Accepted findings: <spec-name>.accepted-breaking.txt next to the
+#             spec, one finding key per line, only with a documented major
+#             version (.v2 topic) and dual-publish plan.
+#             publishes-events: true makes a missing spec an error.
 #
 # Usage (caller job):
 #   contracts:
 #     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/contract-checks.yml@main
 #     permissions:
 #       contents: read
+#     with:
+#       publishes-events: true   # the service publishes domain events (ADR-019)
 
 on:
   workflow_call:
@@ -23,9 +38,27 @@ on:
         type: string
         default: "openapi/*.yaml api/openapi/*.yaml src/main/resources/openapi/*.yaml"
       asyncapi-globs:
-        description: Space separated git pathspecs for AsyncAPI specs.
+        description: >-
+          Space separated git pathspecs for AsyncAPI specs. A pathspec without magic is read as :(glob), so * does not
+          cross a directory and shared fragments in subdirectories (common/event-envelope.yaml) are not specs.
         type: string
-        default: "asyncapi/*.yaml asyncapi/*.yml api/asyncapi/*.yaml api/asyncapi/*.yml"
+        default: ":(glob)asyncapi/*.yaml :(glob)asyncapi/*.yml :(glob)api/asyncapi/*.yaml :(glob)api/asyncapi/*.yml"
+      publishes-events:
+        description: >-
+          The repository publishes domain events, so it must own an AsyncAPI spec (ADR-019 section 5): no spec fails
+          contracts/asyncapi. false only skips the check when no spec exists on the branch or on origin/main.
+        type: boolean
+        default: false
+      asyncapi-catalog-repository:
+        description: Repository providing scripts/ci/asyncapi-breaking.mjs (the catalog's breaking-change rules).
+        type: string
+        default: COPUR/fintechbankx-governance-api-contracts-asyncapi-catalog
+      asyncapi-catalog-ref:
+        description: >-
+          40-hex commit of asyncapi-catalog-repository the breaking-change rules are taken from. Branches and tags are
+          rejected. Bump it in a reviewed PR of this repository when the catalog changes its rules.
+        type: string
+        default: e47c327eb7763232e986359225d733b9892f6b7b
       base-ref:
         description: Baseline for the breaking-change diff. Empty = the PR base branch, else origin/main.
         type: string
@@ -159,30 +192,161 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
+    concurrency:
+      group: contract-checks-asyncapi-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
       NPM_CONFIG_CACHE: ${{ github.workspace }}/.npm-cache
+      # Fixed by ADR-019 section 5 and the catalog's own gate: versions count from main, also for stacked PRs.
+      BASE_REF: origin/main
     steps:
+      - name: Pinned tool versions
+        env:
+          ASYNCAPI_CLI_VERSION: ${{ inputs.asyncapi-cli-version }}
+          CATALOG_REF: ${{ inputs.asyncapi-catalog-ref }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$ASYNCAPI_CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::asyncapi-cli-version must be an exact version (x.y.z), got '$ASYNCAPI_CLI_VERSION'"
+            exit 1
+          fi
+          if ! [[ "$CATALOG_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::asyncapi-catalog-ref must be a 40-hex commit SHA (branches and tags move), got '$CATALOG_REF'"
+            exit 1
+          fi
+          echo "@asyncapi/cli $ASYNCAPI_CLI_VERSION, breaking-change rules at catalog commit $CATALOG_REF"
+
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Full history: the breaking-change check compares with the merge base of origin/main.
+          fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
 
-      - name: AsyncAPI validate
+      - name: Find AsyncAPI specs
+        id: specs
         env:
           GLOBS: ${{ inputs.asyncapi-globs }}
+          PUBLISHES_EVENTS: ${{ inputs.publishes-events }}
+        run: |
+          set -euo pipefail
+          read -r -a raw <<< "$GLOBS"
+          pathspecs=()
+          for p in "${raw[@]}"; do
+            case "$p" in
+              :*) pathspecs+=("$p") ;;
+              *) pathspecs+=(":(glob)$p") ;;
+            esac
+          done
+          git ls-files -- "${pathspecs[@]}" > asyncapi-specs.txt
+          count="$(wc -l < asyncapi-specs.txt | tr -d ' ')"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "AsyncAPI specs on this branch: $count"
+          cat asyncapi-specs.txt
+
+          if [ "$count" -eq 0 ] && [ "$PUBLISHES_EVENTS" = "true" ]; then
+            echo "::error::publishes-events is true but no AsyncAPI spec matches '$GLOBS'. A repository that publishes events gates its own AsyncAPI spec (ADR-019 section 5): add asyncapi/<service-id>.yaml or api/asyncapi/<service-id>.yaml."
+            exit 1
+          fi
+
+          base=""
+          if ! git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null; then
+            git fetch --no-tags origin "+refs/heads/${BASE_REF#origin/}:refs/remotes/${BASE_REF}" >/dev/null 2>&1 || true
+          fi
+          : > asyncapi-base-specs.txt
+          if git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null; then
+            base="$(git merge-base "$BASE_REF" HEAD 2>/dev/null || git rev-parse "${BASE_REF}^{commit}")"
+            empty_tree="$(git hash-object -t tree /dev/null)"
+            git diff-tree -r --name-only --no-commit-id "$empty_tree" "$base" -- "${pathspecs[@]}" > asyncapi-base-specs.txt
+          fi
+          base_count="$(wc -l < asyncapi-base-specs.txt | tr -d ' ')"
+
+          if [ "$count" -eq 0 ] && [ "$base_count" -eq 0 ]; then
+            echo "No AsyncAPI specs on this branch or on $BASE_REF; check not applicable (publishes-events: false)."
+            echo "dirs=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$base" ]; then
+            echo "::error::$BASE_REF is not available; the AsyncAPI breaking-change check needs it (actions/checkout fetch-depth: 0)."
+            exit 1
+          fi
+          if grep -q '[[:space:]]' asyncapi-specs.txt asyncapi-base-specs.txt; then
+            echo "::error::AsyncAPI spec paths must not contain whitespace"
+            exit 1
+          fi
+          # One breaking-change run per spec directory, including directories whose specs were all removed.
+          dirs="$(cat asyncapi-specs.txt asyncapi-base-specs.txt | xargs -r -n1 dirname | sort -u | tr '\n' ' ' | sed 's/ $//')"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "dirs=$dirs" >> "$GITHUB_OUTPUT"
+          echo "Spec directories: $dirs (baseline: $BASE_REF merge base $base)"
+
+      - name: AsyncAPI validate
+        if: ${{ steps.specs.outputs.count != '0' }}
+        env:
           ASYNCAPI_CLI_VERSION: ${{ inputs.asyncapi-cli-version }}
         run: |
           set -euo pipefail
-          read -r -a pathspecs <<< "$GLOBS"
-          mapfile -t specs < <(git ls-files -- "${pathspecs[@]}")
-          if [ "${#specs[@]}" -eq 0 ]; then
-            echo "No AsyncAPI specs; check not applicable."
-            exit 0
-          fi
+          mapfile -t specs < asyncapi-specs.txt
           for spec in "${specs[@]}"; do
             echo "[asyncapi] validating $spec"
             npx -y "@asyncapi/cli@${ASYNCAPI_CLI_VERSION}" validate "$spec"
           done
+
+      - name: Checkout AsyncAPI catalog rules (pinned commit)
+        if: ${{ steps.specs.outputs.dirs != '' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ inputs.asyncapi-catalog-repository }}
+          ref: ${{ inputs.asyncapi-catalog-ref }}
+          path: .fbx-asyncapi-catalog
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      - name: Install AsyncAPI catalog dependencies
+        if: ${{ steps.specs.outputs.dirs != '' }}
+        working-directory: .fbx-asyncapi-catalog
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: AsyncAPI breaking-change check (catalog asyncapi-breaking.mjs)
+        if: ${{ steps.specs.outputs.dirs != '' }}
+        env:
+          DIRS: ${{ steps.specs.outputs.dirs }}
+          BASE_SHA: ${{ steps.specs.outputs.base }}
+          CATALOG_DIR: ${{ github.workspace }}/.fbx-asyncapi-catalog
+        run: |
+          set -euo pipefail
+          script="$CATALOG_DIR/scripts/ci/asyncapi-breaking.mjs"
+          if [ ! -f "$script" ]; then
+            echo "::error::$script not found at the pinned catalog commit"
+            exit 1
+          fi
+          # The catalog script compares asyncapi/*.y*ml at the repository root with BASE_REF. Each spec directory
+          # is presented to it, unchanged, as asyncapi/ of a scratch repository whose main is the merge base.
+          fail=0
+          for dir in $DIRS; do
+            t="$(mktemp -d)"
+            g=(git -C "$t" -c user.name=asyncapi-gate -c user.email=asyncapi-gate@example.invalid -c commit.gpgsign=false)
+            "${g[@]}" init -q -b main
+            mkdir -p "$t/asyncapi"
+            if git cat-file -e "$BASE_SHA:$dir" 2>/dev/null; then
+              git archive --format=tar "$BASE_SHA:$dir" | tar -x -C "$t/asyncapi"
+            fi
+            "${g[@]}" add -A
+            "${g[@]}" commit -q --allow-empty -m "merge base of $BASE_REF"
+            rm -rf "$t/asyncapi"
+            mkdir -p "$t/asyncapi"
+            if git cat-file -e "HEAD:$dir" 2>/dev/null; then
+              git archive --format=tar "HEAD:$dir" | tar -x -C "$t/asyncapi"
+            fi
+            echo "[asyncapi-breaking] $dir (shown as asyncapi/) against $BASE_REF merge base ${BASE_SHA:0:12}"
+            if ! (cd "$t" && BASE_REF=main node "$script"); then
+              echo "::error::AsyncAPI breaking change in $dir against $BASE_REF. Publish a new major version on a new topic (.v2) with dual-publish, or list the finding keys in $dir/<spec-name>.accepted-breaking.txt with that plan (ADR-019 section 5)."
+              fail=1
+            fi
+            rm -rf "$t"
+          done
+          exit "$fail"
