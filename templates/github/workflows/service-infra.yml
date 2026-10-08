@@ -1,0 +1,64 @@
+name: service-infra
+
+# Sample caller for a service's deploy/terraform root (copy and adjust).
+# PRs: fmt/validate + plan per environment with the plan as a PR comment.
+# main: plan + apply, each environment gated by its GitHub environment.
+#
+# Repository variables: AWS_REGION, TF_PLAN_ROLE_ARN_DEV|STAGING|PROD,
+# TF_APPLY_ROLE_ARN_DEV|STAGING|PROD. Backend files
+# deploy/terraform/environments/<env>.backend.hcl must be committed (no secrets).
+
+on:
+  pull_request:
+    paths: ["deploy/terraform/**"]
+  push:
+    branches: [main]
+    paths: ["deploy/terraform/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  dev:
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/terraform.yml@main
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      environment: dev
+      aws-region: ${{ vars.AWS_REGION }}
+      aws-role-to-assume: ${{ vars.TF_PLAN_ROLE_ARN_DEV }}
+      apply-role-to-assume: ${{ vars.TF_APPLY_ROLE_ARN_DEV }}
+      apply: ${{ github.event_name == 'push' }}
+      comment-on-pr: true
+
+  staging:
+    needs: dev
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/terraform.yml@main
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      environment: staging
+      aws-region: ${{ vars.AWS_REGION }}
+      aws-role-to-assume: ${{ vars.TF_PLAN_ROLE_ARN_STAGING }}
+      apply-role-to-assume: ${{ vars.TF_APPLY_ROLE_ARN_STAGING }}
+      apply: ${{ github.event_name == 'push' }}
+      comment-on-pr: true
+
+  prod:
+    needs: staging
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/terraform.yml@main
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      environment: prod
+      aws-region: ${{ vars.AWS_REGION }}
+      aws-role-to-assume: ${{ vars.TF_PLAN_ROLE_ARN_PROD }}
+      apply-role-to-assume: ${{ vars.TF_APPLY_ROLE_ARN_PROD }}
+      apply: ${{ github.event_name == 'push' }}
+      comment-on-pr: true

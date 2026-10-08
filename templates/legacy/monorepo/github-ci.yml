@@ -1,3 +1,8 @@
+# LEGACY REFERENCE ONLY. Verbatim copy of the monorepo (enterprise-loan-management-system)
+# .github/workflows/ci.yml. It references monorepo-only paths (tools/validation*, services/*)
+# and is not a gate in any split repository. Use .github/workflows/*.yml (reusable
+# workflows) and templates/github/workflows/service-pipeline.yml instead.
+
 name: CI
 
 on:
