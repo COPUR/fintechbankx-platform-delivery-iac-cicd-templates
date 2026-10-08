@@ -13,12 +13,11 @@ name: contract-checks
 #             common/event-envelope.yaml live in subdirectories and are not
 #             specs). Each is validated with the pinned @asyncapi/cli, then the
 #             asyncapi catalog's scripts/ci/asyncapi-breaking.mjs, fetched at the
-#             40-hex commit asyncapi-catalog-ref, compares them with the merge
-#             base of origin/main (always main, also for stacked PRs). The
-#             catalog script reads asyncapi/ at a repository root, so the step
-#             "Stage specs for the catalog script" copies asyncapi-spec-dir at
-#             the merge base and at HEAD into that layout in a scratch
-#             repository; providers need no wrapper. A spec not on main yet is
+#             40-hex commit asyncapi-catalog-ref, runs unchanged in the checked-out
+#             repository with ASYNCAPI_DIR=asyncapi-spec-dir and
+#             BASE_REF=origin/main: it compares each spec with the merge base of
+#             origin/main (always main, also for stacked PRs), so providers need
+#             no wrapper. A spec not on main yet is
 #             skipped as new (first PR); removing a spec that is on main is a
 #             finding. Accepted findings: <spec-name>.accepted-breaking.txt in
 #             asyncapi-spec-dir, one finding key per line, only with a
@@ -63,10 +62,10 @@ on:
         default: COPUR/fintechbankx-governance-api-contracts-asyncapi-catalog
       asyncapi-catalog-ref:
         description: >-
-          40-hex commit of asyncapi-catalog-repository the breaking-change rules are taken from. Branches and tags are
-          rejected. Bump it in a reviewed PR of this repository when the catalog changes its rules.
+          40-hex commit of asyncapi-catalog-repository the breaking-change rules are taken from; its
+          asyncapi-breaking.mjs must support ASYNCAPI_DIR. Branches and tags are rejected. Bump it in a reviewed PR of this repository when the catalog changes its rules.
         type: string
-        default: e47c327eb7763232e986359225d733b9892f6b7b
+        default: b0e31eeef1fedff3344466f25c352ed93bd79eed
       base-ref:
         description: Baseline for the breaking-change diff. Empty = the PR base branch, else origin/main.
         type: string
@@ -319,41 +318,14 @@ jobs:
         working-directory: .fbx-asyncapi-catalog
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      # The catalog script reads asyncapi/*.y*ml at a repository root and the baseline from git (BASE_REF). This
-      # step builds that layout in a scratch repository: its main is asyncapi-spec-dir at the merge base of
-      # origin/main, its working tree is asyncapi-spec-dir at HEAD (common/ fragments and
-      # <spec-name>.accepted-breaking.txt included). If the catalog script gains a spec-directory variable, delete
-      # this step and run the script in the workspace with that variable and BASE_REF=origin/main.
-      - name: Stage specs for the catalog script
-        id: stage
-        if: ${{ steps.specs.outputs.breaking == 'true' }}
-        env:
-          SPEC_DIR: ${{ steps.specs.outputs.dir }}
-          BASE_SHA: ${{ steps.specs.outputs.base }}
-        run: |
-          set -euo pipefail
-          root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/asyncapi-stage.XXXXXX")"
-          g=(git -C "$root" -c user.name=asyncapi-gate -c user.email=asyncapi-gate@example.invalid -c commit.gpgsign=false)
-          "${g[@]}" init -q -b main
-          mkdir -p "$root/asyncapi"
-          if git cat-file -e "$BASE_SHA:$SPEC_DIR" 2>/dev/null; then
-            git archive --format=tar "$BASE_SHA:$SPEC_DIR" | tar -x -C "$root/asyncapi"
-          fi
-          "${g[@]}" add -A
-          "${g[@]}" commit -q --allow-empty -m "$SPEC_DIR at the merge base of $BASE_REF"
-          rm -rf "$root/asyncapi"
-          mkdir -p "$root/asyncapi"
-          if git cat-file -e "HEAD:$SPEC_DIR" 2>/dev/null; then
-            git archive --format=tar "HEAD:$SPEC_DIR" | tar -x -C "$root/asyncapi"
-          fi
-          echo "root=$root" >> "$GITHUB_OUTPUT"
-          echo "Staged $SPEC_DIR as asyncapi/ (main = $BASE_REF merge base ${BASE_SHA:0:12}, working tree = HEAD)"
-
+      # The catalog script, unchanged: it resolves the merge base of BASE_REF and HEAD itself, compares the
+      # top-level specs of ASYNCAPI_DIR there with the working tree, skips specs that are not at the base (first
+      # PR), reports a spec that is gone as removed-spec, applies ASYNCAPI_DIR/<spec-name>.accepted-breaking.txt
+      # and exits non-zero on any open finding or when BASE_REF is missing.
       - name: AsyncAPI breaking-change check (catalog asyncapi-breaking.mjs)
         if: ${{ steps.specs.outputs.breaking == 'true' }}
         env:
           SPEC_DIR: ${{ steps.specs.outputs.dir }}
-          STAGE_ROOT: ${{ steps.stage.outputs.root }}
           CATALOG_DIR: ${{ github.workspace }}/.fbx-asyncapi-catalog
         run: |
           set -euo pipefail
@@ -362,8 +334,13 @@ jobs:
             echo "::error::$script not found at the pinned catalog commit"
             exit 1
           fi
-          echo "[asyncapi-breaking] $SPEC_DIR (staged as asyncapi/) against $BASE_REF"
-          if ! (cd "$STAGE_ROOT" && BASE_REF=main node "$script"); then
-            echo "::error::AsyncAPI breaking change in $SPEC_DIR against $BASE_REF (paths above are shown as asyncapi/). Publish a new major version on a new topic (.v2) with dual-publish, or list the finding keys in $SPEC_DIR/<spec-name>.accepted-breaking.txt with that plan (ADR-019 section 5)."
+          # A catalog commit from before ASYNCAPI_DIR would only look at asyncapi/ and pass vacuously.
+          if ! grep -q 'ASYNCAPI_DIR' "$script"; then
+            echo "::error::the catalog script at asyncapi-catalog-ref does not support ASYNCAPI_DIR; pin a later commit"
+            exit 1
+          fi
+          echo "[asyncapi-breaking] $SPEC_DIR against $BASE_REF"
+          if ! ASYNCAPI_DIR="$SPEC_DIR" BASE_REF="$BASE_REF" node "$script"; then
+            echo "::error::AsyncAPI breaking change in $SPEC_DIR against $BASE_REF. Publish a new major version on a new topic (.v2) with dual-publish, or list the finding keys in $SPEC_DIR/<spec-name>.accepted-breaking.txt with that plan (ADR-019 section 5)."
             exit 1
           fi

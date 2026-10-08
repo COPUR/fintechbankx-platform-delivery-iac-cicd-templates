@@ -23,7 +23,7 @@ const step = (re) => {
   if (!s) throw new Error(`step ${re} not found in contracts/asyncapi`);
   return s;
 };
-const PINNED_CATALOG = "e47c327eb7763232e986359225d733b9892f6b7b";
+const PINNED_CATALOG = "b0e31eeef1fedff3344466f25c352ed93bd79eed";
 const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
 
 function runStep(s, env, { cwd, pathPrefix } = {}) {
@@ -114,7 +114,8 @@ const D = "api/asyncapi";
 const SPEC = `${D}/svc-cus-profile-kyc.yaml`;
 const ENV = `${D}/common/event-envelope.yaml`;
 
-// Stub catalog: records the scratch repository it is run in, fails when a head spec has "BREAK".
+// Stub catalog with the interface of asyncapi-breaking.mjs at the pinned commit (ASYNCAPI_DIR, BASE_REF, merge
+// base computed by the script): records what it was shown, fails when a head spec has "BREAK" or a base spec is gone.
 function stubCatalog() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-catalog-"));
   fs.mkdirSync(path.join(dir, "scripts", "ci"), { recursive: true });
@@ -124,12 +125,16 @@ function stubCatalog() {
     `import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 const sh = (a) => execFileSync('git', a, { encoding: 'utf8' }).trim();
-const baseFiles = sh(['ls-tree', '-r', '--name-only', process.env.BASE_REF]).split('\\n').filter(Boolean);
-const headFiles = fs.readdirSync('asyncapi', { recursive: true }).map((f) => 'asyncapi/' + f).filter((f) => fs.statSync(f).isFile()).sort();
-const baseSpec = baseFiles.includes('asyncapi/svc-cus-profile-kyc.yaml') ? sh(['show', process.env.BASE_REF + ':asyncapi/svc-cus-profile-kyc.yaml']) : null;
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ baseRef: process.env.BASE_REF, baseFiles, headFiles, baseSpec }) + '\\n');
-const broken = headFiles.filter((f) => /\\.ya?ml$/.test(f) && fs.readFileSync(f, 'utf8').includes('BREAK'));
-const removed = baseFiles.filter((f) => /^asyncapi\\/[^/]+\\.ya?ml$/.test(f) && !headFiles.includes(f));
+const dir = process.env.ASYNCAPI_DIR || 'asyncapi';
+const base = sh(['merge-base', process.env.BASE_REF, 'HEAD']);
+const baseFiles = sh(['ls-tree', '-r', '--name-only', base, '--', dir]).split('\\n').filter(Boolean);
+const headFiles = fs.existsSync(dir) ? fs.readdirSync(dir, { recursive: true }).map((f) => dir + '/' + f).filter((f) => fs.statSync(f).isFile()).sort() : [];
+const specPath = dir + '/svc-cus-profile-kyc.yaml';
+const baseSpec = baseFiles.includes(specPath) ? sh(['show', base + ':' + specPath]) : null;
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ cwd: process.cwd(), dir, baseRef: process.env.BASE_REF, base, baseFiles, headFiles, baseSpec }) + '\\n');
+const isSpec = (f) => f.startsWith(dir + '/') && /^[^/]+\\.ya?ml$/.test(f.slice(dir.length + 1));
+const broken = headFiles.filter((f) => isSpec(f) && fs.readFileSync(f, 'utf8').includes('BREAK'));
+const removed = baseFiles.filter((f) => isSpec(f) && !headFiles.includes(f));
 if (broken.length || removed.length) { console.error('BREAKING ' + broken.concat(removed).join(' ')); process.exit(1); }
 console.log('asyncapi breaking check passed');
 `,
@@ -146,13 +151,10 @@ function stubNpx(exitCode = 0) {
 
 const find = (svc, env = {}) =>
   runStep(step(/^Find AsyncAPI specs/), { SPEC_DIR: inputs()["asyncapi-spec-dir"].default, LEGACY_GLOBS: "", PUBLISHES_EVENTS: "false", ...env }, { cwd: svc.work });
-// Stage step, then the catalog step, as the job runs them.
+// The catalog step runs in the checked-out service repository, as the job runs it.
 function breaking(svc, found, catalog) {
   assert.equal(found.outputs.breaking, "true", found.log);
-  const staged = runStep(step(/^Stage specs for the catalog script/), { SPEC_DIR: found.outputs.dir, BASE_SHA: found.outputs.base }, { cwd: svc.work });
-  assert.equal(staged.status, 0, staged.log);
-  const r = runStep(step(/^AsyncAPI breaking-change check/), { SPEC_DIR: found.outputs.dir, STAGE_ROOT: staged.outputs.root, CATALOG_DIR: catalog.dir }, { cwd: svc.work });
-  return { ...r, staged };
+  return runStep(step(/^AsyncAPI breaking-change check/), { SPEC_DIR: found.outputs.dir, CATALOG_DIR: catalog.dir }, { cwd: svc.work });
 }
 
 // --- 1. workflow shape ------------------------------------------------------------------------
@@ -187,7 +189,7 @@ test("contracts/asyncapi: full history, pinned actions, catalog fetched at the i
   assert.equal(j.env.BASE_REF, "origin/main", "ADR-019: always compared with origin/main");
   const names = j.steps.map((s) => s.name);
   const at = (re) => names.findIndex((n) => re.test(n));
-  const order = [/^Pinned tool versions/, /^Checkout$/, /^Find AsyncAPI specs/, /^AsyncAPI validate/, /^Checkout AsyncAPI catalog/, /^Install AsyncAPI catalog/, /^Stage specs for the catalog script/, /^AsyncAPI breaking-change check/].map(at);
+  const order = [/^Pinned tool versions/, /^Checkout$/, /^Find AsyncAPI specs/, /^AsyncAPI validate/, /^Checkout AsyncAPI catalog/, /^Install AsyncAPI catalog/, /^AsyncAPI breaking-change check/].map(at);
   assert.ok(order.every((x, k) => x >= 0 && (k === 0 || x > order[k - 1])), `step order: ${names.join(" | ")}`);
   for (const s of [step(/^AsyncAPI validate/), step(/^AsyncAPI breaking-change check/)]) {
     assert.equal(s["continue-on-error"], undefined, `${s.name} must fail the job`);
@@ -283,7 +285,7 @@ test("specs on the branch but origin/main unavailable: fails closed", () => {
 
 // --- 3. breaking check: what the catalog script is shown -------------------------------------
 
-test("breaking check shows the catalog script the merge base as main and the branch as asyncapi/", () => {
+test("breaking check runs the catalog script in the checkout with ASYNCAPI_DIR and BASE_REF=origin/main", () => {
   const svc = serviceRepo({
     main: { [SPEC]: spec(), [ENV]: envelope },
     branch: { [SPEC]: spec({ customerId: { type: "string" }, segment: { type: "string" }, tier: { type: "string" } }), [`${D}/svc-cus-profile-kyc.accepted-breaking.txt`]: "# none\n" },
@@ -293,12 +295,14 @@ test("breaking check shows the catalog script the merge base as main and the bra
   const b = breaking(svc, r, catalog);
   assert.equal(b.status, 0, b.log);
   const [seen] = catalog.seen();
-  assert.equal(seen.baseRef, "main");
-  assert.deepEqual(seen.baseFiles, ["asyncapi/common/event-envelope.yaml", "asyncapi/svc-cus-profile-kyc.yaml"]);
-  assert.deepEqual(seen.headFiles, ["asyncapi/common/event-envelope.yaml", "asyncapi/svc-cus-profile-kyc.accepted-breaking.txt", "asyncapi/svc-cus-profile-kyc.yaml"]);
+  assert.equal(fs.realpathSync(seen.cwd), fs.realpathSync(svc.work), "runs in the checked-out repository, no staging copy");
+  assert.equal(seen.dir, D, "ASYNCAPI_DIR = asyncapi-spec-dir");
+  assert.equal(seen.baseRef, "origin/main");
+  assert.equal(seen.base, svc.git("merge-base", "origin/main", "HEAD"));
+  assert.deepEqual(seen.baseFiles, [ENV, SPEC]);
+  assert.deepEqual(seen.headFiles, [ENV, `${D}/svc-cus-profile-kyc.accepted-breaking.txt`, SPEC]);
   assert.doesNotMatch(seen.baseSpec, /tier/, "baseline is origin/main, not the branch");
-  assert.match(b.log, /api\/asyncapi \(staged as asyncapi\/\) against origin\/main/);
-  assert.match(b.staged.log, /Staged api\/asyncapi as asyncapi\//);
+  assert.match(b.log, /\[asyncapi-breaking\] api\/asyncapi against origin\/main/);
 });
 
 test("first PR: a spec that is not on origin/main is compared with an empty baseline", () => {
@@ -325,19 +329,26 @@ test("a finding fails the step; specs outside asyncapi-spec-dir are not the prov
   assert.match(b.log, /::error::AsyncAPI breaking change in api\/asyncapi against origin\/main/);
 });
 
-test("missing catalog script fails closed", () => {
+test("missing catalog script, or one without ASYNCAPI_DIR support, fails closed", () => {
   const svc = serviceRepo({ main: { [SPEC]: spec(), [ENV]: envelope } });
   const r = find(svc);
-  const b = breaking(svc, r, { dir: fs.mkdtempSync(path.join(os.tmpdir(), "fbx-empty-")) });
+  let b = breaking(svc, r, { dir: fs.mkdtempSync(path.join(os.tmpdir(), "fbx-empty-")) });
   assert.notEqual(b.status, 0);
   assert.match(b.log, /not found at the pinned catalog commit/);
+  // A catalog commit from before ASYNCAPI_DIR would check asyncapi/ only and pass vacuously for api/asyncapi.
+  const old = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-old-catalog-"));
+  fs.mkdirSync(path.join(old, "scripts", "ci"), { recursive: true });
+  fs.writeFileSync(path.join(old, "scripts", "ci", "asyncapi-breaking.mjs"), "console.log('asyncapi breaking check passed');\n");
+  b = breaking(svc, r, { dir: old });
+  assert.notEqual(b.status, 0);
+  assert.match(b.log, /does not support ASYNCAPI_DIR/);
 });
 
 // --- 4. optional: the real catalog rules -------------------------------------------------------
 
 const realCatalog = process.env.FBX_ASYNCAPI_CATALOG_DIR;
 test(
-  "real catalog asyncapi-breaking.mjs: removed property fails, an accepted-breaking entry passes",
+  "real catalog asyncapi-breaking.mjs: removed property and removed spec fail, waiver, additive change and first PR pass",
   { skip: realCatalog ? false : "set FBX_ASYNCAPI_CATALOG_DIR to a catalog checkout with npm ci done" },
   () => {
     const catalog = { dir: realCatalog };
@@ -345,7 +356,7 @@ test(
     let svc = serviceRepo({ main: { [SPEC]: spec(), [ENV]: envelope }, branch: { [SPEC]: changed } });
     let b = breaking(svc, find(svc), catalog);
     assert.notEqual(b.status, 0, b.log);
-    assert.match(b.log, /BREAKING asyncapi\/svc-cus-profile-kyc\.yaml: removed-property evt\.cus\.customer\.created\.v1 CustomerCreated \$\.data\.segment/);
+    assert.match(b.log, /BREAKING api\/asyncapi\/svc-cus-profile-kyc\.yaml: removed-property evt\.cus\.customer\.created\.v1 CustomerCreated \$\.data\.segment/);
     svc = serviceRepo({
       main: { [SPEC]: spec(), [ENV]: envelope },
       branch: { [SPEC]: changed, [`${D}/svc-cus-profile-kyc.accepted-breaking.txt`]: "removed-property evt.cus.customer.created.v1 CustomerCreated $.data.segment # v2 plan\n" },
@@ -355,5 +366,13 @@ test(
     svc = serviceRepo({ main: { [SPEC]: spec(), [ENV]: envelope }, branch: { [SPEC]: spec({ customerId: { type: "string" }, segment: { type: "string" }, tier: { type: "string" } }) } });
     b = breaking(svc, find(svc), catalog);
     assert.equal(b.status, 0, `an optional field is additive: ${b.log}`);
+    svc = serviceRepo({ branch: { [SPEC]: spec(), [ENV]: envelope } });
+    b = breaking(svc, find(svc, { PUBLISHES_EVENTS: "true" }), catalog);
+    assert.equal(b.status, 0, b.log);
+    assert.match(b.log, /skip api\/asyncapi\/svc-cus-profile-kyc\.yaml: new file/, "first PR");
+    svc = serviceRepo({ main: { [SPEC]: spec(), [ENV]: envelope }, branch: { [SPEC]: null } });
+    b = breaking(svc, find(svc), catalog);
+    assert.notEqual(b.status, 0);
+    assert.match(b.log, /BREAKING api\/asyncapi\/svc-cus-profile-kyc\.yaml: removed-spec/);
   },
 );
