@@ -145,9 +145,15 @@ function stubNpx(exitCode = 0) {
 }
 
 const find = (svc, env = {}) =>
-  runStep(step(/^Find AsyncAPI specs/), { GLOBS: inputs()["asyncapi-globs"].default, PUBLISHES_EVENTS: "false", ...env }, { cwd: svc.work });
-const breaking = (svc, found, catalog) =>
-  runStep(step(/^AsyncAPI breaking-change check/), { DIRS: found.outputs.dirs, BASE_SHA: found.outputs.base, CATALOG_DIR: catalog.dir }, { cwd: svc.work });
+  runStep(step(/^Find AsyncAPI specs/), { SPEC_DIR: inputs()["asyncapi-spec-dir"].default, LEGACY_GLOBS: "", PUBLISHES_EVENTS: "false", ...env }, { cwd: svc.work });
+// Stage step, then the catalog step, as the job runs them.
+function breaking(svc, found, catalog) {
+  assert.equal(found.outputs.breaking, "true", found.log);
+  const staged = runStep(step(/^Stage specs for the catalog script/), { SPEC_DIR: found.outputs.dir, BASE_SHA: found.outputs.base }, { cwd: svc.work });
+  assert.equal(staged.status, 0, staged.log);
+  const r = runStep(step(/^AsyncAPI breaking-change check/), { SPEC_DIR: found.outputs.dir, STAGE_ROOT: staged.outputs.root, CATALOG_DIR: catalog.dir }, { cwd: svc.work });
+  return { ...r, staged };
+}
 
 // --- 1. workflow shape ------------------------------------------------------------------------
 
@@ -159,7 +165,8 @@ test("contract-checks exposes the provider AsyncAPI gate inputs with pinned defa
   assert.equal(i["asyncapi-catalog-repository"].default, "COPUR/fintechbankx-governance-api-contracts-asyncapi-catalog");
   assert.equal(i["asyncapi-catalog-ref"].default, PINNED_CATALOG);
   assert.match(i["asyncapi-cli-version"].default, /^\d+\.\d+\.\d+$/);
-  for (const p of i["asyncapi-globs"].default.split(" ")) assert.match(p, /^:\(glob\)/, `${p} must not cross directories`);
+  assert.equal(i["asyncapi-spec-dir"].default, "api/asyncapi", "provider repos keep their spec under api/asyncapi");
+  assert.equal(i["asyncapi-globs"].default, "", "legacy input, replaced by asyncapi-spec-dir");
 });
 
 test("contracts/asyncapi: full history, pinned actions, catalog fetched at the input commit, steps in order", () => {
@@ -180,7 +187,7 @@ test("contracts/asyncapi: full history, pinned actions, catalog fetched at the i
   assert.equal(j.env.BASE_REF, "origin/main", "ADR-019: always compared with origin/main");
   const names = j.steps.map((s) => s.name);
   const at = (re) => names.findIndex((n) => re.test(n));
-  const order = [/^Pinned tool versions/, /^Checkout$/, /^Find AsyncAPI specs/, /^AsyncAPI validate/, /^Checkout AsyncAPI catalog/, /^Install AsyncAPI catalog/, /^AsyncAPI breaking-change check/].map(at);
+  const order = [/^Pinned tool versions/, /^Checkout$/, /^Find AsyncAPI specs/, /^AsyncAPI validate/, /^Checkout AsyncAPI catalog/, /^Install AsyncAPI catalog/, /^Stage specs for the catalog script/, /^AsyncAPI breaking-change check/].map(at);
   assert.ok(order.every((x, k) => x >= 0 && (k === 0 || x > order[k - 1])), `step order: ${names.join(" | ")}`);
   for (const s of [step(/^AsyncAPI validate/), step(/^AsyncAPI breaking-change check/)]) {
     assert.equal(s["continue-on-error"], undefined, `${s.name} must fail the job`);
@@ -208,7 +215,7 @@ test("no AsyncAPI spec: not applicable by default, an error when the repository 
   let r = find(svc);
   assert.equal(r.status, 0, r.log);
   assert.equal(r.outputs.count, "0");
-  assert.equal(r.outputs.dirs, "");
+  assert.equal(r.outputs.breaking, "false");
   assert.match(r.log, /not applicable/);
   r = find(svc, { PUBLISHES_EVENTS: "true" });
   assert.notEqual(r.status, 0);
@@ -220,7 +227,8 @@ test("only top-level specs are specs; shared fragments in subdirectories are not
   const r = find(svc, { PUBLISHES_EVENTS: "true" });
   assert.equal(r.status, 0, r.log);
   assert.equal(fs.readFileSync(path.join(svc.work, "asyncapi-specs.txt"), "utf8"), `${SPEC}\n`);
-  assert.equal(r.outputs.dirs, D);
+  assert.equal(r.outputs.dir, D);
+  assert.equal(r.outputs.breaking, "true");
   assert.equal(r.outputs.base, svc.git("rev-parse", "origin/main"));
   const npx = stubNpx(0);
   const v = runStep(step(/^AsyncAPI validate/), { ASYNCAPI_CLI_VERSION: "2.13.0" }, { cwd: svc.work, pathPrefix: npx.bin });
@@ -230,11 +238,27 @@ test("only top-level specs are specs; shared fragments in subdirectories are not
   assert.notEqual(bad.status, 0, "an invalid spec fails the job");
 });
 
-test("caller globs without pathspec magic are read as :(glob)", () => {
-  const svc = serviceRepo({ main: { [SPEC]: spec(), [ENV]: envelope } });
-  const r = find(svc, { GLOBS: "api/asyncapi/*.yaml" });
+test("asyncapi-spec-dir selects the directory; catalog-style asyncapi/ works with asyncapi-spec-dir: asyncapi", () => {
+  const svc = serviceRepo({ main: { "asyncapi/svc-x.yaml": spec(), "asyncapi/common/event-envelope.yaml": envelope } });
+  let r = find(svc, { PUBLISHES_EVENTS: "true" });
+  assert.notEqual(r.status, 0, "default api/asyncapi has no spec here");
+  assert.match(r.log, /set asyncapi-spec-dir/);
+  r = find(svc, { SPEC_DIR: "asyncapi/", PUBLISHES_EVENTS: "true" });
   assert.equal(r.status, 0, r.log);
-  assert.equal(fs.readFileSync(path.join(svc.work, "asyncapi-specs.txt"), "utf8"), `${SPEC}\n`);
+  assert.equal(r.outputs.dir, "asyncapi");
+  assert.equal(fs.readFileSync(path.join(svc.work, "asyncapi-specs.txt"), "utf8"), "asyncapi/svc-x.yaml\n");
+});
+
+test("asyncapi-spec-dir must be repository-relative; the legacy asyncapi-globs input fails loudly", () => {
+  const svc = serviceRepo({ main: { [SPEC]: spec(), [ENV]: envelope } });
+  for (const bad of ["", "/abs/asyncapi", "../asyncapi", "api/../x", ".", "api asyncapi"]) {
+    const r = find(svc, { SPEC_DIR: bad });
+    assert.notEqual(r.status, 0, `asyncapi-spec-dir '${bad}' must be rejected`);
+    assert.match(r.log, /asyncapi-spec-dir must be/);
+  }
+  const r = find(svc, { LEGACY_GLOBS: "api/asyncapi/*.yaml" });
+  assert.notEqual(r.status, 0);
+  assert.match(r.log, /asyncapi-globs is replaced by asyncapi-spec-dir/);
 });
 
 test("removing every spec that is on origin/main still runs the breaking check (no bypass)", () => {
@@ -242,7 +266,7 @@ test("removing every spec that is on origin/main still runs the breaking check (
   const r = find(svc);
   assert.equal(r.status, 0, r.log);
   assert.equal(r.outputs.count, "0");
-  assert.equal(r.outputs.dirs, D);
+  assert.equal(r.outputs.breaking, "true");
   const catalog = stubCatalog();
   const b = breaking(svc, r, catalog);
   assert.notEqual(b.status, 0, "removed-spec fails");
@@ -273,7 +297,8 @@ test("breaking check shows the catalog script the merge base as main and the bra
   assert.deepEqual(seen.baseFiles, ["asyncapi/common/event-envelope.yaml", "asyncapi/svc-cus-profile-kyc.yaml"]);
   assert.deepEqual(seen.headFiles, ["asyncapi/common/event-envelope.yaml", "asyncapi/svc-cus-profile-kyc.accepted-breaking.txt", "asyncapi/svc-cus-profile-kyc.yaml"]);
   assert.doesNotMatch(seen.baseSpec, /tier/, "baseline is origin/main, not the branch");
-  assert.match(b.log, /api\/asyncapi \(shown as asyncapi\/\) against origin\/main/);
+  assert.match(b.log, /api\/asyncapi \(staged as asyncapi\/\) against origin\/main/);
+  assert.match(b.staged.log, /Staged api\/asyncapi as asyncapi\//);
 });
 
 test("first PR: a spec that is not on origin/main is compared with an empty baseline", () => {
@@ -286,20 +311,18 @@ test("first PR: a spec that is not on origin/main is compared with an empty base
   assert.deepEqual(catalog.seen()[0].baseFiles, []);
 });
 
-test("a finding fails the step, and every spec directory is still checked", () => {
-  const other = "asyncapi/svc-other.yaml";
+test("a finding fails the step; specs outside asyncapi-spec-dir are not the provider's contract", () => {
   const svc = serviceRepo({
-    main: { [SPEC]: spec(), [ENV]: envelope, [other]: spec() },
-    branch: { [SPEC]: `# BREAK\n${YAML.stringify(spec({ customerId: { type: "string" } }))}` },
+    main: { [SPEC]: spec(), [ENV]: envelope, "asyncapi/svc-other.yaml": spec() },
+    branch: { [SPEC]: `# BREAK\n${YAML.stringify(spec({ customerId: { type: "string" } }))}`, "asyncapi/svc-other.yaml": null },
   });
   const r = find(svc);
-  assert.equal(r.outputs.dirs, `${D} asyncapi`.split(" ").sort().join(" "));
+  assert.equal(fs.readFileSync(path.join(svc.work, "asyncapi-base-specs.txt"), "utf8"), `${SPEC}\n`);
   const catalog = stubCatalog();
   const b = breaking(svc, r, catalog);
   assert.notEqual(b.status, 0);
-  assert.equal(catalog.seen().length, 2, "both directories checked");
-  assert.match(b.log, /::error::AsyncAPI breaking change in api\/asyncapi/);
-  assert.doesNotMatch(b.log, /::error::AsyncAPI breaking change in asyncapi /);
+  assert.equal(catalog.seen().length, 1);
+  assert.match(b.log, /::error::AsyncAPI breaking change in api\/asyncapi against origin\/main/);
 });
 
 test("missing catalog script fails closed", () => {
