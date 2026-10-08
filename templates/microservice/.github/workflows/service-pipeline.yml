@@ -53,7 +53,9 @@ jobs:
       postgres-enabled: true
       postgres-db: db_ex_example_test
       postgres-user: example_test
-      archunit-base-packages: com.fintechbankx.example.capability
+      # Rule 5: the repository's one package root; replace with yours
+      # (com.bank.<context>, com.enterprise.openfinance.<capability> or com.fintechbankx.<context>.<capability>).
+      package-root: com.fintechbankx.example.capability
       archunit-layout: single-module
 
   tdd:

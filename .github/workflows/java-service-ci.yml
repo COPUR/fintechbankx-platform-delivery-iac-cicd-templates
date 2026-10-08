@@ -20,7 +20,8 @@ name: java-service-ci
 #   - No Map<String,Object> in any *Controller.java under any module's src/main/java.
 #   - ArchUnit gate (ADR-028): the four hexagonal rules from this repository's
 #     tools/archunit-gate run against the service's compiled main classes after
-#     `check`, regardless of the ArchUnit tests the service repo has itself.
+#     `check`, regardless of the ArchUnit tests the service repo has itself, plus
+#     rule 5 (one package root per repository). Set package-root to the repo's root.
 #   - Test and coverage reports uploaded as an artifact.
 # The `.ci/allow-gradle-fail` marker is deliberately NOT honoured here.
 
@@ -79,10 +80,19 @@ on:
         description: Fail when a *Controller.java uses Map<String,Object>.
         type: boolean
         default: true
+      package-root:
+        description: >-
+          The repository's one package root (rule 5, FINTECHBANKX_SERVICE_GUARDRAILS.md section 2): com.bank.<context>,
+          com.enterprise.openfinance.<capability> or com.fintechbankx.<context>.<capability>. When set, rules 1-4 run
+          on this root only and every compiled main class outside it (shared kernel com.bank.shared.kernel excepted)
+          and every other package owning a .domain package fails rule 5. Empty = rule 5 fails only when the classes
+          hold more than one root.
+        type: string
+        default: ""
       archunit-base-packages:
         description: >-
           Space separated package roots (e.g. com.bank.loan or com.enterprise.openfinance.consent).
-          Empty = every package that owns a .domain sub-package.
+          Empty = every package that owns a .domain sub-package. With package-root set, leave empty or equal to it.
         type: string
         default: ""
       archunit-layout:
@@ -222,6 +232,7 @@ jobs:
       - name: ArchUnit gate (ADR-028 hexagonal rules)
         env:
           ROOTS: ${{ inputs.archunit-base-packages }}
+          PACKAGE_ROOT: ${{ inputs.package-root }}
           LAYOUT: ${{ inputs.archunit-layout }}
           REPORT_ONLY: ${{ inputs.archunit-report-only }}
           GATE_DIR: ${{ github.workspace }}/.fbx-platform/tools/archunit-gate
@@ -238,6 +249,7 @@ jobs:
           while IFS= read -r dir; do args+=(--classes "$dir"); done \
             < <(find . -path ./.fbx-platform -prune -o -type d -path "$pattern" -print | sort)
           for root in $ROOTS; do args+=(--root "$root"); done
+          if [ -n "$PACKAGE_ROOT" ]; then args+=(--package-root "$PACKAGE_ROOT"); fi
           set +e
           "$GATE_DIR/build/install/archunit-gate/bin/archunit-gate" "${args[@]}"
           code=$?

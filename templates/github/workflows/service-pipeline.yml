@@ -53,7 +53,9 @@ jobs:
       postgres-enabled: true
       postgres-db: db_ln_loan_lifecycle_test
       postgres-user: loan_test
-      archunit-base-packages: com.bank.loan
+      # Rule 5: the repository's one package root; replace with yours
+      # (com.bank.<context>, com.enterprise.openfinance.<capability> or com.fintechbankx.<context>.<capability>).
+      package-root: com.bank.loan
       archunit-layout: multi-module
 
   tdd:

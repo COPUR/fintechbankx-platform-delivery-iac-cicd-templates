@@ -28,7 +28,7 @@ credentials are pinned to commit SHAs (checked by
 | Capability | Path | How a service uses it |
 |---|---|---|
 | Java 23 CI (gradle `check` with jacoco gate, optional PostgreSQL + `TEST_DB_URL`, controller guardrail) | [.github/workflows/java-service-ci.yml](.github/workflows/java-service-ci.yml) | `uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/java-service-ci.yml@<release-sha>` |
-| ArchUnit gate (ADR-028: the four hexagonal rules on the service's compiled classes, both package layouts) | [tools/archunit-gate](tools/archunit-gate/README.md) | runs inside `java-service-ci.yml` after `check` |
+| ArchUnit gate (ADR-028: the four hexagonal rules on the service's compiled classes, both package layouts, plus rule 5: one package root per repository) | [tools/archunit-gate](tools/archunit-gate/README.md) | runs inside `java-service-ci.yml` after `check`; set `package-root` |
 | TDD gate (ADR-029: `src/main` changes need `src/test` changes, opt-out label `no-behaviour-change`) | [.github/workflows/tdd-gate.yml](.github/workflows/tdd-gate.yml) | PR gate |
 | Ephemeral environment (compose runtime + service images + optional monolith image or build, parity test actors, SQL fixtures, seed and test commands, always torn down) | [.github/workflows/ephemeral-env.yml](.github/workflows/ephemeral-env.yml) | regression / parity runs |
 | Shared local runtime (PostgreSQL per service, KRaft Kafka, Keycloak realm, OTel, service and monolith profiles) | [compose](compose/README.md) | `compose/fbx-local.sh up <profiles>` |

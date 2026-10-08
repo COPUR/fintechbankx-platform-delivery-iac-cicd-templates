@@ -32,7 +32,7 @@ jobs:
       contents: read
     with:
       platform-ref: v1.0.0
-    #   archunit-base-packages: com.bank.<context>   # or com.enterprise.openfinance.<capability>
+    #   package-root: com.bank.<context>   # rule 5, or com.enterprise.openfinance.<capability> / com.fintechbankx.<context>.<capability>
     #   postgres-enabled: true
     #   postgres-db: db_<ctx>_<cap>_test
 

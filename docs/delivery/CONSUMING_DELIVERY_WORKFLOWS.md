@@ -72,14 +72,24 @@ Pinning (supply chain):
   protection needs no change.
 - `java-service-ci` ArchUnit gate (ADR-028): always runs after `check` using
   `tools/archunit-gate` from this repository at `platform-ref`. Set
-  `archunit-base-packages` (e.g. `com.bank.loan`, `com.enterprise.openfinance.consent`;
-  empty = every package owning a `.domain` package) and `archunit-layout`
+  `package-root` to the repository's one package root (`com.bank.<context>`,
+  `com.enterprise.openfinance.<capability>`, new repositories
+  `com.fintechbankx.<context>.<capability>`) and `archunit-layout`
   (`multi-module`, `single-module` or `auto`). The four rules: domain free of
   application, infrastructure, Spring, JPA, Kafka and Mongo; application free of
   infrastructure; controllers and listeners use `domain.port.in`, not
   application implementations; `domain.port.out` implementations live in
-  infrastructure. `archunit-report-only: true` is a visible, temporary escape
-  hatch for repositories still fixing their conformance row.
+  infrastructure. Rule 5, one package root per repository (guardrails section
+  2): with `package-root` set, rules 1-4 run on that root only and every
+  compiled main class outside it, and every other package owning a `.domain`
+  package (also one nested under the root), fails rule 5 by name; the shared
+  kernel `com.bank.shared.kernel` is allowed. Without `package-root`, rule 5
+  fails when more than one root is found and asks for `package-root`, so
+  single-root repositories need no configuration. `archunit-base-packages`
+  (space separated, empty = every package owning a `.domain` package) only
+  matters without `package-root`; with it, leave it empty or equal.
+  `archunit-report-only: true` is a visible, temporary escape hatch (all five
+  rules) for repositories still fixing their conformance row.
 - `tdd-gate` (ADR-029): a PR that changes `src/main/**` without any
   `src/test/**` change fails unless labelled exactly `no-behaviour-change`.
   Trigger the caller on `pull_request` types `labeled` and `unlabeled` too.
