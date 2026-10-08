@@ -43,6 +43,20 @@ OIDC (image push/sign, deploy, plan, apply).
   `test` only with a recorded reason; `.ci/allow-gradle-fail` is ignored.
   `postgres-enabled: true` exports `TEST_DB_URL`, `TEST_DB_USERNAME`,
   `TEST_DB_PASSWORD` for a job-scoped container (throwaway credential = role name).
+  `mongo-enabled: true` starts MongoDB (`mongo-image`, default `mongo:5.0`
+  for the DocumentDB 5.0 API) and exports `TEST_MONGO_URI`
+  (`mongodb://localhost:27017/<mongo-db>`, no auth, job-scoped).
+- Required status checks: branch protection on the service repositories
+  requires `ci/build`, `ci/test` and `ci/security`. A check from a reusable
+  workflow is always named `<caller job> / <called job>`, so it can never carry
+  those names. The sample callers
+  ([java23-quality-gates.yml](../../templates/ci/github/workflows/java23-quality-gates.yml),
+  [service-pipeline.yml](../../templates/microservice/.github/workflows/service-pipeline.yml))
+  end with three local jobs named exactly `ci/build` (needs `ci`), `ci/test`
+  (needs `ci`, `tdd`, `contracts` and, in the pipeline, `migrations`) and
+  `ci/security` (needs `security`). Each passes only when every job it needs
+  succeeded or was skipped. Keep them when adopting a caller and branch
+  protection needs no change.
 - `java-service-ci` ArchUnit gate (ADR-028): always runs after `check` using
   `tools/archunit-gate` from this repository at `platform-ref`. Set
   `archunit-base-packages` (e.g. `com.bank.loan`, `com.enterprise.openfinance.consent`;

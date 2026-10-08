@@ -73,6 +73,53 @@ jobs:
     with:
       run-codeql: true
 
+  # Required status checks. Checks from a reusable workflow are named
+  # "<caller job> / <called job>", so they can never match branch protection's
+  # ci/build, ci/test and ci/security. These three local jobs carry exactly those
+  # names and pass only when the gates behind them passed (skipped is fine, e.g.
+  # the tdd gate on push), so branch protection stays unchanged.
+  required-build:
+    name: ci/build
+    if: ${{ always() }}
+    needs: [ci]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: ci (check + ArchUnit gate) passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do case "$r" in success|skipped) ;; *) exit 1 ;; esac; done
+
+  required-test:
+    name: ci/test
+    if: ${{ always() }}
+    needs: [ci, tdd, contracts, migrations]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: tests, tdd gate and contract checks passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do case "$r" in success|skipped) ;; *) exit 1 ;; esac; done
+
+  required-security:
+    name: ci/security
+    if: ${{ always() }}
+    needs: [security]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: security gates passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do case "$r" in success|skipped) ;; *) exit 1 ;; esac; done
+
   image:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: [ci, contracts, migrations, security]

@@ -16,6 +16,7 @@ name: java-service-ci
 #   - `gradle assemble -x test`, then `gradle check` so jacocoTestCoverageVerification is a gate.
 #     Set gradle-tasks: test only for repos without a coverage gate yet (documented debt).
 #   - Optional PostgreSQL service container exported as TEST_DB_URL / TEST_DB_USERNAME / TEST_DB_PASSWORD.
+#   - Optional MongoDB service container (DocumentDB read models) exported as TEST_MONGO_URI.
 #   - No Map<String,Object> in any *Controller.java under any module's src/main/java.
 #   - ArchUnit gate (ADR-028): the four hexagonal rules from this repository's
 #     tools/archunit-gate run against the service's compiled main classes after
@@ -60,6 +61,18 @@ on:
         default: app_test
       postgres-user:
         description: Test database role. The throwaway credential equals the role name; the container only lives for this job.
+        type: string
+        default: app_test
+      mongo-enabled:
+        description: Start a MongoDB service container and export TEST_MONGO_URI (services with DocumentDB read models).
+        type: boolean
+        default: false
+      mongo-image:
+        description: MongoDB image for the service container. 5.0 matches the DocumentDB 5.0 API.
+        type: string
+        default: mongo:5.0
+      mongo-db:
+        description: Test database name in TEST_MONGO_URI.
         type: string
         default: app_test
       controller-map-guardrail:
@@ -125,10 +138,21 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
+      mongo:
+        # An empty image skips the service container. No auth: the container only lives for this job.
+        image: ${{ inputs.mongo-enabled && inputs.mongo-image || '' }}
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongo --quiet --eval 'db.runCommand({ ping: 1 }).ok' || mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     env:
       TEST_DB_URL: ${{ inputs.postgres-enabled && format('jdbc:postgresql://localhost:5432/{0}', inputs.postgres-db) || '' }}
       TEST_DB_USERNAME: ${{ inputs.postgres-enabled && inputs.postgres-user || '' }}
       TEST_DB_PASSWORD: ${{ inputs.postgres-enabled && inputs.postgres-user || '' }}
+      TEST_MONGO_URI: ${{ inputs.mongo-enabled && format('mongodb://localhost:27017/{0}', inputs.mongo-db) || '' }}
     defaults:
       run:
         shell: bash
