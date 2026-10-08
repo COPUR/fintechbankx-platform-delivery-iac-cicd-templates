@@ -53,3 +53,13 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "externalSecret.secretStoreRef.kind"
+  - it: rejects an extraData remote secret name outside <env>/<service>/...
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: ANY
+          remoteSecretName: shared-platform-secret
+          property: value
+    asserts:
+      - failedTemplate:
+          errorPattern: "remoteSecretName: Does not match pattern"

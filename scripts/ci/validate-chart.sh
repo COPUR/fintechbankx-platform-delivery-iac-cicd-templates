@@ -56,6 +56,10 @@ must_fail "PDB minAvailable >= replicas" --set podDisruptionBudget.minAvailable=
 must_fail "sidecar injection disabled" --set istio.inject=false
 must_fail "excludeInboundPorts annotation" --set-string 'podAnnotations.traffic\.sidecar\.istio\.io/excludeInboundPorts=8081'
 must_fail "missing serviceId" --set-string serviceId=
+must_fail "extraData secret of another service" \
+  --set 'externalSecret.extraData[0].secretKey=X' \
+  --set-string 'externalSecret.extraData[0].remoteSecretName=dev/other-service/oidc-client' \
+  --set-string 'externalSecret.extraData[0].property=client_secret'
 if "$helm" lint "$chart" >/dev/null 2>&1; then
   echo "expected bare values.yaml to fail lint (required identity values)"; exit 1
 fi

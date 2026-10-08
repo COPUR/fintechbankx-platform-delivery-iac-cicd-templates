@@ -108,7 +108,9 @@ externalSecret:
   data:
     - secretKey: SPRING_DATASOURCE_PASSWORD
       property: password
-  # Additional remote secrets, e.g. the Keycloak client credential
+  # Additional keys from this service's own secrets only: remoteSecretName must
+  # start with <environment>/<serviceName>/ (template fails otherwise), e.g. the
+  # Keycloak client credential
   # <env>/<service-slug>/oidc-client.
   extraData: []
   #  - secretKey: OIDC_CLIENT_SECRET
