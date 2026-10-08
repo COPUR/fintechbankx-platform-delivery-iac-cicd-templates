@@ -1,5 +1,5 @@
 {
-  "_comment": "Parity test actors for the local/ephemeral compose stack only (compose/scripts/init-env.sh --parity-fixtures). Layered onto the identity repo's realm by the parity-fixtures-import service after realm-import; never imported anywhere else. init-env renders it into .cache/parity/ and adds the realm's LDAP federation as disabled (no OpenLDAP in compose).",
+  "_comment": "Parity test actors for the local/ephemeral compose stack only (compose/scripts/init-env.sh --parity-fixtures). Layered onto the identity repo's realm by the parity-fixtures-import service after realm-import; never imported anywhere else. Customer actors are members of /customers (the group the customer service's fine-grained admin permission covers); staff actors are not. init-env renders it into .cache/parity/ and adds the realm's LDAP federation as disabled (no OpenLDAP in compose).",
   "realm": "fintechbankx",
   "users": [
     {
@@ -109,6 +109,9 @@
           "temporary": false
         }
       ],
+      "groups": [
+        "/customers"
+      ],
       "attributes": {
         "customer_id": [
           "CUST-12345678"
@@ -131,6 +134,9 @@
           "value": "$(env:PARITY_PASSWORD_OTHER_CUSTOMER)",
           "temporary": false
         }
+      ],
+      "groups": [
+        "/customers"
       ],
       "attributes": {
         "customer_id": [

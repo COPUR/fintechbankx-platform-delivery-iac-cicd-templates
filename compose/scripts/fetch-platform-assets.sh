@@ -2,7 +2,11 @@
 # Fetches the platform assets the local runtime consumes, into a git-ignored
 # cache (never vendored, so the owning repos stay the single source):
 #   identity: realm/fintechbankx-realm.json
-#             (COPUR/fintechbankx-platform-identity-iam-keycloak-ldap)
+#             (COPUR/fintechbankx-platform-identity-iam-keycloak-ldap), and when
+#             the realm sets adminPermissionsEnabled also realm/admin-permissions.json
+#             and scripts/realm/apply-admin-permissions.mjs (the import's second
+#             step, run by the admin-permissions service) into identity-admin/,
+#             outside the directory keycloak-config-cli imports (*.json)
 #   kafka:    topics/generated/topics.tsv and scripts/kafka/create-topics.sh
 #             (COPUR/fintechbankx-platform-event-streaming-kafka)
 #
@@ -50,6 +54,23 @@ fetch "${FBX_IDENTITY_SOURCE:-}" "${FBX_IDENTITY_REF:-}" "$identity_repo" realm/
 name="$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(r.realm))' "$realm" 2>/dev/null)" \
   || die "realm file is not valid JSON: $realm"
 [ "$name" = "fintechbankx" ] || die "expected realm \"fintechbankx\" (platform contract), got \"$name\""
+
+# Fine-grained admin permissions (Keycloak 26 FGAP v2): keycloak-config-cli
+# cannot import them, so the identity repo applies them in a second step.
+admin="$cache/identity-admin"
+rm -rf "$admin"
+fgap="$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(r.adminPermissionsEnabled===true))' "$realm")"
+if [ "$fgap" = true ]; then
+  # Both files are required once the realm enables admin permissions (fetch dies otherwise).
+  echo "[fetch-assets] realm sets adminPermissionsEnabled: fetching the admin-permissions step"
+  fetch "${FBX_IDENTITY_SOURCE:-}" "${FBX_IDENTITY_REF:-}" "$identity_repo" realm/admin-permissions.json "$admin/admin-permissions.json"
+  fetch "${FBX_IDENTITY_SOURCE:-}" "${FBX_IDENTITY_REF:-}" "$identity_repo" scripts/realm/apply-admin-permissions.mjs "$admin/apply-admin-permissions.mjs"
+  spec_realm="$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(r.realm))' "$admin/admin-permissions.json" 2>/dev/null)" \
+    || die "admin-permissions.json is not valid JSON"
+  [ "$spec_realm" = "$name" ] || die "admin-permissions.json targets realm \"$spec_realm\", expected \"$name\""
+else
+  echo "[fetch-assets] realm does not set adminPermissionsEnabled; no admin-permissions step"
+fi
 
 topics="$cache/kafka/topics/generated/topics.tsv"
 fetch "${FBX_KAFKA_SOURCE:-}" "${FBX_KAFKA_REF:-}" "$kafka_repo" topics/generated/topics.tsv "$topics"

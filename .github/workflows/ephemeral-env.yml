@@ -2,7 +2,8 @@ name: ephemeral-env
 
 # Reusable ephemeral environment on the runner: the shared compose runtime of
 # this repository (compose/: PostgreSQL per service, KRaft Kafka with the
-# catalog topics, Keycloak with the fintechbankx realm), the requested service
+# catalog topics, Keycloak with the fintechbankx realm and its fine-grained
+# admin permissions), the requested service
 # images and optionally the monolith side by side. Waits for every container to
 # be healthy, runs the caller's test command (e.g. a regression suite comparing
 # monolith and service responses), uploads results and logs, and always tears

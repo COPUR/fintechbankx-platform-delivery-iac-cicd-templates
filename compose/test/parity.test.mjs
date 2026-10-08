@@ -104,6 +104,13 @@ test("rendered parity fixture: actors, customer_id attribute, suite client, ever
   const other = fx.users.find((u) => u.username === "parity-other-customer");
   assert.deepEqual(other.attributes, { customer_id: ["CUST-99999999"] });
   for (const u of fx.users.filter((x) => x !== customer && x !== other)) assert.ok(!u.attributes?.customer_id, `${u.username} has no customer_id`);
+  // Customers are members of /customers (the customer service's admin permission
+  // covers that group only); staff actors never are.
+  assert.deepEqual(customer.groups, ["/customers"]);
+  assert.deepEqual(other.groups, ["/customers"]);
+  for (const u of fx.users.filter((x) => x !== customer && x !== other)) {
+    assert.ok(!(u.groups ?? []).some((g) => g === "/customers" || g.startsWith("/customers/")), `${u.username} must not be in /customers`);
+  }
 
   assert.equal(fx.clients.length, 1);
   const c = fx.clients[0];
@@ -232,6 +239,24 @@ test("docker compose config applies the service-env override and the parity prof
   // Without the profile the optional dependency is dropped and config still validates.
   res = run("docker", [...base, "--profile", "services", "--profile", "monolith", "config", "-q"], { env });
   assert.equal(res.status, 0, res.stderr);
+});
+
+test("parity fixtures need an identity realm that declares every fixture group", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-realm-"));
+  const realm = JSON.parse(fs.readFileSync(realmFixture, "utf8"));
+  realm.groups = realm.groups.filter((g) => g.path !== "/customers");
+  const old = path.join(dir, "realm-without-customers-group.json");
+  fs.writeFileSync(old, JSON.stringify(realm));
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-env-"));
+  const res = run("bash", [initEnv, "--out-dir", out, "--realm", old, "--cache-dir", path.join(out, ".cache"), "--parity-fixtures"]);
+  assert.notEqual(res.status, 0);
+  assert.match(res.stderr, /\/customers/);
+});
+
+test("parity fixtures and compose never use the customer web client for staff", () => {
+  const template = fs.readFileSync(path.join(composeDir, "keycloak", "parity-fixtures.template.json"), "utf8");
+  const compose = fs.readFileSync(composeFile, "utf8");
+  for (const text of [template, compose]) assert.doesNotMatch(text, /fintechbankx-web\b/);
 });
 
 test("parity fixtures need an identity realm that maps customer_id (identity PR #11 or later)", () => {

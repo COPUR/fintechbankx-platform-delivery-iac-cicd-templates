@@ -61,6 +61,9 @@ dev_value() {
     FBX_WEB_REDIRECT_URI) echo "http://localhost:3000/auth/callback" ;;
     FBX_WEB_ORIGIN) echo "http://localhost:3000" ;;
     FBX_WEB_POST_LOGOUT_REDIRECT_URI) echo "http://localhost:3000/" ;;
+    FBX_STAFF_WEB_REDIRECT_URI) echo "http://localhost:3002/auth/callback" ;;
+    FBX_STAFF_WEB_ORIGIN) echo "http://localhost:3002" ;;
+    FBX_STAFF_WEB_POST_LOGOUT_REDIRECT_URI) echo "http://localhost:3002/" ;;
     FBX_MOBILE_REDIRECT_URI) echo "com.fintechbankx.mobile:/oauth2redirect" ;;
     FBX_GRAFANA_ROOT_URL) echo "http://localhost:3001" ;;
     LDAP_VENDOR) echo "other" ;;

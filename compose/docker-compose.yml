@@ -5,6 +5,7 @@
 #   core (always):  postgres 16 (one database + schema + role per service),
 #                   kafka (single-broker KRaft) + topic-init from the Kafka repo's catalog,
 #                   keycloak 26 + realm-import of the identity repo's realm
+#                   + admin-permissions (its fine-grained admin permissions step)
 #   profiles:       lending, payments, customer, riskcompliance, services (all five),
 #                   monolith (ELMS / monolith-oracle side by side, with redis), observability (otel-collector + jaeger),
 #                   parity-fixtures (regression parity test actors layered onto the realm, ephemeral/local only)
@@ -125,6 +126,42 @@ services:
     env_file: ${FBX_REALM_ENV_FILE:-realm.env}
     volumes:
       - ./.cache/identity:/config:ro
+    restart: "no"
+
+  # Second step of the identity repo's realm import (its realm-import Job runs
+  # the same script): fine-grained admin permissions (Keycloak 26 FGAP v2) from
+  # realm/admin-permissions.json, e.g. the customer service's view/manage-members
+  # permission on /customers, which keycloak-config-cli cannot import. Also
+  # narrows client scope mappings to the realm file. Spec and script are fetched
+  # into .cache/identity-admin (outside the realm-import glob). Logs in as the
+  # local Keycloak bootstrap admin (password grant on admin-cli, master realm);
+  # gets only that login, not the other realm.env values. Idempotent.
+  admin-permissions:
+    image: docker.io/library/node:22.22.0-alpine3.22@sha256:7aa86fa052f6e4b101557ccb56717cb4311be1334381f526fe013418fe157384
+    depends_on:
+      realm-import:
+        condition: service_completed_successfully
+    environment:
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_LOGINREALM: master
+      KEYCLOAK_GRANTTYPE: password
+      KEYCLOAK_USER: ${KC_ADMIN_USER:?run compose/fbx-local.sh init}
+      KEYCLOAK_PASSWORD: ${KC_ADMIN_CRED:?run compose/fbx-local.sh init}
+    volumes:
+      - ./.cache/identity:/config:ro
+      - ./.cache/identity-admin:/opt/fbx:ro
+    command:
+      - sh
+      - -c
+      - |
+        if [ -f /opt/fbx/admin-permissions.json ]; then
+          exec node /opt/fbx/apply-admin-permissions.mjs --spec /opt/fbx/admin-permissions.json --realm /config/fintechbankx-realm.json
+        fi
+        if grep -Eq '"adminPermissionsEnabled"[[:space:]]*:[[:space:]]*true' /config/fintechbankx-realm.json; then
+          echo "admin-permissions: FAILED: the realm enables admin permissions but .cache/identity-admin is empty; run compose/fbx-local.sh fetch" >&2
+          exit 1
+        fi
+        echo "admin-permissions: the realm does not enable admin permissions; nothing to apply"
     restart: "no"
 
   # --- parity-fixtures profile -------------------------------------------------------
@@ -269,6 +306,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       realm-import: {condition: service_completed_successfully}
+      # identity link (PUT .../identity-link) needs its admin permission on /customers
+      admin-permissions: {condition: service_completed_successfully}
       # waits for the parity actors only when the parity-fixtures profile is on
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}

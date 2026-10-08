@@ -1,6 +1,7 @@
 {
   "realm": "fintechbankx",
   "enabled": true,
+  "adminPermissionsEnabled": true,
   "clients": [
     {
       "clientId": "svc-ln-loan-lifecycle",
@@ -23,10 +24,45 @@
       }
     },
     {
+      "clientId": "fintechbankx-staff-web",
+      "redirectUris": [
+        "$(env:FBX_STAFF_WEB_REDIRECT_URI)"
+      ],
+      "webOrigins": [
+        "$(env:FBX_STAFF_WEB_ORIGIN)"
+      ],
+      "attributes": {
+        "post.logout.redirect.uris": "$(env:FBX_STAFF_WEB_POST_LOGOUT_REDIRECT_URI)"
+      }
+    },
+    {
       "clientId": "fintechbankx-mobile",
       "redirectUris": [
         "$(env:FBX_MOBILE_REDIRECT_URI)"
       ]
+    }
+  ],
+  "groups": [
+    {
+      "name": "staff",
+      "path": "/staff",
+      "subGroups": [
+        {
+          "name": "fbx-banker",
+          "path": "/staff/fbx-banker",
+          "realmRoles": [
+            "banker"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "customers",
+      "path": "/customers",
+      "realmRoles": [
+        "customer"
+      ],
+      "subGroups": []
     }
   ],
   "components": {

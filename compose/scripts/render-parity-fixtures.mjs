@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Renders the parity test-actor layer for the local/ephemeral realm:
 // compose/keycloak/parity-fixtures.template.json (users + parity-suite client,
-// credentials as $(env:...) placeholders) plus the realm's LDAP federation
+// credentials as $(env:...) placeholders, customers in the realm's /customers
+// group, which must exist) plus the realm's LDAP federation
 // components copied with enabled=false, because compose runs no OpenLDAP and an
 // unreachable directory must not break local-user lookups. The output is read
 // by the parity-fixtures-import service (keycloak-config-cli, no-delete mode).
@@ -25,6 +26,19 @@ if (template.realm !== realm.realm) {
   process.exit(1);
 }
 const { _comment, ...layer } = template;
+
+// Every group a fixture user joins must already exist in the realm
+// (realm-import creates it; this layer never defines groups).
+const groupPaths = (groups = [], parent = "") => groups.flatMap((g) => {
+  const p = g.path ?? `${parent}/${g.name}`;
+  return [p, ...groupPaths(g.subGroups, p)];
+});
+const known = new Set(groupPaths(realm.groups));
+const missing = [...new Set(layer.users.flatMap((u) => u.groups ?? []))].filter((g) => !known.has(g));
+if (missing.length) {
+  console.error(`[parity-fixtures] the identity realm does not declare group(s) ${missing.join(", ")}; use an identity ref that has them (identity-ref / FBX_IDENTITY_REF)`);
+  process.exit(1);
+}
 
 const storage = "org.keycloak.storage.UserStorageProvider";
 const ldap = (realm.components?.[storage] ?? [])

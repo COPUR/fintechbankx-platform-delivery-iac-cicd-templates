@@ -8,7 +8,7 @@ monolith's `docker-compose.yml`, `docker-compose.open-finance-eventing.yml` and
 |---|---|---|
 | PostgreSQL 16 | one database, schema and LOGIN role per service; no role can connect to another service's database | [services.tsv](services.tsv) (matches each service repo's `application.yml`), [postgres/init](postgres/init/10-service-databases.sh) |
 | Kafka | single-broker KRaft (no ZooKeeper), auto-create off, catalog topics at RF 1 | topic catalog and `create-topics.sh` fetched from fintechbankx-platform-event-streaming-kafka |
-| Keycloak 26 + realm import | dev-mode Keycloak, realm `fintechbankx` applied by keycloak-config-cli | `realm/fintechbankx-realm.json` fetched from fintechbankx-platform-identity-iam-keycloak-ldap |
+| Keycloak 26 + realm import | dev-mode Keycloak, realm `fintechbankx` applied by keycloak-config-cli, then `admin-permissions` (the identity repo's second import step: fine-grained admin permissions, e.g. the customer service's view/manage-members on `/customers`, and scope-mapping narrowing); the customer service waits for it | `realm/fintechbankx-realm.json`, `realm/admin-permissions.json` and `scripts/realm/apply-admin-permissions.mjs` fetched from fintechbankx-platform-identity-iam-keycloak-ldap |
 | `observability` profile | OTel collector + Jaeger (UI on 127.0.0.1:16686) | [otel/collector.yaml](otel/collector.yaml) |
 | service profiles | `lending` (loan + customer), `payments` (initiation-settlement + risk + compliance), `customer`, `riskcompliance`, `services` (all five) | images `fintechbankx/<service>:local` or `FBX_IMAGE_*` |
 | `monolith` profile | comparison target side by side (+ Redis): the monolith-oracle app by default, or the full ELMS image | `FBX_MONOLITH_IMAGE` |
@@ -31,13 +31,22 @@ Issuer for tokens: `http://localhost:8180/realms/fintechbankx`. Service ports on
 (mode 600, git-ignored) with random values from `openssl rand`: the PostgreSQL
 superuser, one credential per service database, the Keycloak admin, Redis, one
 OIDC client credential per service and every `$(env:NAME)` placeholder of the
-realm (LDAP and channel URLs get fixed dev values). Nothing secret is
+realm (LDAP and channel URLs get fixed dev values: customer web
+`http://localhost:3000`, staff web (`fintechbankx-staff-web`)
+`http://localhost:3002`, Grafana `http://localhost:3001`). Nothing secret is
 committed; the compose file uses `${VAR:?...}` so it refuses to start without
 the generated file. A new realm placeholder without a dev value fails the
 script on purpose.
 
 Pin asset versions with `FBX_IDENTITY_REF` / `FBX_KAFKA_REF`, or read local
 checkouts with `FBX_IDENTITY_SOURCE` / `FBX_KAFKA_SOURCE`.
+
+When the realm sets `adminPermissionsEnabled`, `fetch` also copies the
+admin-permissions spec and script into `.cache/identity-admin/` (outside the
+directory realm-import reads) and fails if the identity ref lacks them. The
+`admin-permissions` service (Node 22, same pinned image as the identity Job)
+logs in as the local bootstrap admin (`KEYCLOAK_GRANTTYPE=password`, `admin-cli`,
+master realm) and gets only that login.
 
 ## Regression parity support
 
@@ -58,6 +67,10 @@ is on (`required: false` otherwise). It adds:
   realm role of the same name; `parity-customer` has the user attribute
   `customer_id=CUST-12345678`, which the realm's `customer-id` client scope puts
   in the access token as `customer_id`. `sub` stays the Keycloak UUID.
+  `parity-customer` and `parity-other-customer` are members of `/customers`
+  (the group the customer service's admin permission covers); staff actors are
+  not. The realm at `identity-ref` must declare every group the fixture uses,
+  otherwise init fails.
 - the confidential client `parity-suite`: client credentials and password
   grant (this fixture only, not tagged as a service client, so the realm's
   ROPC rejection does not apply), audiences `svc-ln-loan-lifecycle`,
@@ -135,9 +148,12 @@ against a real server (local PostgreSQL 16 binaries or `FBX_TEST_PGHOST`).
 - Not started end to end here (no Docker daemon in the authoring environment);
   `docker compose config` and the database init were exercised.
 - LDAP federation in the realm points at `ldap://openldap:389`, which this stack
-  does not run; staff logins need the identity repo's OpenLDAP component.
+  does not run; interactive staff logins (client `fintechbankx-staff-web`; the
+  customer clients `fintechbankx-web` and `fintechbankx-mobile` map only the
+  `customer` role) need the identity repo's OpenLDAP component. Staff parity
+  actors log in through `parity-suite` instead.
 - The full ELMS monolith expects its own realm and profiles; set
   `FBX_MONOLITH_SPRING_PROFILES` and `FBX_MONOLITH_HEALTH_PATH` for that image.
 - The parity layer (keycloak-config-cli no-delete import, disabled LDAP,
-  password grant) and the monolith-oracle wiring are validated by the tests
-  above, not by a live Keycloak run here.
+  password grant), the admin-permissions step and the monolith-oracle wiring
+  are validated by the tests above, not by a live Keycloak run here.

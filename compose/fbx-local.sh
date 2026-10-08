@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Entry point for the shared local / ephemeral runtime.
 #
-#   compose/fbx-local.sh fetch                 platform assets -> compose/.cache (realm, topic catalog)
+#   compose/fbx-local.sh fetch                 platform assets -> compose/.cache (realm, admin-permissions step,
+#                                              topic catalog)
 #   compose/fbx-local.sh init [--parity-fixtures]
 #                                              generate compose/.env and compose/realm.env (git-ignored);
 #                                              --parity-fixtures adds the parity test actors (PARITY_* in .env)
@@ -29,7 +30,15 @@ dc() {
   for p in ${FBX_PROFILES:-}; do args+=(--profile "$p"); done
   docker "${args[@]}" "$@"
 }
-ensure_assets() { [ -f "$dir/.cache/identity/fintechbankx-realm.json" ] && [ -f "$dir/.cache/kafka/topics/generated/topics.tsv" ] || bash "$dir/scripts/fetch-platform-assets.sh"; }
+# Re-fetches when an asset is missing, including the admin-permissions step of a
+# realm that enables it (a cache from before that step existed).
+assets_present() {
+  local realm="$dir/.cache/identity/fintechbankx-realm.json"
+  [ -f "$realm" ] && [ -f "$dir/.cache/kafka/topics/generated/topics.tsv" ] || return 1
+  [ -f "$dir/.cache/identity-admin/admin-permissions.json" ] \
+    || ! grep -Eq '"adminPermissionsEnabled"[[:space:]]*:[[:space:]]*true' "$realm"
+}
+ensure_assets() { assets_present || bash "$dir/scripts/fetch-platform-assets.sh"; }
 ensure_env() { bash "$dir/scripts/init-env.sh" "$@"; }
 
 case "$cmd" in
@@ -53,5 +62,5 @@ case "$cmd" in
     if [[ " $* " == *" parity-fixtures "* ]]; then ensure_env --parity-fixtures; else ensure_env; fi
     FBX_PROFILES="$*" dc config -q ;;
   compose) dc "$@" ;;
-  *) sed -n '2,18p' "$0"; [ "$cmd" = help ] ;;
+  *) sed -n '2,19p' "$0"; [ "$cmd" = help ] ;;
 esac

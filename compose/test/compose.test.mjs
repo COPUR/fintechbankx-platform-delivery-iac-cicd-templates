@@ -68,6 +68,11 @@ test("init-env supplies every realm placeholder with dev-only values", () => {
   for (const name of placeholders(realm)) assert.ok(name in env, `${name} not supplied`);
   assert.match(env.FBX_OIDC_SECRET_SVC_LN_LOAN_LIFECYCLE, /^[A-Za-z0-9]{32,}$/);
   assert.match(env.FBX_WEB_REDIRECT_URI, /^http:\/\/localhost/);
+  // Staff channel (identity client fintechbankx-staff-web): its own localhost origin.
+  assert.equal(env.FBX_STAFF_WEB_REDIRECT_URI, "http://localhost:3002/auth/callback");
+  assert.equal(env.FBX_STAFF_WEB_ORIGIN, "http://localhost:3002");
+  assert.equal(env.FBX_STAFF_WEB_POST_LOGOUT_REDIRECT_URI, "http://localhost:3002/");
+  assert.notEqual(env.FBX_STAFF_WEB_ORIGIN, env.FBX_WEB_ORIGIN, "staff and customer web apps are separate origins");
   assert.equal(env.LDAP_START_TLS, "false");
   assert.equal(env.KEYCLOAK_URL, "http://keycloak:8080");
   assert.equal(env.IMPORT_VARSUBSTITUTION_ENABLED, "true");
@@ -91,10 +96,15 @@ test("init-env refuses a realm placeholder it does not know", () => {
 
 // --- platform assets --------------------------------------------------------
 
-function fakeRepos(realmFixture = "realm-minimal.json") {
+function fakeRepos(realmFixture = "realm-minimal.json", { adminPermissions = true } = {}) {
   const root = tmp();
   fs.mkdirSync(path.join(root, "identity", "realm"), { recursive: true });
   fs.copyFileSync(path.join(fixtures, realmFixture), path.join(root, "identity", "realm", "fintechbankx-realm.json"));
+  if (adminPermissions) {
+    fs.copyFileSync(path.join(fixtures, "admin-permissions.json"), path.join(root, "identity", "realm", "admin-permissions.json"));
+    fs.mkdirSync(path.join(root, "identity", "scripts", "realm"), { recursive: true });
+    fs.writeFileSync(path.join(root, "identity", "scripts", "realm", "apply-admin-permissions.mjs"), "#!/usr/bin/env node\nconsole.log('ok');\n");
+  }
   fs.mkdirSync(path.join(root, "kafka", "topics", "generated"), { recursive: true });
   fs.mkdirSync(path.join(root, "kafka", "scripts", "kafka"), { recursive: true });
   fs.copyFileSync(path.join(fixtures, "topics.tsv"), path.join(root, "kafka", "topics", "generated", "topics.tsv"));
@@ -112,6 +122,41 @@ test("fetch-platform-assets copies realm and topic catalog from local checkouts"
   assert.equal(JSON.parse(fs.readFileSync(path.join(cache, "identity", "fintechbankx-realm.json"), "utf8")).realm, "fintechbankx");
   assert.match(fs.readFileSync(path.join(cache, "kafka", "topics", "generated", "topics.tsv"), "utf8"), /^evt\./m);
   assert.ok(fs.existsSync(path.join(cache, "kafka", "scripts", "kafka", "create-topics.sh")));
+});
+
+const fetchFrom = (root, cache) => run("bash", [fetchAssets, "--cache-dir", cache], {
+  env: { ...process.env, FBX_IDENTITY_SOURCE: path.join(root, "identity"), FBX_KAFKA_SOURCE: path.join(root, "kafka") }
+});
+
+test("fetch-platform-assets copies the admin-permissions step outside the config-cli import glob", () => {
+  const cache = tmp();
+  const res = fetchFrom(fakeRepos(), cache);
+  assert.equal(res.status, 0, res.stderr);
+  const admin = path.join(cache, "identity-admin");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(admin, "admin-permissions.json"), "utf8")).realm, "fintechbankx");
+  assert.ok(fs.existsSync(path.join(admin, "apply-admin-permissions.mjs")));
+  // realm-import reads file:/config/*.json from .cache/identity: only the realm may be there.
+  assert.deepEqual(fs.readdirSync(path.join(cache, "identity")).filter((f) => f.endsWith(".json")), ["fintechbankx-realm.json"]);
+});
+
+test("fetch-platform-assets fails when the realm enables admin permissions but the step is missing", () => {
+  const res = fetchFrom(fakeRepos("realm-minimal.json", { adminPermissions: false }), tmp());
+  assert.notEqual(res.status, 0);
+  assert.match(res.stderr, /admin-permissions/);
+});
+
+test("fetch-platform-assets skips the admin-permissions step for a realm without adminPermissionsEnabled", () => {
+  const root = fakeRepos("realm-minimal.json", { adminPermissions: false });
+  const realmFile = path.join(root, "identity", "realm", "fintechbankx-realm.json");
+  const realm = JSON.parse(fs.readFileSync(realmFile, "utf8"));
+  delete realm.adminPermissionsEnabled;
+  fs.writeFileSync(realmFile, JSON.stringify(realm));
+  const cache = tmp();
+  fs.mkdirSync(path.join(cache, "identity-admin"), { recursive: true });
+  fs.writeFileSync(path.join(cache, "identity-admin", "admin-permissions.json"), "{}");
+  const res = fetchFrom(root, cache);
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(!fs.existsSync(path.join(cache, "identity-admin", "admin-permissions.json")), "a stale spec from an earlier ref is removed");
 });
 
 test("fetch-platform-assets rejects a realm that is not fintechbankx", () => {
@@ -192,6 +237,28 @@ test("core stack: postgres 16, single-broker KRaft kafka with catalog topics, ke
   assert.ok(s["realm-import"].volumes.some((v) => v.includes(".cache/identity")));
   for (const o of ["otel-collector", "jaeger"]) assert.deepEqual(s[o].profiles, ["observability"]);
   assert.ok(s.monolith.profiles.includes("monolith"));
+});
+
+test("admin-permissions runs the identity repo's FGAP step after realm-import; the customer service waits for it", () => {
+  const s = composeDoc().services;
+  const ap = s["admin-permissions"];
+  assert.ok(ap, "admin-permissions service missing");
+  assert.equal(ap.profiles, undefined, "core stack, every profile");
+  assert.match(ap.image, /^docker\.io\/library\/node:22\.[\w.-]+@sha256:[a-f0-9]{64}$/);
+  assert.deepEqual(ap.depends_on, { "realm-import": { condition: "service_completed_successfully" } });
+  assert.equal(ap.restart, "no");
+  const env = ap.environment;
+  assert.equal(env.KEYCLOAK_URL, "http://keycloak:8080");
+  assert.equal(env.KEYCLOAK_LOGINREALM, "master");
+  assert.equal(env.KEYCLOAK_GRANTTYPE, "password");
+  assert.equal(env.KEYCLOAK_USER, "${KC_ADMIN_USER:?run compose/fbx-local.sh init}");
+  assert.equal(env.KEYCLOAK_PASSWORD, "${KC_ADMIN_CRED:?run compose/fbx-local.sh init}");
+  assert.equal(ap.env_file, undefined, "only the admin login, not every realm secret");
+  assert.ok(ap.volumes.includes("./.cache/identity:/config:ro"));
+  assert.ok(ap.volumes.includes("./.cache/identity-admin:/opt/fbx:ro"));
+  const cmd = [].concat(ap.command ?? [], ap.entrypoint ?? []).join(" ");
+  assert.match(cmd, /node \/opt\/fbx\/apply-admin-permissions\.mjs --spec \/opt\/fbx\/admin-permissions\.json --realm \/config\/fintechbankx-realm\.json/);
+  assert.deepEqual(s["customer-profile-kyc-service"].depends_on["admin-permissions"], { condition: "service_completed_successfully" });
 });
 
 test("docker compose config validates every profile with a generated env", { skip: !dockerCompose && "docker compose not available" }, () => {
