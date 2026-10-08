@@ -12,10 +12,9 @@
 2. Create a branch with prefix `codex/`:
    - `git checkout -b codex/<short-topic>`
 3. Keep changes scoped and atomic.
-4. Run local quality gates:
-   - `./gradlew --no-daemon check`
-5. Install local Git hooks (one-time per clone):
-   - `bash tools/validation/install-git-hooks.sh`
+4. Run local quality gates for this repository:
+   - `npm ci && npm test && npm run validate:strict-mtls`
+   - `npm run lint:workflows` (actionlint) and `npm run validate:chart` (helm + kubeconform)
 5. Open a pull request using `.github/pull_request_template.md`.
 
 ## Pull Request Requirements
