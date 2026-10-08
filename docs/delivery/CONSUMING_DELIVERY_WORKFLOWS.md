@@ -72,7 +72,26 @@ OIDC (image push/sign, deploy, plan, apply).
   Trigger the caller on `pull_request` types `labeled` and `unlabeled` too.
 - `ephemeral-env`: see [compose/README.md](../../compose/README.md); pass
   service images as `FBX_IMAGE_<SERVICE>=<image@digest>` lines and a
-  `test-command`; the stack is always torn down.
+  `test-command`; the stack is always torn down. For regression parity runs:
+  - monolith: either `monolith-image` (pinned by digest or immutable tag) or
+    `monolith-build-context` (+ optional `monolith-build-command`,
+    `java-version`), both relative to the caller workspace; the image is built
+    with a local, never-pushed tag. Defaults fit the monolith-oracle app
+    (`monolith-spring-profiles: local`, `monolith-health-path: /actuator/health`;
+    compose sets `ORACLE_PORT=8080` and `OIDC_ISSUER_URI` to the in-stack issuer).
+  - `parity-fixtures: true` adds test users per role (banker, admin,
+    loan_officer, compliance_officer, auditor, customer with
+    `customer_id=CUST-12345678`) and the `parity-suite` client to the ephemeral
+    realm only; usernames, passwords and secrets are in `FBX_ENV_FILE`
+    (`PARITY_USERNAME_<ACTOR>`, `PARITY_PASSWORD_<ACTOR>`,
+    `PARITY_SECRET_PARITY_SUITE`, `PARITY_SECRET_SVC_LN_LOAN_LIFECYCLE`,
+    `PARITY_SECRET_SVC_PAY_INITIATION_SETTLEMENT`).
+  - after health, in order: `sql-fixtures` (`<service>=<path>` lines, each run
+    with that service's own role in its own database and schema), then
+    `seed-command`, then `test-command`, all with the same `FBX_*` variables.
+  - `service-env`: `<service>__<VAR>=<value>` lines (e.g.
+    `payment-initiation-settlement-service__ACCOUNTS_ADAPTER=in-memory`);
+    credential-like and identity/database wiring names are rejected.
 - `container-image`: `boot-jar-task` for Dockerfiles that copy `build/libs`;
   leave empty for multi-stage Dockerfiles (all five extracted services).
   `trivy-severity` defaults to `CRITICAL,HIGH` with `ignore-unfixed`; reviewed
