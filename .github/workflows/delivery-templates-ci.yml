@@ -1,0 +1,78 @@
+name: delivery-templates-ci
+
+# Validates this repository's own deliverables: every workflow (actionlint,
+# including the sample callers checked against the local reusable workflows),
+# the generic Helm chart (lint, template, kubeconform, negative cases,
+# strict-mTLS scan of the rendered output) and the Node validator tests.
+
+on:
+  pull_request:
+    branches: [main, dev, staging]
+  push:
+    branches: [main, dev, staging]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delivery-templates-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  ACTIONLINT_VERSION: 1.7.7
+  HELM_VERSION: v3.16.3
+  KUBECONFORM_VERSION: v0.6.7
+  KUBE_VERSION: 1.30.0
+
+jobs:
+  actionlint:
+    name: delivery/actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C "$tmpdir" actionlint
+          sudo install "$tmpdir/actionlint" /usr/local/bin/actionlint
+      - name: Lint workflows (shellcheck is preinstalled on the runner)
+        run: bash scripts/ci/lint-workflows.sh
+
+  helm-chart:
+    name: delivery/helm-chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C "$tmpdir"
+          sudo install "$tmpdir/kubeconform" /usr/local/bin/kubeconform
+      - run: npm ci
+      - name: Validate chart
+        run: bash scripts/ci/validate-chart.sh
+
+  node-validation:
+    name: delivery/node-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm test
+      - run: npm run validate:strict-mtls
