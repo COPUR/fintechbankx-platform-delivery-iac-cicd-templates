@@ -8,7 +8,8 @@
 #                   + admin-permissions (its fine-grained admin permissions step)
 #   profiles:       lending, payments, customer, riskcompliance, services (all five),
 #                   monolith (ELMS / monolith-oracle side by side, with redis), observability (otel-collector + jaeger),
-#                   parity-fixtures (regression parity test actors layered onto the realm, ephemeral/local only)
+#                   parity-fixtures (regression parity test actors layered onto the realm, plus
+#                   parity-suite's admin permission on /customers; ephemeral/local only)
 #
 # Never start it directly: compose/fbx-local.sh fetches the platform assets into
 # .cache/, generates .env and realm.env (random dev-only credentials, git-ignored)
@@ -166,8 +167,10 @@ services:
 
   # --- parity-fixtures profile -------------------------------------------------------
   # Regression parity test actors (users banker, admin, loan_officer,
-  # compliance_officer, auditor, customer and the confidential parity-suite
-  # client) layered onto the imported realm. Rendered by
+  # compliance_officer, auditor, customer, other-customer, customer-owner, the
+  # confidential parity-suite client, the key-bound TPP-001, TPP-002 and
+  # parity-channel clients and their parity-psu-* scopes) layered onto the
+  # imported realm. Rendered by
   # `init-env.sh --parity-fixtures` into .cache/parity from
   # keycloak/parity-fixtures.template.json; credentials come from realm.env.
   # Ephemeral/local only: never part of the identity repo's realm. Runs without
@@ -198,6 +201,40 @@ services:
       IMPORT_MANAGED_MESSAGEBUNDLES: no-delete
     volumes:
       - ./.cache/parity:/config:ro
+    restart: "no"
+
+  # parity-suite's fine-grained admin permission (FGAP v2): view-members and
+  # manage-members on /customers, like the customer service's, so the suite can
+  # read and link /customers users in Keycloak mode. keycloak/parity-admin-permissions.json
+  # (own permission and policy names) applied with the identity repo's script
+  # from .cache/identity-admin; no --realm, so scope-mapping reconciliation stays
+  # with the identity step. Same login as admin-permissions. Idempotent.
+  parity-admin-permissions:
+    image: docker.io/library/node:22.22.0-alpine3.22@sha256:7aa86fa052f6e4b101557ccb56717cb4311be1334381f526fe013418fe157384
+    profiles: [parity-fixtures]
+    depends_on:
+      admin-permissions:
+        condition: service_completed_successfully
+      parity-fixtures-import:
+        condition: service_completed_successfully
+    environment:
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_LOGINREALM: master
+      KEYCLOAK_GRANTTYPE: password
+      KEYCLOAK_USER: ${KC_ADMIN_USER:?run compose/fbx-local.sh init}
+      KEYCLOAK_PASSWORD: ${KC_ADMIN_CRED:?run compose/fbx-local.sh init}
+    volumes:
+      - ./.cache/identity-admin:/opt/fbx:ro
+      - ./keycloak/parity-admin-permissions.json:/opt/parity/admin-permissions.json:ro
+    command:
+      - sh
+      - -c
+      - |
+        if [ ! -f /opt/fbx/apply-admin-permissions.mjs ]; then
+          echo "parity-admin-permissions: FAILED: .cache/identity-admin has no apply-admin-permissions.mjs; run compose/fbx-local.sh fetch with an identity ref whose realm enables admin permissions" >&2
+          exit 1
+        fi
+        exec node /opt/fbx/apply-admin-permissions.mjs --spec /opt/parity/admin-permissions.json
     restart: "no"
 
   # --- observability profile --------------------------------------------------
@@ -310,6 +347,7 @@ services:
       admin-permissions: {condition: service_completed_successfully}
       # waits for the parity actors only when the parity-fixtures profile is on
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      parity-admin-permissions: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-cus-profile-kyc
@@ -422,6 +460,7 @@ services:
       realm-import: {condition: service_completed_successfully}
       # waits for the parity actors only when the parity-fixtures profile is on
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      parity-admin-permissions: {condition: service_completed_successfully, required: false}
     environment:
       SPRING_PROFILES_ACTIVE: ${FBX_MONOLITH_SPRING_PROFILES:-local}
       ORACLE_PORT: "8080"

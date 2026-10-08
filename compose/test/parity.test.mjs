@@ -27,7 +27,8 @@ const composeDoc = () => YAML.parse(fs.readFileSync(composeFile, "utf8"));
 const dockerCompose = run("docker", ["compose", "version"]).status === 0;
 
 const ACTORS = { banker: "banker", admin: "admin", loan_officer: "loan_officer",
-  compliance_officer: "compliance_officer", auditor: "auditor", customer: "customer", other_customer: "customer" };
+  compliance_officer: "compliance_officer", auditor: "auditor", customer: "customer", other_customer: "customer",
+  customer_owner: "customer" };
 const AUDIENCES = ["svc-ln-loan-lifecycle", "svc-pay-initiation-settlement", "svc-cus-profile-kyc",
   "svc-rsk-decisioning", "svc-cmp-evidence"];
 // Keycloak password policy of the identity realm: length(14), upper, lower, digit, special.
@@ -106,13 +107,14 @@ test("rendered parity fixture: actors, customer_id attribute, suite client, ever
   for (const u of fx.users.filter((x) => x !== customer && x !== other)) assert.ok(!u.attributes?.customer_id, `${u.username} has no customer_id`);
   // Customers are members of /customers (the customer service's admin permission
   // covers that group only); staff actors never are.
-  assert.deepEqual(customer.groups, ["/customers"]);
-  assert.deepEqual(other.groups, ["/customers"]);
-  for (const u of fx.users.filter((x) => x !== customer && x !== other)) {
+  const owner = fx.users.find((u) => u.username === "parity-customer-owner");
+  const customers = [customer, other, owner];
+  for (const u of customers) assert.deepEqual(u.groups, ["/customers"], u.username);
+  for (const u of fx.users.filter((x) => !customers.includes(x))) {
     assert.ok(!(u.groups ?? []).some((g) => g === "/customers" || g.startsWith("/customers/")), `${u.username} must not be in /customers`);
   }
 
-  assert.equal(fx.clients.length, 2);
+  assert.equal(fx.clients.length, 4);
   const c = fx.clients.find((x) => x.clientId === "parity-suite");
   assert.equal(c.clientId, "parity-suite");
   assert.equal(c.publicClient, false);
@@ -257,19 +259,19 @@ test("parity fixtures need an identity realm that declares every fixture group",
 
 const b64url = (b) => Buffer.from(b).toString("base64url");
 
-test("init-env --parity-fixtures creates the parity-tpp client with a runtime keypair", async () => {
+test("init-env --parity-fixtures creates the TPP-001 client (formerly parity-tpp) with a runtime keypair", async () => {
   const { out, cache, res } = generate(["--parity-fixtures"]);
   assert.equal(res.status, 0, res.stderr);
   const env = parseEnv(path.join(out, ".env"));
-  assert.equal(env.PARITY_TPP_CLIENT_ID, "parity-tpp");
+  assert.equal(env.PARITY_TPP_CLIENT_ID, "TPP-001");
   const priv = JSON.parse(env.PARITY_TPP_PRIVATE_JWK);
   assert.equal(priv.kty, "RSA");
   assert.equal(priv.alg, "PS256");
   assert.equal(priv.use, "sig");
   assert.ok(priv.kid && priv.d && priv.n && priv.e, "private JWK with kid");
   const fx = JSON.parse(fs.readFileSync(path.join(cache, "parity", "parity-fixtures.json"), "utf8"));
-  const tpp = fx.clients.find((x) => x.clientId === "parity-tpp");
-  assert.ok(tpp, "parity-tpp client missing");
+  const tpp = fx.clients.find((x) => x.clientId === "TPP-001");
+  assert.ok(tpp, "TPP-001 client missing");
   assert.equal(tpp.publicClient, false);
   assert.equal(tpp.clientAuthenticatorType, "client-jwt");
   assert.equal(tpp.directAccessGrantsEnabled, false, "no password grant");
@@ -299,7 +301,7 @@ test("init-env --parity-fixtures creates the parity-tpp client with a runtime ke
   const auds = (cl) => cl.protocolMappers.filter((m) => m.protocolMapper === "oidc-audience-mapper")
     .map((m) => m.config["included.client.audience"]).sort();
   assert.deepEqual(auds(tpp), auds(template));
-  assert.deepEqual(tpp.defaultClientScopes, template.defaultClientScopes);
+  for (const sc of template.defaultClientScopes) assert.ok(tpp.defaultClientScopes.includes(sc), sc);
   // no private material in the rendered fixture
   const text = fs.readFileSync(path.join(cache, "parity", "parity-fixtures.json"), "utf8");
   assert.ok(!text.includes(priv.d));
@@ -313,7 +315,7 @@ test("init-env --parity-fixtures creates the parity-tpp client with a runtime ke
   assert.notEqual(JSON.parse(other.PARITY_TPP_PRIVATE_JWK).n, priv.n);
 });
 
-test("parity-tpp needs the realm's TPP template", () => {
+test("the TPP clients need the realm's TPP template", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-realm-"));
   const realm = JSON.parse(fs.readFileSync(realmFixture, "utf8"));
   realm.clients = realm.clients.filter((x) => x.clientId !== "of-tpp-conformance-template");

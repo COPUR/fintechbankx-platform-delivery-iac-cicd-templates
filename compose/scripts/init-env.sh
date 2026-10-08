@@ -7,14 +7,17 @@
 #                        placeholder of the identity repo's realm
 # With --parity-fixtures (regression parity runs, local/ephemeral only) also:
 #   PARITY_USERNAME_<ACTOR> / PARITY_PASSWORD_<ACTOR> for the actors banker,
-#   admin, loan_officer, compliance_officer, auditor and customer,
+#   admin, loan_officer, compliance_officer, auditor, customer, other_customer
+#   and customer_owner,
 #   PARITY_SECRET_PARITY_SUITE (parity-suite client) and
 #   PARITY_SECRET_SVC_LN_LOAN_LIFECYCLE / PARITY_SECRET_SVC_PAY_INITIATION_SETTLEMENT
 #   (the same values the realm import gives those service clients),
-#   PARITY_TPP_CLIENT_ID and PARITY_TPP_PRIVATE_JWK (private JWK, RSA PS256, of
-#   the parity-tpp client; generated here, never committed), and renders
-#   <cache-dir>/parity/parity-fixtures.json from compose/keycloak/ for the
-#   parity-fixtures-import service.
+#   PARITY_TPP_CLIENT_ID / PARITY_TPP_PRIVATE_JWK (TPP-001, formerly parity-tpp),
+#   PARITY_TPP_OTHER_CLIENT_ID / PARITY_TPP_OTHER_PRIVATE_JWK (TPP-002) and
+#   PARITY_CHANNEL_CLIENT_ID / PARITY_CHANNEL_PRIVATE_JWK (parity-channel): one
+#   private JWK (RSA PS256) per key-bound client, generated here, never
+#   committed; and renders <cache-dir>/parity/parity-fixtures.json from
+#   compose/keycloak/ for the parity-fixtures-import service.
 # Every credential is random (openssl), dev-only and never committed. Existing
 # values are kept, so re-running is safe; delete the files to rotate.
 # An unknown realm placeholder is an error: add it to dev_value() below.
@@ -137,7 +140,7 @@ mapfile -t oidc_names < <(printf '%s\n' "${oidc_names[@]}" | sort -u)
 for name in "${oidc_names[@]}"; do secret "$name"; done
 
 # Parity test actors (ephemeral/local only, never in the identity repo's realm).
-parity_actors=(banker admin loan_officer compliance_officer auditor customer other_customer)
+parity_actors=(banker admin loan_officer compliance_officer auditor customer other_customer customer_owner)
 parity_realm_keys=()
 if [ "$parity" = true ]; then
   command -v node >/dev/null || die "node is required for --parity-fixtures"
@@ -150,6 +153,12 @@ if [ "$parity" = true ]; then
     const attr = (r.userProfile?.attributes || []).some((a) => a.name === "customer_id");
     process.exit(scope && attr ? 0 : 1);' "$realm" \
     || die "--parity-fixtures: the identity realm does not declare customer_id (user profile) and client scope customer-id; use an identity ref that has them (identity-ref / FBX_IDENTITY_REF)"
+  # parity-suite's view/manage-members grant on /customers is a fine-grained
+  # admin permission (FGAP v2), which needs the realm to enable them.
+  node -e '
+    const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    process.exit(r.adminPermissionsEnabled === true ? 0 : 1);' "$realm" \
+    || die "--parity-fixtures: the identity realm does not set adminPermissionsEnabled (parity-suite's admin permission on /customers); use an identity ref that has it (identity-ref / FBX_IDENTITY_REF)"
   for actor in "${parity_actors[@]}"; do
     upper="$(echo "$actor" | tr 'a-z' 'A-Z')"
     put "PARITY_USERNAME_$upper" "parity-${actor//_/-}"
@@ -158,21 +167,28 @@ if [ "$parity" = true ]; then
   done
   secret PARITY_SECRET_PARITY_SUITE
   parity_realm_keys+=(PARITY_SECRET_PARITY_SUITE)
-  # Keycloak-mode TPP actor: key pair generated here; the private JWK stays in
-  # .env (mode 600), only the public JWKS goes into the rendered realm layer.
-  put PARITY_TPP_CLIENT_ID parity-tpp
-  if [ -z "${existing[PARITY_TPP_PRIVATE_JWK]+set}" ]; then
-    tpp_jwk="$(node -e '
-      const c = require("crypto");
-      const { privateKey } = c.generateKeyPairSync("rsa", { modulusLength: 2048 });
-      const jwk = privateKey.export({ format: "jwk" });
-      const thumb = c.createHash("sha256").update(JSON.stringify({ e: jwk.e, kty: jwk.kty, n: jwk.n })).digest("base64url");
-      process.stdout.write(JSON.stringify({ kty: jwk.kty, kid: thumb, use: "sig", alg: "PS256", n: jwk.n, e: jwk.e,
-        d: jwk.d, p: jwk.p, q: jwk.q, dp: jwk.dp, dq: jwk.dq, qi: jwk.qi }));')" || die "cannot generate the parity-tpp key pair"
-  else
-    tpp_jwk=""
-  fi
-  put PARITY_TPP_PRIVATE_JWK "$tpp_jwk"
+  # Key-bound clients (open-finance TPPs TPP-001 and TPP-002, first-party
+  # channel stand-in parity-channel): one key pair each, generated here; the
+  # private JWK stays in .env (mode 600), only the public JWKS goes into the
+  # rendered realm layer. Client ids are fixed (an env from before TPP-001
+  # said parity-tpp; its key is kept and now belongs to TPP-001).
+  for pair in PARITY_TPP:TPP-001 PARITY_TPP_OTHER:TPP-002 PARITY_CHANNEL:parity-channel; do
+    prefix="${pair%%:*}" client_id="${pair#*:}"
+    value["${prefix}_CLIENT_ID"]="$client_id"
+    order+=("${prefix}_CLIENT_ID")
+    if [ -z "${existing[${prefix}_PRIVATE_JWK]+set}" ]; then
+      jwk="$(node -e '
+        const c = require("crypto");
+        const { privateKey } = c.generateKeyPairSync("rsa", { modulusLength: 2048 });
+        const jwk = privateKey.export({ format: "jwk" });
+        const thumb = c.createHash("sha256").update(JSON.stringify({ e: jwk.e, kty: jwk.kty, n: jwk.n })).digest("base64url");
+        process.stdout.write(JSON.stringify({ kty: jwk.kty, kid: thumb, use: "sig", alg: "PS256", n: jwk.n, e: jwk.e,
+          d: jwk.d, p: jwk.p, q: jwk.q, dp: jwk.dp, dq: jwk.dq, qi: jwk.qi }));')" || die "cannot generate the $client_id key pair"
+    else
+      jwk=""
+    fi
+    put "${prefix}_PRIVATE_JWK" "$jwk"
+  done
   # Same value the realm import gives the service client (never a second secret).
   for svc in SVC_LN_LOAN_LIFECYCLE SVC_PAY_INITIATION_SETTLEMENT; do
     value["PARITY_SECRET_$svc"]="${value[FBX_OIDC_SECRET_$svc]}"
@@ -217,13 +233,23 @@ for name in "${parity_realm_keys[@]}"; do put "$name" "${value[$name]}"; done
 write "$out_dir/realm.env" "$realm_start" "${#order[@]}"
 
 if [ "$parity" = true ]; then
-  tpp_jwks="$(node -e '
-    const k = JSON.parse(process.argv[1]);
-    process.stdout.write(JSON.stringify({ keys: [{ kty: k.kty, kid: k.kid, use: k.use, alg: k.alg, n: k.n, e: k.e }] }));' \
-    "${value[PARITY_TPP_PRIVATE_JWK]}")" || die "PARITY_TPP_PRIVATE_JWK in $out_dir/.env is not a JWK"
+  # clientId -> public JWKS of each key-bound client (public members only).
+  jwks="$(node -e '
+    const out = {};
+    for (let i = 1; i < process.argv.length; i += 3) {
+      const [client, name, text] = process.argv.slice(i, i + 3);
+      let k;
+      try { k = JSON.parse(text); } catch { console.error(`${name} is not a JWK`); process.exit(1); }
+      out[client] = { keys: [{ kty: k.kty, kid: k.kid, use: k.use, alg: k.alg, n: k.n, e: k.e }] };
+    }
+    process.stdout.write(JSON.stringify(out));' \
+    "${value[PARITY_TPP_CLIENT_ID]}" PARITY_TPP_PRIVATE_JWK "${value[PARITY_TPP_PRIVATE_JWK]}" \
+    "${value[PARITY_TPP_OTHER_CLIENT_ID]}" PARITY_TPP_OTHER_PRIVATE_JWK "${value[PARITY_TPP_OTHER_PRIVATE_JWK]}" \
+    "${value[PARITY_CHANNEL_CLIENT_ID]}" PARITY_CHANNEL_PRIVATE_JWK "${value[PARITY_CHANNEL_PRIVATE_JWK]}")" \
+    || die "a parity private JWK in $out_dir/.env is not a JWK"
   node "$compose_dir/scripts/render-parity-fixtures.mjs" \
     --template "$compose_dir/keycloak/parity-fixtures.template.json" \
-    --realm "$realm" --out "$cache_dir/parity/parity-fixtures.json" --tpp-jwks "$tpp_jwks"
+    --realm "$realm" --out "$cache_dir/parity/parity-fixtures.json" --jwks "$jwks"
 fi
 
 echo "[init-env] wrote $out_dir/.env and $out_dir/realm.env (${#realm_placeholders[@]} realm placeholders)"
