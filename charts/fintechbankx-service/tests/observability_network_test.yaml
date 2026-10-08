@@ -1,0 +1,30 @@
+suite: servicemonitor, networkpolicy and serviceaccount
+templates:
+  - templates/servicemonitor.yaml
+  - templates/networkpolicy.yaml
+  - templates/serviceaccount.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  - it: scrapes /actuator/prometheus on http-management
+    template: templates/servicemonitor.yaml
+    asserts:
+      - equal: {path: "spec.endpoints[0].port", value: http-management}
+      - equal: {path: "spec.endpoints[0].path", value: /actuator/prometheus}
+      - contains: {path: spec.namespaceSelector.matchNames, content: lending}
+  - it: is default-deny for both directions with explicit allows
+    template: templates/networkpolicy.yaml
+    asserts:
+      - contains: {path: spec.policyTypes, content: Ingress}
+      - contains: {path: spec.policyTypes, content: Egress}
+      - equal: {path: "spec.ingress[0].ports[0].port", value: 8080}
+  - it: annotates the ServiceAccount with the IRSA role
+    template: templates/serviceaccount.yaml
+    asserts:
+      - equal: {path: metadata.name, value: loan-lifecycle-service}
+      - equal:
+          path: "metadata.annotations[\"eks.amazonaws.com/role-arn\"]"
+          value: arn:aws:iam::123456789012:role/staging-loan-lifecycle-service-workload

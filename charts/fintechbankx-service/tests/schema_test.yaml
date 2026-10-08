@@ -1,0 +1,55 @@
+suite: values.schema.json rejections
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+tests:
+  - it: accepts the fixture (control case for the rejections below)
+    template: templates/deployment.yaml
+    asserts:
+      - notFailedTemplate: {}
+  - it: rejects a mutable latest tag
+    template: templates/deployment.yaml
+    set:
+      image.digest: ""
+      image.tag: latest
+    asserts:
+      - failedTemplate:
+          errorPattern: "image.tag: Must not validate"
+  - it: rejects a malformed digest
+    template: templates/deployment.yaml
+    set:
+      image.digest: sha256:abc
+    asserts:
+      - failedTemplate:
+          errorPattern: "image.digest: Does not match pattern"
+  - it: rejects a service id outside the naming standard
+    template: templates/deployment.yaml
+    set:
+      serviceId: loan-service
+    asserts:
+      - failedTemplate:
+          errorPattern: "serviceId: Does not match pattern"
+  - it: rejects disabling sidecar injection
+    template: templates/deployment.yaml
+    set:
+      istio.inject: false
+    asserts:
+      - failedTemplate:
+          errorPattern: "istio.inject"
+  - it: rejects the excludeInboundPorts annotation
+    template: templates/deployment.yaml
+    set:
+      podAnnotations:
+        traffic.sidecar.istio.io/excludeInboundPorts: "8081"
+    asserts:
+      - failedTemplate:
+          errorPattern: "podAnnotations: Must not validate"
+  - it: rejects a secret store kind other than ClusterSecretStore/SecretStore
+    template: templates/deployment.yaml
+    set:
+      externalSecret.secretStoreRef.kind: Vault
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.secretStoreRef.kind"

@@ -2,8 +2,10 @@
 # Validates charts/fintechbankx-service: helm lint (strict) and helm template
 # for every CI fixture and for the microservice skeleton values, kubeconform on
 # the rendered manifests (core + CRD schemas), negative cases that must fail,
-# and the strict-mTLS validator over the rendered output.
-# Usage: scripts/ci/validate-chart.sh   (needs helm, kubeconform, node; HELM=/KUBECONFORM= override)
+# helm-unittest suites (charts/fintechbankx-service/tests) and the strict-mTLS
+# validator over the rendered output.
+# Usage: scripts/ci/validate-chart.sh
+#   needs helm with the helm-unittest plugin, kubeconform and node (HELM=/KUBECONFORM= override)
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -58,6 +60,9 @@ if "$helm" lint "$chart" >/dev/null 2>&1; then
   echo "expected bare values.yaml to fail lint (required identity values)"; exit 1
 fi
 echo "[negative] bare values.yaml rejected as expected"
+
+echo "[helm-unittest] $chart/tests"
+"$helm" unittest "$chart"
 
 echo "[strict-mtls] rendered manifests"
 node scripts/validation/validate-strict-mtls.mjs --path "$out"

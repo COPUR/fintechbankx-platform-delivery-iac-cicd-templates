@@ -1,0 +1,17 @@
+suite: service - Istio protocol-named ports
+templates:
+  - templates/service.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+tests:
+  - it: names ports http (8080) and http-management (8081)
+    asserts:
+      - isKind: {of: Service}
+      - equal: {path: spec.type, value: ClusterIP}
+      - contains:
+          path: spec.ports
+          content: {name: http, port: 8080, targetPort: http, appProtocol: http}
+      - contains:
+          path: spec.ports
+          content: {name: http-management, port: 8081, targetPort: management, appProtocol: http}
+      - equal: {path: "spec.selector[\"app.kubernetes.io/name\"]", value: loan-lifecycle-service}
