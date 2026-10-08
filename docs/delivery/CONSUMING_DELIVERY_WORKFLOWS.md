@@ -71,8 +71,9 @@ Pinning (supply chain):
   succeeded or was skipped. Keep them when adopting a caller and branch
   protection needs no change.
 - `java-service-ci` ArchUnit gate (ADR-028): always runs after `check` using
-  `tools/archunit-gate` from this repository at `platform-ref`. Set
-  `package-root` to the repository's one package root (`com.bank.<context>`,
+  `tools/archunit-gate` from this repository at `platform-ref`. `package-root`
+  is required (the gate fails with an error when it is empty, a warning under
+  `archunit-report-only`): set it to the repository's one package root (`com.bank.<context>`,
   `com.enterprise.openfinance.<capability>`, new repositories
   `com.fintechbankx.<context>.<capability>`) and `archunit-layout`
   (`multi-module`, `single-module` or `auto`). The four rules: domain free of
@@ -83,9 +84,9 @@ Pinning (supply chain):
   2): with `package-root` set, rules 1-4 run on that root only and every
   compiled main class outside it, and every other package owning a `.domain`
   package (also one nested under the root), fails rule 5 by name; the shared
-  kernel `com.bank.shared.kernel` is allowed. Without `package-root`, rule 5
-  fails when more than one root is found and asks for `package-root`, so
-  single-root repositories need no configuration. `archunit-base-packages`
+  kernel `com.bank.shared.kernel` is allowed. (Only under
+  `archunit-report-only` can the gate run without `package-root`; rule 5 then
+  reports more than one detected root.) `archunit-base-packages`
   (space separated, empty = every package owning a `.domain` package) only
   matters without `package-root`; with it, leave it empty or equal.
   `archunit-report-only: true` is a visible, temporary escape hatch (all five

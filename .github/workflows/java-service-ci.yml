@@ -21,7 +21,8 @@ name: java-service-ci
 #   - ArchUnit gate (ADR-028): the four hexagonal rules from this repository's
 #     tools/archunit-gate run against the service's compiled main classes after
 #     `check`, regardless of the ArchUnit tests the service repo has itself, plus
-#     rule 5 (one package root per repository). Set package-root to the repo's root.
+#     rule 5 (one package root per repository). package-root is required: the
+#     gate fails when it is empty (unless archunit-report-only).
 #   - Test and coverage reports uploaded as an artifact.
 # The `.ci/allow-gradle-fail` marker is deliberately NOT honoured here.
 
@@ -82,11 +83,12 @@ on:
         default: true
       package-root:
         description: >-
-          The repository's one package root (rule 5, FINTECHBANKX_SERVICE_GUARDRAILS.md section 2): com.bank.<context>,
-          com.enterprise.openfinance.<capability> or com.fintechbankx.<context>.<capability>. When set, rules 1-4 run
-          on this root only and every compiled main class outside it (shared kernel com.bank.shared.kernel excepted)
-          and every other package owning a .domain package fails rule 5. Empty = rule 5 fails only when the classes
-          hold more than one root.
+          Required. The repository's one package root (rule 5, FINTECHBANKX_SERVICE_GUARDRAILS.md section 2):
+          com.bank.<context>, com.enterprise.openfinance.<capability> or com.fintechbankx.<context>.<capability>.
+          Rules 1-4 run on this root only and every compiled main class outside it (shared kernel
+          com.bank.shared.kernel excepted) and every other package owning a .domain package fails rule 5. Empty
+          fails the ArchUnit gate (only a warning with archunit-report-only), so a second root cannot pass unseen
+          when auto-detection misses it.
         type: string
         default: ""
       archunit-base-packages:
@@ -238,6 +240,14 @@ jobs:
           GATE_DIR: ${{ github.workspace }}/.fbx-platform/tools/archunit-gate
         run: |
           set -euo pipefail
+          if [ -z "$PACKAGE_ROOT" ]; then
+            msg="package-root is required (rule 5, one package root per repository): set it to the repository's root, e.g. com.bank.<context>, com.enterprise.openfinance.<capability> or com.fintechbankx.<context>.<capability>"
+            if [ "$REPORT_ONLY" != "true" ]; then
+              echo "::error::$msg"
+              exit 1
+            fi
+            echo "::warning::$msg (archunit-report-only: rule 5 runs without it)"
+          fi
           "$GATE_DIR/gradlew" -p "$GATE_DIR" --no-daemon -q installDist
           case "$LAYOUT" in
             multi-module) pattern='*/build/classes/java/main' ;;

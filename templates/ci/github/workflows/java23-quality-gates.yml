@@ -32,7 +32,9 @@ jobs:
       contents: read
     with:
       platform-ref: v1.0.0
-    #   package-root: com.bank.<context>   # rule 5, or com.enterprise.openfinance.<capability> / com.fintechbankx.<context>.<capability>
+      # Required (rule 5): the repository's one package root. Replace with com.bank.<context>,
+      # com.enterprise.openfinance.<capability> or com.fintechbankx.<context>.<capability>.
+      package-root: com.fintechbankx.example.capability
     #   postgres-enabled: true
     #   postgres-db: db_<ctx>_<cap>_test
 

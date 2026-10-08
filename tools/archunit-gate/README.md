@@ -24,8 +24,9 @@ Roots: `com.bank.<context>` (multi-module cores) or `com.enterprise.openfinance.
 - Without `--package-root`: rules 1-4 run on the `--root` packages, or on every
   outermost package that owns a `.domain` package. Rule 5 fails when the classes
   hold more than one package prefix owning a `.domain` package, whatever `--root`
-  says, and tells the repository to set `package-root`. Single-root repositories
-  pass without configuration.
+  says, and tells the repository to set `package-root`. The CLI allows this; in
+  `java-service-ci.yml` the `package-root` input is required and the gate step
+  fails when it is empty (a warning only with `archunit-report-only`).
 - The shared kernel `com.bank.shared.kernel` (kept where it already is,
   guardrails section 2) is allowed next to the root and is never a second root.
 - The gate sees compiled main classes only: sources a build excludes from its
