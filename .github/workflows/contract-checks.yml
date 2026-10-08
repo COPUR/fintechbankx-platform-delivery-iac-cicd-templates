@@ -1,0 +1,188 @@
+name: contract-checks
+
+# Reusable API and event contract gates.
+#
+#   openapi:  Redocly lint, then oasdiff breaking-change check against the base
+#             ref. A reviewed allowlist <spec>.accepted-breaking.txt next to a
+#             spec (one oasdiff error per line, as in customer-profile-kyc-core)
+#             is passed to --err-ignore; anything not listed still fails.
+#             scripts/ci/fapi-dpop-guard.sh runs when the repo has it.
+#   asyncapi: AsyncAPI CLI validate.
+#
+# Usage (caller job):
+#   contracts:
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/contract-checks.yml@main
+#     permissions:
+#       contents: read
+
+on:
+  workflow_call:
+    inputs:
+      openapi-globs:
+        description: Space separated git pathspecs for OpenAPI specs.
+        type: string
+        default: "openapi/*.yaml api/openapi/*.yaml src/main/resources/openapi/*.yaml"
+      asyncapi-globs:
+        description: Space separated git pathspecs for AsyncAPI specs.
+        type: string
+        default: "asyncapi/*.yaml asyncapi/*.yml api/asyncapi/*.yaml api/asyncapi/*.yml"
+      base-ref:
+        description: Baseline for the breaking-change diff. Empty = the PR base branch, else origin/main.
+        type: string
+        default: ""
+      redocly-version:
+        type: string
+        default: 1.27.1
+      oasdiff-version:
+        type: string
+        default: 1.12.1
+      asyncapi-cli-version:
+        type: string
+        default: 2.13.0
+      run-fapi-guard:
+        description: Run scripts/ci/fapi-dpop-guard.sh when present.
+        type: boolean
+        default: true
+      timeout-minutes:
+        type: number
+        default: 15
+
+permissions:
+  contents: read
+
+jobs:
+  openapi:
+    name: contracts/openapi
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    concurrency:
+      group: contract-checks-openapi-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      NPM_CONFIG_CACHE: ${{ github.workspace }}/.npm-cache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Find specs
+        id: specs
+        env:
+          GLOBS: ${{ inputs.openapi-globs }}
+        run: |
+          set -euo pipefail
+          read -r -a pathspecs <<< "$GLOBS"
+          git ls-files -- "${pathspecs[@]}" > openapi-specs.txt
+          count="$(wc -l < openapi-specs.txt | tr -d ' ')"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "OpenAPI specs found: $count"
+          cat openapi-specs.txt
+
+      - name: Redocly lint
+        if: ${{ steps.specs.outputs.count != '0' }}
+        env:
+          REDOCLY_VERSION: ${{ inputs.redocly-version }}
+        run: |
+          set -euo pipefail
+          mapfile -t specs < openapi-specs.txt
+          npx -y "@redocly/cli@${REDOCLY_VERSION}" lint "${specs[@]}"
+
+      - name: Install oasdiff
+        if: ${{ steps.specs.outputs.count != '0' }}
+        env:
+          OASDIFF_VERSION: ${{ inputs.oasdiff-version }}
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          curl -sSfL "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C "$tmpdir"
+          sudo install "$tmpdir/oasdiff" /usr/local/bin/oasdiff
+
+      - name: Breaking-change guard (oasdiff + accepted-breaking allowlist)
+        if: ${{ steps.specs.outputs.count != '0' }}
+        env:
+          BASE_REF_INPUT: ${{ inputs.base-ref }}
+          PR_BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE_REF_INPUT" ]; then
+            base="$BASE_REF_INPUT"
+          elif [ -n "$PR_BASE" ]; then
+            base="origin/$PR_BASE"
+          else
+            base="origin/main"
+          fi
+          if ! git rev-parse --verify --quiet "$base" >/dev/null; then
+            git fetch --no-tags origin "${base#origin/}" --depth=1 || true
+          fi
+          if ! git rev-parse --verify --quiet "$base" >/dev/null; then
+            echo "::warning::Baseline $base not found; breaking-change check skipped."
+            exit 0
+          fi
+          tmpdir="$(mktemp -d)"
+          fail=0
+          while IFS= read -r spec; do
+            if ! git cat-file -e "$base:$spec" 2>/dev/null; then
+              echo "[oasdiff] new spec, no baseline: $spec"
+              continue
+            fi
+            git show "$base:$spec" > "$tmpdir/base.yaml"
+            ignore_args=()
+            accepted="${spec%.*}.accepted-breaking.txt"
+            if [ -f "$accepted" ]; then
+              echo "[oasdiff] $spec: applying reviewed allowlist $accepted"
+              ignore_args=(--err-ignore "$accepted")
+            fi
+            echo "[oasdiff] checking $spec against $base"
+            if ! oasdiff breaking --fail-on ERR "${ignore_args[@]}" "$tmpdir/base.yaml" "$spec"; then
+              echo "::error file=$spec::breaking change against $base (add a reviewed line to $accepted only with consumer sign-off and a version plan)"
+              fail=1
+            fi
+          done < openapi-specs.txt
+          exit "$fail"
+
+      - name: FAPI / DPoP contract guard
+        if: ${{ steps.specs.outputs.count != '0' && inputs.run-fapi-guard && hashFiles('scripts/ci/fapi-dpop-guard.sh') != '' }}
+        run: bash scripts/ci/fapi-dpop-guard.sh
+
+  asyncapi:
+    name: contracts/asyncapi
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    env:
+      NPM_CONFIG_CACHE: ${{ github.workspace }}/.npm-cache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: AsyncAPI validate
+        env:
+          GLOBS: ${{ inputs.asyncapi-globs }}
+          ASYNCAPI_CLI_VERSION: ${{ inputs.asyncapi-cli-version }}
+        run: |
+          set -euo pipefail
+          read -r -a pathspecs <<< "$GLOBS"
+          mapfile -t specs < <(git ls-files -- "${pathspecs[@]}")
+          if [ "${#specs[@]}" -eq 0 ]; then
+            echo "No AsyncAPI specs; check not applicable."
+            exit 0
+          fi
+          for spec in "${specs[@]}"; do
+            echo "[asyncapi] validating $spec"
+            npx -y "@asyncapi/cli@${ASYNCAPI_CLI_VERSION}" validate "$spec"
+          done

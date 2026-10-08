@@ -1,0 +1,148 @@
+name: db-migration-verify
+
+# Reusable database migration rehearsal on a throwaway PostgreSQL.
+#
+#   1. Flyway migrate the service's versioned migrations into its own schema
+#      (database-per-service; no other service's schema is touched).
+#   2. Migrate again and validate: proves there is nothing pending and that
+#      checksums match (edited, already-released migrations fail here).
+#   3. Run scripts/migration/verify-backfill.sh when present: the monolith ->
+#      service backfill rehearsal (idempotent double run + reconciliation) used
+#      by the loan, payment, customer, risk and compliance service repos.
+#
+# Usage (caller job):
+#   migration:
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/db-migration-verify.yml@main
+#     permissions:
+#       contents: read
+#     with:
+#       schema: sc_ln_loan_lifecycle
+
+on:
+  workflow_call:
+    inputs:
+      migration-locations:
+        description: >-
+          Space separated directories with V*.sql files, relative to the repo root.
+          Empty = every committed directory matching */db/migration.
+        type: string
+        default: ""
+      schema:
+        description: Target schema (sc_<ctx>_<cap> by convention). Empty = public.
+        type: string
+        default: ""
+      database:
+        type: string
+        default: migration_verify
+      postgres-image:
+        type: string
+        default: postgres:16-alpine
+      flyway-image:
+        description: Flyway CLI image (pinned version).
+        type: string
+        default: flyway/flyway:10.20.1-alpine
+      verify-backfill-script:
+        description: Backfill rehearsal script, run when the file exists.
+        type: string
+        default: scripts/migration/verify-backfill.sh
+      timeout-minutes:
+        type: number
+        default: 20
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    name: db/migration-verify
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    concurrency:
+      group: db-migration-verify-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    services:
+      postgres:
+        image: ${{ inputs.postgres-image }}
+        env:
+          POSTGRES_DB: ${{ inputs.database }}
+          POSTGRES_USER: migration_verify
+          POSTGRES_PASSWORD: migration_verify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U migration_verify"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # Throwaway credentials for the job-scoped container only.
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: migration_verify
+      PGPASSWORD: migration_verify
+      FLYWAY_USER: migration_verify
+      FLYWAY_PASSWORD: migration_verify
+      FLYWAY_URL: jdbc:postgresql://localhost:5432/${{ inputs.database }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve migration locations
+        id: locations
+        env:
+          LOCATIONS_INPUT: ${{ inputs.migration-locations }}
+        run: |
+          set -euo pipefail
+          if [ -n "$LOCATIONS_INPUT" ]; then
+            read -r -a dirs <<< "$LOCATIONS_INPUT"
+          else
+            mapfile -t dirs < <(git ls-files '*/db/migration/V*.sql' 'db/migration/V*.sql' | xargs -r -n1 dirname | sort -u)
+          fi
+          if [ "${#dirs[@]}" -eq 0 ]; then
+            echo "No Flyway migrations found; nothing to verify."
+            echo "flyway=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          locations=""
+          for d in "${dirs[@]}"; do
+            test -d "$d" || { echo "::error::migration location $d does not exist"; exit 1; }
+            echo "migration location: $d ($(find "$d" -maxdepth 1 -name 'V*.sql' | wc -l) versioned scripts)"
+            locations="${locations:+$locations,}filesystem:/workspace/$d"
+          done
+          echo "flyway=$locations" >> "$GITHUB_OUTPUT"
+
+      - name: Flyway migrate, re-migrate and validate
+        if: ${{ steps.locations.outputs.flyway != '' }}
+        env:
+          FLYWAY_IMAGE: ${{ inputs.flyway-image }}
+          FLYWAY_LOCATIONS: ${{ steps.locations.outputs.flyway }}
+          SCHEMA: ${{ inputs.schema }}
+        run: |
+          set -euo pipefail
+          flyway() {
+            docker run --rm --network host \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -e FLYWAY_URL -e FLYWAY_USER -e FLYWAY_PASSWORD -e FLYWAY_LOCATIONS \
+              -e FLYWAY_SCHEMAS="${SCHEMA:-public}" -e FLYWAY_CREATE_SCHEMAS=true \
+              -e FLYWAY_CLEAN_DISABLED=true -e FLYWAY_VALIDATE_MIGRATION_NAMING=true \
+              "$FLYWAY_IMAGE" "$@"
+          }
+          flyway migrate
+          flyway info
+          executed="$(flyway -outputType=json migrate | jq -r '.migrationsExecuted')"
+          echo "second migrate executed: $executed"
+          if [ "$executed" != "0" ]; then
+            echo "::error::second migrate was not a no-op"
+            exit 1
+          fi
+          flyway validate
+
+      - name: Backfill rehearsal (verify-backfill.sh)
+        if: ${{ hashFiles(inputs.verify-backfill-script) != '' }}
+        env:
+          SCRIPT: ${{ inputs.verify-backfill-script }}
+        run: |
+          set -euo pipefail
+          bash "$SCRIPT"

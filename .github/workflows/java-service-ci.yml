@@ -1,0 +1,185 @@
+name: java-service-ci
+
+# Reusable Java 23 service CI for FinTechBankX service repositories.
+#
+# Usage (caller job):
+#   ci:
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/java-service-ci.yml@main
+#     permissions:
+#       contents: read
+#     with:
+#       postgres-enabled: true
+#       postgres-db: db_ln_loan_lifecycle_test
+#
+# What it enforces:
+#   - JDK 23 (Temurin), Gradle wrapper when committed, otherwise the runner's Gradle.
+#   - `gradle assemble -x test`, then `gradle check` so jacocoTestCoverageVerification is a gate.
+#     Set gradle-tasks: test only for repos without a coverage gate yet (documented debt).
+#   - Optional PostgreSQL service container exported as TEST_DB_URL / TEST_DB_USERNAME / TEST_DB_PASSWORD.
+#   - No Map<String,Object> in any *Controller.java under any module's src/main/java.
+#   - Test and coverage reports uploaded as an artifact.
+# The `.ci/allow-gradle-fail` marker is deliberately NOT honoured here.
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        description: JDK version (Temurin).
+        type: string
+        default: "23"
+      gradle-version:
+        description: Gradle version to provision when the repo has no wrapper (empty = runner default).
+        type: string
+        default: ""
+      gradle-tasks:
+        description: Verification tasks. `check` runs tests plus the jacoco coverage gate; fall back to `test` only with a recorded reason.
+        type: string
+        default: check
+      gradle-args:
+        description: Extra Gradle arguments (e.g. --scan, -PskipIT).
+        type: string
+        default: ""
+      working-directory:
+        description: Directory containing the Gradle root build.
+        type: string
+        default: "."
+      postgres-enabled:
+        description: Start a PostgreSQL service container and export TEST_DB_URL.
+        type: boolean
+        default: false
+      postgres-image:
+        description: PostgreSQL image for the service container.
+        type: string
+        default: postgres:16-alpine
+      postgres-db:
+        description: Test database name (db_<ctx>_<cap>_test by convention).
+        type: string
+        default: app_test
+      postgres-user:
+        description: Test database role. The throwaway credential equals the role name; the container only lives for this job.
+        type: string
+        default: app_test
+      controller-map-guardrail:
+        description: Fail when a *Controller.java uses Map<String,Object>.
+        type: boolean
+        default: true
+      timeout-minutes:
+        description: Job timeout.
+        type: number
+        default: 30
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ci/build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    concurrency:
+      group: java-service-ci-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    services:
+      postgres:
+        # An empty image skips the service container.
+        image: ${{ inputs.postgres-enabled && inputs.postgres-image || '' }}
+        env:
+          POSTGRES_DB: ${{ inputs.postgres-db }}
+          POSTGRES_USER: ${{ inputs.postgres-user }}
+          POSTGRES_PASSWORD: ${{ inputs.postgres-user }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ${{ inputs.postgres-user }} -d ${{ inputs.postgres-db }}"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DB_URL: ${{ inputs.postgres-enabled && format('jdbc:postgresql://localhost:5432/{0}', inputs.postgres-db) || '' }}
+      TEST_DB_USERNAME: ${{ inputs.postgres-enabled && inputs.postgres-user || '' }}
+      TEST_DB_PASSWORD: ${{ inputs.postgres-enabled && inputs.postgres-user || '' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+
+      - name: Set up Gradle (cache + wrapper validation)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ inputs.gradle-version != '' && inputs.gradle-version || 'wrapper' }}
+          validate-wrappers: true
+
+      - name: Resolve Gradle command
+        id: gradle
+        run: |
+          set -euo pipefail
+          if [ -x ./gradlew ]; then
+            echo "cmd=./gradlew" >> "$GITHUB_OUTPUT"
+          elif command -v gradle >/dev/null 2>&1; then
+            echo "No Gradle wrapper committed; using $(gradle --version | sed -n 's/^Gradle //p') from the runner."
+            echo "cmd=gradle" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No ./gradlew and no gradle on PATH"
+            exit 1
+          fi
+
+      - name: Build (assemble, no tests)
+        env:
+          GRADLE_CMD: ${{ steps.gradle.outputs.cmd }}
+          GRADLE_ARGS: ${{ inputs.gradle-args }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          $GRADLE_CMD --no-daemon clean assemble -x test $GRADLE_ARGS
+
+      - name: Verify (${{ inputs.gradle-tasks }})
+        env:
+          GRADLE_CMD: ${{ steps.gradle.outputs.cmd }}
+          GRADLE_TASKS: ${{ inputs.gradle-tasks }}
+          GRADLE_ARGS: ${{ inputs.gradle-args }}
+        run: |
+          set -euo pipefail
+          if [ -n "${TEST_DB_URL}" ]; then
+            echo "Integration tests use ${TEST_DB_URL}"
+          fi
+          # shellcheck disable=SC2086
+          $GRADLE_CMD --no-daemon $GRADLE_TASKS $GRADLE_ARGS
+
+      - name: Guardrail - no Map<String,Object> in controllers
+        if: ${{ inputs.controller-map-guardrail }}
+        run: |
+          set -euo pipefail
+          mapfile -t controllers < <(git ls-files '*Controller.java' | grep '/src/main/java/\|^src/main/java/' || true)
+          if [ "${#controllers[@]}" -eq 0 ]; then
+            echo "No *Controller.java sources; guardrail not applicable."
+            exit 0
+          fi
+          if grep -nE 'Map<\s*String\s*,\s*Object\s*>' "${controllers[@]}"; then
+            echo "::error::Generic Map<String,Object> payloads are disallowed in controllers; use typed request/response DTOs."
+            exit 1
+          fi
+          echo "Checked ${#controllers[@]} controller(s)."
+
+      - name: Upload test and coverage reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-service-ci-reports-${{ github.run_attempt }}
+          path: |
+            ${{ inputs.working-directory }}/**/build/reports/**
+            ${{ inputs.working-directory }}/**/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14

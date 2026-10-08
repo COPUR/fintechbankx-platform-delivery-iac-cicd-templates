@@ -1,0 +1,266 @@
+name: helm-deploy
+
+# Reusable Helm deploy to Amazon EKS.
+#
+#   validate: helm lint + helm template + kubeconform (no cloud access)
+#   deploy:   GitHub environment gate -> AWS OIDC -> helm upgrade --install --atomic --wait
+#
+# The image is always passed by digest. Environments are GitHub environments
+# named after inputs.environment; configure "Required reviewers" on staging and
+# prod in the service repository settings so those deploys wait for approval.
+#
+# Chart source: by default the generic chart charts/fintechbankx-service from
+# this repository at inputs.platform-ref; set chart-path to use a chart that
+# lives in the service repo (e.g. deploy/helm/loan-lifecycle-service).
+#
+# Usage (caller job):
+#   deploy-dev:
+#     needs: image
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/helm-deploy.yml@main
+#     permissions:
+#       contents: read
+#       id-token: write
+#     with:
+#       environment: dev
+#       namespace: lending
+#       release-name: loan-lifecycle-service
+#       values-files: deploy/helm/values.yaml deploy/helm/values-dev.yaml
+#       image-repository: ${{ needs.image.outputs.image-repository }}
+#       image-digest: ${{ needs.image.outputs.image-digest }}
+#       image-tag: ${{ needs.image.outputs.image-tag }}
+#       eks-cluster-name: fintechbankx-dev
+#       aws-role-to-assume: arn:aws:iam::<account>:role/<ci-eks-deploy-role-dev>
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub environment and target environment (dev, staging, prod).
+        type: string
+        required: true
+      namespace:
+        description: Kubernetes namespace (bounded context, created by the platform, never by this workflow).
+        type: string
+        required: true
+      release-name:
+        description: Helm release name (the service's serviceName by convention).
+        type: string
+        required: true
+      chart-path:
+        description: Chart path in the caller repo. Empty = platform chart charts/fintechbankx-service.
+        type: string
+        default: ""
+      platform-repository:
+        description: Repository that provides the generic chart.
+        type: string
+        default: COPUR/fintechbankx-platform-delivery-iac-cicd-templates
+      platform-ref:
+        description: Ref of the platform repository (pin a tag once released).
+        type: string
+        default: main
+      values-files:
+        description: Space or newline separated values files in the caller repo, applied in order.
+        type: string
+        default: ""
+      image-repository:
+        description: Image repository (registry/name) without tag.
+        type: string
+        required: true
+      image-digest:
+        description: Image digest (sha256:...). Deploys are always by digest.
+        type: string
+        required: true
+      image-tag:
+        description: Git SHA tag, used only for the version label.
+        type: string
+        default: ""
+      aws-region:
+        type: string
+        default: me-central-1
+      aws-role-to-assume:
+        description: IAM role for this environment's deploys (mapped to a namespaced RBAC role in EKS access entries).
+        type: string
+        required: true
+      eks-cluster-name:
+        type: string
+        required: true
+      helm-version:
+        type: string
+        default: v3.16.3
+      kubeconform-version:
+        type: string
+        default: v0.6.7
+      kube-version:
+        description: Kubernetes version used for helm template and kubeconform schemas.
+        type: string
+        default: 1.30.0
+      helm-timeout:
+        type: string
+        default: 10m
+      timeout-minutes:
+        type: number
+        default: 30
+    secrets:
+      platform-repo-token:
+        description: Token to read platform-repository when it is private. Not needed for public repos.
+        required: false
+    outputs:
+      revision:
+        description: Helm release revision after the deploy.
+        value: ${{ jobs.deploy.outputs.revision }}
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: deploy/validate-${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout service
+        uses: actions/checkout@v4
+
+      - name: Checkout platform chart
+        if: ${{ inputs.chart-path == '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.platform-repository }}
+          ref: ${{ inputs.platform-ref }}
+          path: .fbx-platform
+          token: ${{ secrets.platform-repo-token || github.token }}
+          sparse-checkout: charts
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ inputs.helm-version }}
+
+      - name: Install kubeconform
+        env:
+          KUBECONFORM_VERSION: ${{ inputs.kubeconform-version }}
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C "$tmpdir"
+          sudo install "$tmpdir/kubeconform" /usr/local/bin/kubeconform
+
+      - name: Lint, render and validate manifests
+        env:
+          CHART_PATH: ${{ inputs.chart-path != '' && inputs.chart-path || '.fbx-platform/charts/fintechbankx-service' }}
+          VALUES_FILES: ${{ inputs.values-files }}
+          IMAGE_REPOSITORY: ${{ inputs.image-repository }}
+          IMAGE_DIGEST: ${{ inputs.image-digest }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          RELEASE: ${{ inputs.release-name }}
+          NAMESPACE: ${{ inputs.namespace }}
+          KUBE_VERSION: ${{ inputs.kube-version }}
+        run: |
+          set -euo pipefail
+          case "$IMAGE_DIGEST" in
+            sha256:*) ;;
+            *) echo "::error::image-digest must be a sha256 digest"; exit 1 ;;
+          esac
+          args=()
+          for f in $VALUES_FILES; do args+=(-f "$f"); done
+          args+=(--set-string "image.repository=$IMAGE_REPOSITORY" --set-string "image.digest=$IMAGE_DIGEST")
+          if [ -n "$IMAGE_TAG" ]; then args+=(--set-string "image.tag=$IMAGE_TAG"); fi
+          helm lint "$CHART_PATH" "${args[@]}"
+          helm template "$RELEASE" "$CHART_PATH" --namespace "$NAMESPACE" --kube-version "$KUBE_VERSION" "${args[@]}" > rendered.yaml
+          kubeconform -strict -summary -kubernetes-version "$KUBE_VERSION" \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            rendered.yaml
+          if grep -nE 'image: .*:latest"?$' rendered.yaml; then
+            echo "::error::rendered manifests reference a :latest image"; exit 1
+          fi
+
+      - name: Upload rendered manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-${{ inputs.release-name }}-${{ inputs.environment }}
+          path: rendered.yaml
+          retention-days: 14
+
+  deploy:
+    name: deploy/${{ inputs.environment }}
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      # One deploy per release and environment at a time; never cancel a running rollout.
+      group: helm-deploy-${{ github.repository }}-${{ inputs.environment }}-${{ inputs.release-name }}
+      cancel-in-progress: false
+    outputs:
+      revision: ${{ steps.deploy.outputs.revision }}
+    steps:
+      - name: Checkout service
+        uses: actions/checkout@v4
+
+      - name: Checkout platform chart
+        if: ${{ inputs.chart-path == '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.platform-repository }}
+          ref: ${{ inputs.platform-ref }}
+          path: .fbx-platform
+          token: ${{ secrets.platform-repo-token || github.token }}
+          sparse-checkout: charts
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ inputs.helm-version }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-to-assume }}
+          role-session-name: gha-deploy-${{ inputs.environment }}-${{ github.run_id }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Update kubeconfig
+        env:
+          CLUSTER: ${{ inputs.eks-cluster-name }}
+          REGION: ${{ inputs.aws-region }}
+        run: aws eks update-kubeconfig --name "$CLUSTER" --region "$REGION"
+
+      - name: helm upgrade --install --atomic --wait
+        id: deploy
+        env:
+          CHART_PATH: ${{ inputs.chart-path != '' && inputs.chart-path || '.fbx-platform/charts/fintechbankx-service' }}
+          VALUES_FILES: ${{ inputs.values-files }}
+          IMAGE_REPOSITORY: ${{ inputs.image-repository }}
+          IMAGE_DIGEST: ${{ inputs.image-digest }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          RELEASE: ${{ inputs.release-name }}
+          NAMESPACE: ${{ inputs.namespace }}
+          HELM_TIMEOUT: ${{ inputs.helm-timeout }}
+          TARGET_ENV: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          args=()
+          for f in $VALUES_FILES; do args+=(-f "$f"); done
+          args+=(--set-string "image.repository=$IMAGE_REPOSITORY" --set-string "image.digest=$IMAGE_DIGEST")
+          if [ -n "$IMAGE_TAG" ]; then args+=(--set-string "image.tag=$IMAGE_TAG"); fi
+          helm upgrade --install "$RELEASE" "$CHART_PATH" \
+            --namespace "$NAMESPACE" \
+            --atomic --wait --timeout "$HELM_TIMEOUT" \
+            --history-max 10 \
+            --description "deploy ${GITHUB_SHA} to ${TARGET_ENV} by ${GITHUB_WORKFLOW} run ${GITHUB_RUN_ID}" \
+            "${args[@]}"
+          revision="$(helm history "$RELEASE" --namespace "$NAMESPACE" --max 1 -o json | jq -r '.[0].revision')"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Deployed ${RELEASE} to ${TARGET_ENV}"
+            echo "- namespace: \`${NAMESPACE}\`"
+            echo "- image: \`${IMAGE_REPOSITORY}@${IMAGE_DIGEST}\`"
+            echo "- helm revision: ${revision} (roll back with \`helm rollback ${RELEASE} <revision> -n ${NAMESPACE}\`)"
+          } >> "$GITHUB_STEP_SUMMARY"

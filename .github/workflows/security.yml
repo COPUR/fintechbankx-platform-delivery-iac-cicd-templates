@@ -1,0 +1,145 @@
+name: security
+
+# Reusable security gates.
+#
+#   gitleaks:          workspace secret scan with the repo's .gitleaks.toml (same
+#                      binary version as required-gates ci/security).
+#   dependency-review: pull requests only; fails on new vulnerable dependencies.
+#   codeql:            optional Java/Kotlin CodeQL (build-mode none by default).
+#
+# Callers must grant: contents: read, and for CodeQL actions: read and
+# security-events: write (GitHub checks a called workflow's permissions
+# statically, so grant them even when run-codeql is false).
+#
+# Usage (caller job):
+#   security:
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/security.yml@main
+#     permissions:
+#       contents: read
+#       actions: read
+#       security-events: write
+#     with:
+#       run-codeql: true
+
+on:
+  workflow_call:
+    inputs:
+      gitleaks-version:
+        type: string
+        default: 8.24.3
+      gitleaks-config:
+        description: gitleaks config; used when present.
+        type: string
+        default: .gitleaks.toml
+      run-dependency-review:
+        description: Run dependency review on pull_request events.
+        type: boolean
+        default: true
+      dependency-review-fail-on-severity:
+        type: string
+        default: high
+      run-codeql:
+        type: boolean
+        default: false
+      codeql-language:
+        type: string
+        default: java-kotlin
+      codeql-build-mode:
+        description: none (no build) or autobuild/manual for deeper analysis.
+        type: string
+        default: none
+      java-version:
+        type: string
+        default: "23"
+      timeout-minutes:
+        type: number
+        default: 30
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: security/gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C "$tmpdir"
+          sudo install "$tmpdir/gitleaks" /usr/local/bin/gitleaks
+
+      - name: Run gitleaks (workspace scan)
+        env:
+          GITLEAKS_CONFIG: ${{ inputs.gitleaks-config }}
+        run: |
+          set -euo pipefail
+          args=(detect --source . --no-banner --redact --no-git --report-format json --report-path gitleaks-report.json)
+          if [ -f "$GITLEAKS_CONFIG" ]; then args+=(--config "$GITLEAKS_CONFIG"); fi
+          gitleaks "${args[@]}"
+
+      - name: Upload redacted report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+          retention-days: 7
+
+  dependency-review:
+    name: security/dependency-review
+    if: ${{ inputs.run-dependency-review && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Dependency review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: ${{ inputs.dependency-review-fail-on-severity }}
+
+  codeql:
+    name: security/codeql
+    if: ${{ inputs.run-codeql }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    concurrency:
+      group: codeql-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ inputs.codeql-language }}
+          build-mode: ${{ inputs.codeql-build-mode }}
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ inputs.codeql-language }}
