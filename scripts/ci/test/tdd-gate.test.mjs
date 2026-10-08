@@ -60,6 +60,32 @@ test("a path merely containing main is not main code", () => {
   assert.equal(evaluate({ changedFiles: ["docs/src/mainframe/notes.md", "tools/src/main-old/x.txt"], labels: [] }).ok, true);
 });
 
+test("integrationTest, functionalTest and other <name>Test source sets count as tests", () => {
+  for (const t of [
+    "loan-infrastructure/src/integrationTest/java/com/bank/loan/LoanRepositoryIT.java",
+    "src/functionalTest/java/com/enterprise/openfinance/x/ConsentFlowTest.java",
+    "src/contractTest/resources/contracts/consent.groovy",
+    "loan-domain/src/test/java/com/bank/loan/domain/LoanTest.java"
+  ]) {
+    const r = evaluate({ changedFiles: ["loan-domain/src/main/java/com/bank/loan/domain/Loan.java", t], labels: [] });
+    assert.equal(r.ok, true, t);
+    assert.deepEqual(r.testFiles, [t]);
+  }
+});
+
+test("testFixtures source sets count as tests", () => {
+  const t = "loan-domain/src/testFixtures/java/com/bank/loan/domain/LoanFixtures.java";
+  const r = evaluate({ changedFiles: ["loan-domain/src/main/java/com/bank/loan/domain/Loan.java", t], labels: [] });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.testFiles, [t]);
+});
+
+test("source sets that only look like test sets do not count", () => {
+  for (const t of ["src/latest/java/A.java", "src/Test/java/A.java", "src/testing/java/A.java", "docs/src/integrationTest.md"]) {
+    assert.equal(evaluate({ changedFiles: ["src/main/java/A.java", t], labels: [] }).ok, false, t);
+  }
+});
+
 test("CLI reads the diff between two refs of a git repo and the labels", () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "tdd-gate-"));
   const git = (...a) => {

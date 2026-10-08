@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // "Tests travel with code" (ADR-029 decision 1.2, FINTECHBANKX_SERVICE_GUARDRAILS.md section 5):
 // a pull request that changes anything under a src/main/ directory must also
-// change something under a src/test/ directory, unless it carries the label
+// change something in a test source set (src/test/, src/<name>Test/ such as
+// src/integrationTest/ or src/functionalTest/, or src/testFixtures/), unless it carries the label
 // `no-behaviour-change` (refactors, renames, generated code; reviewers check it).
 //
 // usage: tdd-gate.mjs --base <sha> --head <sha> --labels '<json array>'
@@ -13,7 +14,8 @@ import { fileURLToPath } from "node:url";
 export const OPT_OUT_LABEL = "no-behaviour-change";
 
 const isMain = (f) => /(^|\/)src\/main\//.test(f);
-const isTest = (f) => /(^|\/)src\/test\//.test(f);
+// Gradle test source sets: test, <name>Test (integrationTest, functionalTest, contractTest, ...), testFixtures.
+const isTest = (f) => /(^|\/)src\/(test|testFixtures|[a-z][A-Za-z0-9]*Test)\//.test(f);
 
 export function evaluate({ changedFiles, labels }) {
   const mainFiles = changedFiles.filter(isMain);
@@ -23,14 +25,14 @@ export function evaluate({ changedFiles, labels }) {
     return { ok: true, mainFiles, testFiles, optedOut, reason: "no src/main changes" };
   }
   if (testFiles.length > 0) {
-    return { ok: true, mainFiles, testFiles, optedOut, reason: `src/main changes come with ${testFiles.length} src/test change(s)` };
+    return { ok: true, mainFiles, testFiles, optedOut, reason: `src/main changes come with ${testFiles.length} test source set change(s)` };
   }
   if (optedOut) {
     return { ok: true, mainFiles, testFiles, optedOut, reason: `label ${OPT_OUT_LABEL}: reviewers confirm no behaviour changed` };
   }
   return {
     ok: false, mainFiles, testFiles, optedOut,
-    reason: `${mainFiles.length} src/main file(s) changed without any src/test change. Add the failing-first test ` +
+    reason: `${mainFiles.length} src/main file(s) changed without any test source set change (src/test, src/<name>Test such as src/integrationTest, src/testFixtures). Add the failing-first test ` +
       `(ADR-029), or label the PR ${OPT_OUT_LABEL} if behaviour is unchanged.`
   };
 }

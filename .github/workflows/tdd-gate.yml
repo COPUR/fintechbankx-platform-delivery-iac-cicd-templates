@@ -1,8 +1,9 @@
 name: tdd-gate
 
 # Reusable "tests travel with code" gate (ADR-029 decision 1.2): a pull request
-# that changes anything under src/main/ must change something under src/test/,
-# unless it carries the label `no-behaviour-change`. The logic and its tests
+# that changes anything under src/main/ must change something in a test source
+# set (src/test/, src/<name>Test/ such as src/integrationTest/, or
+# src/testFixtures/), unless it carries the label `no-behaviour-change`. The logic and its tests
 # live in scripts/ci/tdd-gate.mjs of this repository.
 #
 # Call it from a workflow triggered by pull_request with the label events, so

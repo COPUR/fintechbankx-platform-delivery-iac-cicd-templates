@@ -91,7 +91,9 @@ Pinning (supply chain):
   `archunit-report-only: true` is a visible, temporary escape hatch (all five
   rules) for repositories still fixing their conformance row.
 - `tdd-gate` (ADR-029): a PR that changes `src/main/**` without any
-  `src/test/**` change fails unless labelled exactly `no-behaviour-change`.
+  change in a test source set (`src/test/**`, `src/<name>Test/**` such as
+  `src/integrationTest/**` or `src/functionalTest/**`, `src/testFixtures/**`)
+  fails unless labelled exactly `no-behaviour-change`.
   Trigger the caller on `pull_request` types `labeled` and `unlabeled` too.
 - `ephemeral-env`: see [compose/README.md](../../compose/README.md); pass
   service images as `FBX_IMAGE_<SERVICE>=<image@digest>` lines and a
