@@ -17,6 +17,9 @@ name: java-service-ci
 #     Set gradle-tasks: test only for repos without a coverage gate yet (documented debt).
 #   - Optional PostgreSQL service container exported as TEST_DB_URL / TEST_DB_USERNAME / TEST_DB_PASSWORD.
 #   - No Map<String,Object> in any *Controller.java under any module's src/main/java.
+#   - ArchUnit gate (ADR-028): the four hexagonal rules from this repository's
+#     tools/archunit-gate run against the service's compiled main classes after
+#     `check`, regardless of the ArchUnit tests the service repo has itself.
 #   - Test and coverage reports uploaded as an artifact.
 # The `.ci/allow-gradle-fail` marker is deliberately NOT honoured here.
 
@@ -63,6 +66,32 @@ on:
         description: Fail when a *Controller.java uses Map<String,Object>.
         type: boolean
         default: true
+      archunit-base-packages:
+        description: >-
+          Space separated package roots (e.g. com.bank.loan or com.enterprise.openfinance.consent).
+          Empty = every package that owns a .domain sub-package.
+        type: string
+        default: ""
+      archunit-layout:
+        description: >-
+          Where compiled classes are found: multi-module (<module>/build/classes/java/main, com.bank.<context> cores),
+          single-module (build/classes/java/main, com.enterprise.openfinance.<capability> services) or auto (both).
+        type: string
+        default: auto
+      archunit-report-only:
+        description: >-
+          Temporary escape hatch: report ArchUnit violations without failing. Visible in the caller; remove once
+          the repository's conformance row (FINTECHBANKX_SERVICE_GUARDRAILS.md section 7) is fixed.
+        type: boolean
+        default: false
+      platform-repository:
+        description: Repository providing tools/archunit-gate.
+        type: string
+        default: COPUR/fintechbankx-platform-delivery-iac-cicd-templates
+      platform-ref:
+        description: Ref of platform-repository (pin a tag once released).
+        type: string
+        default: main
       timeout-minutes:
         description: Job timeout.
         type: number
@@ -157,6 +186,43 @@ jobs:
           fi
           # shellcheck disable=SC2086
           $GRADLE_CMD --no-daemon $GRADLE_TASKS $GRADLE_ARGS
+
+      - name: Checkout ArchUnit gate
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.platform-repository }}
+          ref: ${{ inputs.platform-ref }}
+          path: .fbx-platform
+          sparse-checkout: tools/archunit-gate
+
+      - name: ArchUnit gate (ADR-028 hexagonal rules)
+        env:
+          ROOTS: ${{ inputs.archunit-base-packages }}
+          LAYOUT: ${{ inputs.archunit-layout }}
+          REPORT_ONLY: ${{ inputs.archunit-report-only }}
+          GATE_DIR: ${{ github.workspace }}/.fbx-platform/tools/archunit-gate
+        run: |
+          set -euo pipefail
+          "$GATE_DIR/gradlew" -p "$GATE_DIR" --no-daemon -q installDist
+          case "$LAYOUT" in
+            multi-module) pattern='*/build/classes/java/main' ;;
+            single-module) pattern='./build/classes/java/main' ;;
+            auto) pattern='*build/classes/java/main' ;;
+            *) echo "::error::archunit-layout must be auto, multi-module or single-module"; exit 1 ;;
+          esac
+          args=()
+          while IFS= read -r dir; do args+=(--classes "$dir"); done \
+            < <(find . -path ./.fbx-platform -prune -o -type d -path "$pattern" -print | sort)
+          for root in $ROOTS; do args+=(--root "$root"); done
+          set +e
+          "$GATE_DIR/build/install/archunit-gate/bin/archunit-gate" "${args[@]}"
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$REPORT_ONLY" = "true" ]; then
+            echo "::warning::ArchUnit gate failed (exit $code) but archunit-report-only is true"
+            exit 0
+          fi
+          exit "$code"
 
       - name: Guardrail - no Map<String,Object> in controllers
         if: ${{ inputs.controller-map-guardrail }}

@@ -8,7 +8,8 @@
     "validate:strict-mtls": "node scripts/validation/validate-strict-mtls.mjs --path k8s --path security",
     "ci:strict-mtls": "npm run test && npm run validate:strict-mtls",
     "validate:chart": "bash scripts/ci/validate-chart.sh",
-    "lint:workflows": "bash scripts/ci/lint-workflows.sh"
+    "lint:workflows": "bash scripts/ci/lint-workflows.sh",
+    "test:archunit-gate": "tools/archunit-gate/gradlew -p tools/archunit-gate --no-daemon test"
   },
   "devDependencies": {
     "yaml": "2.8.1"
