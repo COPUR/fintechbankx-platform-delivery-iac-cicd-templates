@@ -80,3 +80,15 @@ test("java-service-ci documents package-root as required and every sample caller
   }
   assert.ok(seen >= 3, `expected the three sample callers, saw ${seen}`);
 });
+
+test("archunit-generated-packages is passed to the gate as --generated-packages", () => {
+  const input = workflow().on.workflow_call.inputs["archunit-generated-packages"];
+  assert.equal(input.type, "string");
+  assert.equal(input.default, "");
+  assert.match(input.description, /infrastructure\.generated/);
+  let r = runGate({ packageRoot: "com.bank.loan", generated: "org.openapitools.client,com.example.avro" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.calls, /--generated-packages org\.openapitools\.client,com\.example\.avro/);
+  r = runGate({ packageRoot: "com.bank.loan" });
+  assert.doesNotMatch(r.calls, /--generated-packages/);
+});

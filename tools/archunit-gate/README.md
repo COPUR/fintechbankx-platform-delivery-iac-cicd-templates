@@ -30,8 +30,16 @@ Roots: `com.bank.<context>` (multi-module cores) or `com.enterprise.openfinance.
 - The shared kernel `com.bank.shared.kernel` (kept where it already is,
   guardrails section 2) is allowed next to the root and is never a second root.
 - The gate sees compiled main classes only: sources a build excludes from its
-  source sets are not checked. There is no generated-code exclusion; generated
-  classes outside the root fail rule 5.
+  source sets are not checked.
+- Generated code: configure generators (OpenAPI, Avro, gRPC, ...) to emit into
+  `<package-root>.infrastructure.generated` where possible; it is then inside
+  the root and needs nothing else. Generated classes that must stay outside the
+  root are declared with `--generated-packages <pkg>[,<pkg>...]` (workflow
+  input `archunit-generated-packages`): rule 5 skips them (also as a second
+  root when their package contains `.domain`), the report lists every skipped
+  package with its class count, rules 1-4 are unchanged. A declared package
+  that contains the package root, or is not a package name, is a usage error
+  (exit 2). Undeclared generated classes outside the root fail rule 5.
 
 ```bash
 tools/archunit-gate/gradlew -p tools/archunit-gate test installDist
@@ -40,7 +48,8 @@ tools/archunit-gate/build/install/archunit-gate/bin/archunit-gate \
   --classes <service>/loan-application/build/classes/java/main \
   --classes <service>/loan-infrastructure/build/classes/java/main \
   --classes <service>/shared-kernel/build/classes/java/main \
-  --package-root com.bank.loan
+  --package-root com.bank.loan \
+  --generated-packages org.openapitools.client
 ```
 
 Exit codes: 0 pass, 1 violations (report lists each one), 2 usage error or

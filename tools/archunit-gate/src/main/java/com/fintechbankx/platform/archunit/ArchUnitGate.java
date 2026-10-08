@@ -28,13 +28,16 @@ import java.util.TreeSet;
  *
  * <pre>
  * archunit-gate --classes &lt;dir&gt; [--classes &lt;dir&gt; ...] [--package-root &lt;package&gt;] [--root &lt;package&gt; ...]
+ *               [--generated-packages &lt;package&gt;[,&lt;package&gt;...]]
  * </pre>
  *
  * With --package-root, rules 1-4 run on that root only and rule 5 fails for every class outside it and for every
  * other package prefix that owns a {@code .domain} package. Without it, rules 1-4 run on the --root packages (or,
  * without --root, on every outermost package prefix that has a {@code .domain} sub-package) and rule 5 fails when
  * the classes hold more than one such prefix. The shared kernel ({@link #SHARED_KERNEL_PACKAGES}) is never a
- * second root. Exit codes: 0 all rules pass, 1 violations, 2 usage error or nothing to check.
+ * second root. Packages given with --generated-packages (code generators' output outside the root) are excluded
+ * from rule 5 and listed in the report; rules 1-4 are unchanged. Exit codes: 0 all rules pass, 1 violations, 2
+ * usage error or nothing to check.
  */
 public final class ArchUnitGate {
 
@@ -66,27 +69,42 @@ public final class ArchUnitGate {
 
     private ArchUnitGate() {}
 
+    /** Package names: dot-separated Java identifiers. */
+    static final java.util.regex.Pattern PACKAGE_NAME =
+            java.util.regex.Pattern.compile("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*");
+
     /** Rules 1-4 on {@code roots}; rule 5 fails when the classes hold more than one root (no root pinned). */
     public static GateResult check(JavaClasses classes, List<String> roots) {
+        return check(classes, roots, List.of());
+    }
+
+    /** As {@link #check(JavaClasses, List)}, with {@code generated} packages excluded from rule 5. */
+    public static GateResult check(JavaClasses classes, List<String> roots, List<String> generated) {
         Map<Rule, List<String>> violations = hexagonalRules(classes, roots);
-        List<String> prefixes = ownPrefixes(detectDomainPrefixes(classes));
+        List<String> prefixes = ownPrefixes(detectDomainPrefixes(classes)).stream()
+                .filter(p -> !isGenerated(p, generated)).toList();
         if (prefixes.size() > 1) {
             violations.get(Rule.ONE_PACKAGE_ROOT).add(prefixes.size() + " package roots own a .domain package: "
                     + prefixes + ". A repository has one package root (com.bank.<context>, "
                     + "com.enterprise.openfinance.<capability> or com.fintechbankx.<context>.<capability>): set the "
                     + "package-root workflow input (--package-root) to it and move or delete the other packages");
         }
-        return new GateResult(roots, violations);
+        return new GateResult(roots, null, violations, generated, generatedExcluded(classes, null, generated));
     }
 
     /** Rules 1-4 on {@code packageRoot} only; rule 5 fails for every package outside it and every second root. */
     public static GateResult checkPackageRoot(JavaClasses classes, String packageRoot) {
+        return checkPackageRoot(classes, packageRoot, List.of());
+    }
+
+    /** As {@link #checkPackageRoot(JavaClasses, String)}, with {@code generated} packages excluded from rule 5. */
+    public static GateResult checkPackageRoot(JavaClasses classes, String packageRoot, List<String> generated) {
         Map<Rule, List<String>> violations = hexagonalRules(classes, List.of(packageRoot));
         List<String> rule5 = violations.get(Rule.ONE_PACKAGE_ROOT);
         Map<String, List<String>> outside = new TreeMap<>();
         for (JavaClass c : classes) {
             String pkg = c.getPackageName();
-            if (!isUnder(pkg, packageRoot) && !isSharedKernel(pkg)) {
+            if (!isUnder(pkg, packageRoot) && !isSharedKernel(pkg) && !isGenerated(pkg, generated)) {
                 outside.computeIfAbsent(pkg, k -> new ArrayList<>()).add(c.getSimpleName());
             }
         }
@@ -94,13 +112,32 @@ public final class ArchUnitGate {
                 + names.size() + (names.size() == 1 ? " class, " : " classes, e.g. ") + names.stream().sorted().findFirst().orElseThrow()
                 + ") is outside package root " + packageRoot));
         for (String prefix : ownPrefixes(detectDomainPrefixes(classes))) {
-            if (!prefix.equals(packageRoot)) {
+            if (!prefix.equals(packageRoot) && !isGenerated(prefix, generated)) {
                 rule5.add("second root " + prefix + " (" + prefix + ".domain..): only " + packageRoot
                         + ".domain.. is checked by rules 1-4; fold it into " + packageRoot
                         + ".domain/application/infrastructure or move it to the repository that owns it");
             }
         }
-        return new GateResult(List.of(packageRoot), packageRoot, violations);
+        return new GateResult(List.of(packageRoot), packageRoot, violations, generated,
+                generatedExcluded(classes, packageRoot, generated));
+    }
+
+    static boolean isGenerated(String pkg, List<String> generated) {
+        return generated.stream().anyMatch(g -> isUnder(pkg, g));
+    }
+
+    /** "package (n classes)" for every package that rule 5 skipped because it is declared generated. */
+    private static List<String> generatedExcluded(JavaClasses classes, String packageRoot, List<String> generated) {
+        Map<String, Integer> counts = new TreeMap<>();
+        for (JavaClass c : classes) {
+            String pkg = c.getPackageName();
+            if (isGenerated(pkg, generated) && (packageRoot == null || !isUnder(pkg, packageRoot))) {
+                counts.merge(pkg, 1, Integer::sum);
+            }
+        }
+        List<String> out = new ArrayList<>();
+        counts.forEach((pkg, n) -> out.add(pkg + " (" + n + (n == 1 ? " class)" : " classes)")));
+        return out;
     }
 
     private static Map<Rule, List<String>> hexagonalRules(JavaClasses classes, List<String> roots) {
@@ -239,9 +276,10 @@ public final class ArchUnitGate {
         List<Path> dirs = new ArrayList<>();
         List<String> roots = new ArrayList<>();
         String packageRoot = null;
+        List<String> generated = new ArrayList<>();
         for (int i = 0; i < args.length; i++) {
             String option = args[i];
-            if (!List.of("--classes", "--root", "--package-root").contains(option)) {
+            if (!List.of("--classes", "--root", "--package-root", "--generated-packages").contains(option)) {
                 System.err.println("unknown argument: " + option);
                 return 2;
             }
@@ -253,6 +291,19 @@ public final class ArchUnitGate {
             switch (option) {
                 case "--classes" -> dirs.add(Path.of(value));
                 case "--root" -> roots.add(value);
+                case "--generated-packages" -> {
+                    for (String g : value.split(",")) {
+                        String pkg = g.trim();
+                        if (pkg.isEmpty()) {
+                            continue;
+                        }
+                        if (!PACKAGE_NAME.matcher(pkg).matches()) {
+                            System.err.println("archunit-gate: --generated-packages: not a package name: " + pkg);
+                            return 2;
+                        }
+                        generated.add(pkg);
+                    }
+                }
                 default -> {
                     if (packageRoot != null) {
                         System.err.println("archunit-gate: --package-root given twice; a repository has one package root");
@@ -271,6 +322,13 @@ public final class ArchUnitGate {
                 }
             }
             roots = List.of(packageRoot);
+            for (String g : generated) {
+                if (isUnder(packageRoot, g)) {
+                    System.err.println("archunit-gate: --generated-packages " + g + " contains package root "
+                            + packageRoot + "; declare only the generators' own packages");
+                    return 2;
+                }
+            }
         }
         List<Path> existing = dirs.stream().filter(Files::isDirectory).toList();
         if (existing.isEmpty()) {
@@ -288,7 +346,9 @@ public final class ArchUnitGate {
             System.err.println("archunit-gate: no classes under roots " + checkedRoots + " in " + existing);
             return 2;
         }
-        GateResult result = packageRoot != null ? checkPackageRoot(classes, packageRoot) : check(classes, checkedRoots);
+        GateResult result = packageRoot != null
+                ? checkPackageRoot(classes, packageRoot, generated)
+                : check(classes, checkedRoots, generated);
         (result.passed() ? System.out : System.err).print(result.report());
         return result.passed() ? 0 : 1;
     }

@@ -81,8 +81,8 @@ class ArchUnitGateTest {
 
     @Test
     void detectsRootsFromDomainPackages() {
-        assertEquals(List.of("fixtures.clean.bank.loan", "fixtures.clean.openfinance.consent", MULTIROOT,
-                        "fixtures.violating.bank.pay"),
+        assertEquals(List.of("fixtures.clean.bank.loan", "fixtures.clean.openfinance.consent", "fixtures.gen.avro",
+                        MULTIROOT, "fixtures.violating.bank.pay"),
                 ArchUnitGate.detectRoots(classesOf("fixtures")));
     }
 
@@ -202,5 +202,70 @@ class ArchUnitGateTest {
         assertEquals(2, ArchUnitGate.run(new String[] {"--classes", dir, "--package-root", "fixtures.clean.bank.loan",
                 "--package-root", "fixtures.clean.bank.loan"}));
         assertEquals(2, ArchUnitGate.run(new String[] {"--classes", dir, "--package-root"}));
+    }
+
+    // --- generated packages (--generated-packages) ------------------------------------------
+
+    private static final String LOAN = "fixtures.clean.bank.loan";
+    private static final String GEN = "fixtures.gen";
+
+    @Test
+    void generatedCodeOutsideTheRootFailsRuleFiveWhenNotDeclared() {
+        GateResult result = ArchUnitGate.checkPackageRoot(classesOf(LOAN, GEN), LOAN);
+        List<String> rule5 = result.violations().get(Rule.ONE_PACKAGE_ROOT);
+        assertTrue(mentions(rule5, "package fixtures.gen.openapi.model"), rule5.toString());
+        assertTrue(mentions(rule5, "second root fixtures.gen.avro"), rule5.toString());
+    }
+
+    @Test
+    void declaredGeneratedPackagesAreExcludedFromRuleFiveButListedInTheReport() {
+        GateResult result = ArchUnitGate.checkPackageRoot(classesOf(LOAN, GEN), LOAN, List.of(GEN));
+        assertTrue(result.passed(), result.report());
+        assertEquals(List.of("fixtures.gen.avro.domain (1 class)", "fixtures.gen.openapi.model (1 class)"),
+                result.generatedExcluded());
+        String report = result.report();
+        assertTrue(report.contains("generated packages excluded from rule 5: [fixtures.gen]"), report);
+        assertTrue(report.contains("fixtures.gen.openapi.model (1 class)"), report);
+        assertTrue(report.contains("fixtures.gen.avro.domain (1 class)"), report);
+    }
+
+    @Test
+    void generatedPackagesStillLeaveOtherOutsidersInRuleFive() {
+        GateResult result = ArchUnitGate.checkPackageRoot(classesOf(LOAN, GEN, "fixtures.clean.openfinance.consent"),
+                LOAN, List.of("fixtures.gen.openapi"));
+        List<String> rule5 = result.violations().get(Rule.ONE_PACKAGE_ROOT);
+        assertFalse(mentions(rule5, "fixtures.gen.openapi.model"), rule5.toString());
+        assertTrue(mentions(rule5, "second root fixtures.gen.avro"), rule5.toString());
+        assertTrue(mentions(rule5, "fixtures.clean.openfinance.consent"), rule5.toString());
+    }
+
+    @Test
+    void withoutPackageRootAGeneratedDomainPackageIsNotASecondRoot() {
+        assertFalse(ArchUnitGate.check(classesOf(LOAN, GEN), List.of(LOAN)).passed());
+        GateResult result = ArchUnitGate.check(classesOf(LOAN, GEN), List.of(LOAN), List.of(GEN));
+        assertTrue(result.passed(), result.report());
+        assertEquals(List.of("fixtures.gen.avro.domain (1 class)", "fixtures.gen.openapi.model (1 class)"),
+                result.generatedExcluded());
+    }
+
+    @Test
+    void generatedCodeUnderTheRootNeedsNoDeclaration() {
+        // the preferred location, <package-root>.infrastructure.generated, is inside the root
+        assertTrue(ArchUnitGate.checkPackageRoot(classesOf(LOAN), LOAN).generatedExcluded().isEmpty());
+    }
+
+    @Test
+    void cliGeneratedPackagesTakesACommaListAndRejectsBadValues(@TempDir Path tmp) {
+        String dir = classesDirWith(tmp.resolve("gen"), LOAN, GEN).toString();
+        assertEquals(1, ArchUnitGate.run(new String[] {"--classes", dir, "--package-root", LOAN}));
+        assertEquals(0, ArchUnitGate.run(new String[] {"--classes", dir, "--package-root", LOAN,
+                "--generated-packages", "fixtures.gen.openapi, fixtures.gen.avro"}));
+        assertEquals(1, ArchUnitGate.run(new String[] {"--classes", dir, "--package-root", LOAN,
+                "--generated-packages", "fixtures.gen.openapi"}));
+        // a generated package may not swallow the package root, nor be malformed
+        assertEquals(2, ArchUnitGate.run(new String[] {"--classes", dir, "--package-root", LOAN,
+                "--generated-packages", "fixtures.clean"}));
+        assertEquals(2, ArchUnitGate.run(new String[] {"--classes", dir, "--package-root", LOAN,
+                "--generated-packages", "fixtures..gen"}));
     }
 }

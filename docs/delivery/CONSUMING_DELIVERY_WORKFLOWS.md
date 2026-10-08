@@ -89,6 +89,10 @@ Pinning (supply chain):
   reports more than one detected root.) `archunit-base-packages`
   (space separated, empty = every package owning a `.domain` package) only
   matters without `package-root`; with it, leave it empty or equal.
+  `archunit-generated-packages` (comma separated) declares generated code
+  outside the root: excluded from rule 5 and listed in the gate report.
+  Prefer generating into `<package-root>.infrastructure.generated`, which is
+  inside the root and needs no declaration.
   `archunit-report-only: true` is a visible, temporary escape hatch (all five
   rules) for repositories still fixing their conformance row.
 - `tdd-gate` (ADR-029): a PR that changes `src/main/**` without any

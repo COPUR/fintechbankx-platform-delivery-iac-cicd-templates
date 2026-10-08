@@ -103,6 +103,13 @@ on:
           single-module (build/classes/java/main, com.enterprise.openfinance.<capability> services) or auto (both).
         type: string
         default: auto
+      archunit-generated-packages:
+        description: >-
+          Comma separated packages of generated code outside package-root (e.g. org.openapitools.client,
+          com.example.avro). Excluded from rule 5 and listed in the gate report; rules 1-4 are unchanged. Prefer
+          configuring generators to emit into <package-root>.infrastructure.generated, which needs no entry here.
+        type: string
+        default: ""
       archunit-report-only:
         description: >-
           Temporary escape hatch: report ArchUnit violations without failing. Visible in the caller; remove once
@@ -237,6 +244,7 @@ jobs:
           PACKAGE_ROOT: ${{ inputs.package-root }}
           LAYOUT: ${{ inputs.archunit-layout }}
           REPORT_ONLY: ${{ inputs.archunit-report-only }}
+          GENERATED_PACKAGES: ${{ inputs.archunit-generated-packages }}
           GATE_DIR: ${{ github.workspace }}/.fbx-platform/tools/archunit-gate
         run: |
           set -euo pipefail
@@ -260,6 +268,7 @@ jobs:
             < <(find . -path ./.fbx-platform -prune -o -type d -path "$pattern" -print | sort)
           for root in $ROOTS; do args+=(--root "$root"); done
           if [ -n "$PACKAGE_ROOT" ]; then args+=(--package-root "$PACKAGE_ROOT"); fi
+          if [ -n "$GENERATED_PACKAGES" ]; then args+=(--generated-packages "$GENERATED_PACKAGES"); fi
           set +e
           "$GATE_DIR/build/install/archunit-gate/bin/archunit-gate" "${args[@]}"
           code=$?
