@@ -9,8 +9,14 @@ release:
   name: ci
   namespace: lending
 tests:
-  - it: scrapes /actuator/prometheus on http-management
+  - it: renders no ServiceMonitor by default (the observability repo's PodMonitor is the single scrape path)
     template: templates/servicemonitor.yaml
+    asserts:
+      - hasDocuments: {count: 0}
+  - it: opted in, it scrapes /actuator/prometheus on http-management
+    template: templates/servicemonitor.yaml
+    set:
+      observability.serviceMonitor.enabled: true
     asserts:
       - equal: {path: "spec.endpoints[0].port", value: http-management}
       - equal: {path: "spec.endpoints[0].path", value: /actuator/prometheus}

@@ -122,9 +122,17 @@ observability:
   tracing:
     enabled: true
     otlpEndpoint: http://otel-collector.observability.svc.cluster.local:4318
+  # The single scrape path is the observability platform repo's PodMonitor
+  # fintechbankx-services (fintechbankx-platform-observability-sre-operations,
+  # deploy/kustomize/base/monitors/podmonitor-fintechbankx-services.yaml): it
+  # selects pods labelled fintechbankx.io/service-id and scrapes Istio's merged
+  # metrics on 15020 (app metrics merged via the prometheus.io annotations the
+  # chart sets while serviceMonitor is disabled).
   serviceMonitor:
-    # Requires the Prometheus Operator CRDs (platform-observability).
-    enabled: true
+    # Opt-in only, for clusters without that PodMonitor; enabling it drops the
+    # prometheus.io annotations so the app is not scraped twice. Needs the
+    # Prometheus Operator CRDs.
+    enabled: false
     interval: 30s
     scrapeTimeout: 10s
     labels: {}

@@ -38,7 +38,7 @@ credentials are pinned to commit SHAs (checked by
 | Contracts (Redocly, oasdiff with `<spec>.accepted-breaking.txt`, FAPI guard, AsyncAPI) | [.github/workflows/contract-checks.yml](.github/workflows/contract-checks.yml) | PR gate |
 | Database migration rehearsal (Flyway migrate twice + validate, `scripts/migration/verify-backfill.sh`) | [.github/workflows/db-migration-verify.yml](.github/workflows/db-migration-verify.yml) | PR gate |
 | Security (gitleaks, dependency review, CodeQL) | [.github/workflows/security.yml](.github/workflows/security.yml) | PR gate |
-| Generic service Helm chart (8080/8081, HPA, PDB, zone spread, ExternalSecret, IRSA, ServiceMonitor, opt-in NetworkPolicy (the mesh repo owns NetworkPolicy), Istio labels) | [charts/fintechbankx-service](charts/fintechbankx-service/README.md) | via `helm-deploy.yml` or `chart-path` |
+| Generic service Helm chart (8080/8081, HPA, PDB, zone spread, ExternalSecret, IRSA, PodMonitor-ready labels and annotations (opt-in ServiceMonitor), opt-in NetworkPolicy (the mesh repo owns NetworkPolicy), Istio labels) | [charts/fintechbankx-service](charts/fintechbankx-service/README.md) | via `helm-deploy.yml` or `chart-path` |
 | Sample caller pipelines | [templates/github/workflows](templates/github/workflows/service-pipeline.yml) | copy into the service repo |
 | Service skeleton | [templates/microservice](templates/microservice/README.md) | starting point for a new service |
 | Secondary CI templates (GitLab, Jenkins) | [templates/ci](templates/ci/gitlab/java23-quality-gates.yml), [ci/templates](ci/templates/microservice/gitlab-ci.yml) | only where GitHub Actions is not available |

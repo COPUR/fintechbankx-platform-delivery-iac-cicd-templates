@@ -178,8 +178,13 @@ removes duplicated templates; see the chart README for the value mapping.
 - Not run end to end against AWS; first real run must be watched.
 - Flyway rehearsal and image steps were not executed locally (no Docker
   daemon in the authoring environment).
-- The chart's `ServiceMonitor` needs the Prometheus Operator CRDs from
-  platform-observability; disable it where they are missing.
+- Metrics: the single scrape path is the PodMonitor `fintechbankx-services`
+  of the observability platform repo
+  (`fintechbankx-platform-observability-sre-operations`), which selects pods
+  labelled `fintechbankx.io/service-id` and scrapes Istio's merged metrics.
+  The chart's `ServiceMonitor` is off by default; enable it only where that
+  PodMonitor does not run (it needs the Prometheus Operator CRDs and drops the
+  `prometheus.io` annotations so the app is not scraped twice).
 - NetworkPolicy belongs to the service-mesh platform repo
   (`fintechbankx-platform-mesh-security-service-mesh`), like
   AuthorizationPolicy: the chart renders none unless `networkPolicy.enabled:

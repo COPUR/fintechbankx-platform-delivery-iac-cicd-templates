@@ -8,6 +8,13 @@ release:
   name: ci
   namespace: lending
 tests:
+  - it: carries what the observability repo's PodMonitor selects (service-id label, prometheus.io annotations)
+    template: templates/deployment.yaml
+    asserts:
+      - equal: {path: "spec.template.metadata.labels[\"fintechbankx.io/service-id\"]", value: svc-ln-loan-lifecycle}
+      - equal: {path: "spec.template.metadata.annotations[\"prometheus.io/scrape\"]", value: "true"}
+      - equal: {path: "spec.template.metadata.annotations[\"prometheus.io/port\"]", value: "8081"}
+      - equal: {path: "spec.template.metadata.annotations[\"prometheus.io/path\"]", value: /actuator/prometheus}
   - it: carries the contract pod labels (app, version, name, service-id, istio inject)
     template: templates/deployment.yaml
     asserts:

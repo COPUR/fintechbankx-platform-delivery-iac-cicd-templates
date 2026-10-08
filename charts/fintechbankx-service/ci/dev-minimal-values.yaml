@@ -1,4 +1,4 @@
-# CI fixture: smallest dev shape, tag instead of digest, no HPA, no ServiceMonitor.
+# CI fixture: smallest dev shape, tag instead of digest, no HPA, ServiceMonitor explicitly off.
 serviceName: customer-profile-kyc-service
 serviceId: svc-cus-profile-kyc
 boundedContext: customer
