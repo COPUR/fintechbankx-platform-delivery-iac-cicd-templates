@@ -149,21 +149,14 @@ networkPolicy:
       ports: [443, 5432, 9098]
 
 istio:
-  # Labels and annotations that make the pod mesh-ready. The namespace carries
-  # istio-injection=enabled; mTLS and default-deny come from platform-service-mesh-security.
+  # Labels and annotations that make the pod mesh-ready (PLATFORM_CONTRACT
+  # addendum "Mesh membership"). The namespace carries istio-injection=enabled.
+  # STRICT mTLS, namespace default-deny and per-caller ALLOW AuthorizationPolicies
+  # are owned by the service-mesh platform repo, so this chart ships none, and it
+  # never sets traffic.sidecar.istio.io/excludeInboundPorts (probes use Istio's
+  # probe rewrite).
   inject: true
   holdApplicationUntilProxyStarts: true
-  # Only if Prometheus runs outside the mesh and cannot present mesh mTLS:
-  # bypasses Envoy (and STRICT mTLS) for the management port. Keep false unless
-  # the platform-observability squad and the mesh owners agree.
-  excludeManagementPortFromMesh: false
-  # Optional per-service ALLOW policy on top of the namespace default-deny.
-  authorizationPolicy:
-    enabled: false
-    # SPIFFE principals, e.g. cluster.local/ns/lending/sa/loan-lifecycle-service
-    allowedPrincipals: []
-    # Ingress gateway principal, allowed when non-empty.
-    ingressGatewayPrincipal: cluster.local/ns/istio-ingress/sa/istio-ingressgateway
 
 nodeSelector: {}
 tolerations: []

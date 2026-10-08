@@ -15,7 +15,7 @@ follows the platform contract (ports, labels, ExternalSecret store, IRSA).
 | Identity | ServiceAccount annotated with the IRSA role (`serviceAccount.roleArn`) |
 | Observability | `ServiceMonitor` on `http-management`, OTLP env to the platform collector |
 | Network | `NetworkPolicy` (own namespace, ingress gateway, observability, DNS, istiod, VPC egress) |
-| Mesh | `app`/`version` labels, `sidecar.istio.io/inject`, protocol-named ports, optional per-service `AuthorizationPolicy` |
+| Mesh | `app`/`version` labels, `sidecar.istio.io/inject: "true"`, Service ports named `http` (8080) and `http-management` (8081); no AuthorizationPolicy, PeerAuthentication, DestinationRule or `excludeInboundPorts` (owned by the mesh repo / forbidden by the contract) |
 
 ## Required values
 

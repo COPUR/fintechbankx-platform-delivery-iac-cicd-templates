@@ -26,9 +26,6 @@ spec:
         {{- if .Values.istio.holdApplicationUntilProxyStarts }}
         proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
         {{- end }}
-        {{- if .Values.istio.excludeManagementPortFromMesh }}
-        traffic.sidecar.istio.io/excludeInboundPorts: {{ .Values.service.managementPort | quote }}
-        {{- end }}
         {{- if not .Values.observability.serviceMonitor.enabled }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.service.managementPort | quote }}

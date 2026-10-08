@@ -20,8 +20,3 @@ externalSecret:
     - secretKey: OIDC_CLIENT_SECRET
       remoteSecretName: staging/loan-lifecycle-service/oidc-client
       property: client_secret
-istio:
-  authorizationPolicy:
-    enabled: true
-    allowedPrincipals:
-      - cluster.local/ns/payments/sa/payment-initiation-settlement-service
