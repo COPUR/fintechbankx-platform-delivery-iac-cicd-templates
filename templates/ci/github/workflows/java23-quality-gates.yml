@@ -1,5 +1,9 @@
 name: Java23 Quality Gates
 
+# Minimal GitHub Actions caller (primary CI path) for repositories that only
+# need the quality gates. For the full pipeline (image + deploy) use
+# templates/github/workflows/service-pipeline.yml.
+
 on:
   pull_request:
   push:
@@ -10,43 +14,24 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
-  quality-gates:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  ci:
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/java-service-ci.yml@main
+    permissions:
+      contents: read
+    # with:
+    #   postgres-enabled: true
+    #   postgres-db: db_<ctx>_<cap>_test
 
-      - name: Set up Java 23
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '23'
-          cache: gradle
+  contracts:
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/contract-checks.yml@main
+    permissions:
+      contents: read
 
-      - name: Resolve Gradle command
-        id: gradle
-        run: echo "cmd=$(bash templates/ci/scripts/resolve-gradle-command.sh)" >> "$GITHUB_OUTPUT"
-
-      - name: Unit tests + coverage gate
-        run: ${{ steps.gradle.outputs.cmd }} clean test jacocoTestReport jacocoTestCoverageVerification --no-daemon
-
-      - name: OpenAPI lint
-        if: ${{ hashFiles('api/openapi/*.yaml') != '' }}
-        run: npx -y @redocly/cli@1.27.1 lint api/openapi/*.yaml
-
-      - name: Secret scan (gitleaks)
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload test reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: quality-gate-reports
-          path: |
-            **/build/reports/**
+  security:
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/security.yml@main
+    permissions:
+      contents: read
+      actions: read
+      security-events: write

@@ -1,0 +1,7 @@
+# prod overrides.
+environment: prod
+externalSecret:
+  remoteSecretName: prod/example-service/db-app
+autoscaling:
+  minReplicas: 3
+  maxReplicas: 12

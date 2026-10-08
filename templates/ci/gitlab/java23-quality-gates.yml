@@ -1,28 +1,34 @@
+# SECONDARY TEMPLATE. GitHub Actions (.github/workflows/java-service-ci.yml and
+# friends) is the primary, reviewed CI path for FinTechBankX. This GitLab
+# equivalent mirrors its gates: gradle check (jacoco gate), the controller
+# Map<String,Object> guardrail, OpenAPI lint and gitleaks.
 stages:
   - verify
 
 variables:
   GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  GITLEAKS_VERSION: "8.24.3"
 
 quality_gates:
   stage: verify
   image: eclipse-temurin:23-jdk
   before_script:
-    - apt-get update && apt-get install -y curl ca-certificates gnupg
+    - apt-get update && apt-get install -y curl ca-certificates gnupg git
     - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
     - apt-get install -y nodejs
-    - chmod +x templates/ci/scripts/resolve-gradle-command.sh
   script:
     - GRADLE_CMD="$(bash templates/ci/scripts/resolve-gradle-command.sh)"
-    - $GRADLE_CMD clean test jacocoTestReport jacocoTestCoverageVerification --no-daemon
-    - if ls api/openapi/*.yaml >/dev/null 2>&1; then npx -y @redocly/cli@1.27.1 lint api/openapi/*.yaml; fi
+    - $GRADLE_CMD --no-daemon clean check
     - |
-      if command -v gitleaks >/dev/null 2>&1; then
-        gitleaks detect --source . --verbose
-      else
-        echo "gitleaks not installed in runner image; skip with warning."
+      controllers="$(git ls-files '*Controller.java' | grep 'src/main/java/' || true)"
+      if [ -n "$controllers" ] && grep -nE 'Map<\s*String\s*,\s*Object\s*>' $controllers; then
+        echo "Generic Map<String,Object> payloads are disallowed in controllers."; exit 1
       fi
+    - if ls api/openapi/*.yaml >/dev/null 2>&1; then npx -y @redocly/cli@1.27.1 lint api/openapi/*.yaml; fi
+    - curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz -C /usr/local/bin gitleaks
+    - gitleaks detect --source . --no-git --redact --no-banner $( [ -f .gitleaks.toml ] && echo --config .gitleaks.toml )
   artifacts:
     when: always
     paths:
-      - build/reports/
+      - "**/build/reports/"
+      - "**/build/test-results/"
