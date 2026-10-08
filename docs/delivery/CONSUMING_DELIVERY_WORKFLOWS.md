@@ -37,6 +37,19 @@ what the caller job grants, whether or not a job inside it runs. Grant exactly:
 Inside each workflow `id-token: write` is requested only by the jobs that use
 OIDC (image push/sign, deploy, plan, apply).
 
+Pinning (supply chain):
+- Callers pin each reusable workflow to a platform release commit SHA with the
+  tag as a comment (`.../helm-deploy.yml@<40-hex sha> # v1.0.0`) and pass the
+  same release as `platform-ref` to `helm-deploy`, `java-service-ci` and
+  `tdd-gate`. Renovate or Dependabot (`github-actions` ecosystem) bumps them
+  together. The sample callers use the tag `v1.0.0`, to be cut when this
+  version merges. `@main` is only for dev experiments.
+- Inside this repository every action used by a job with `id-token: write` is
+  pinned to a full commit SHA with its version as a trailing comment;
+  `scripts/ci/test/workflow-supply-chain.test.mjs` fails otherwise. Resolve a
+  new pin with `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag> 'refs/tags/<tag>^{}'`
+  (use the `^{}` line for annotated tags).
+
 ## 3. Inputs worth knowing
 
 - `java-service-ci`: `gradle-tasks` defaults to `check` (jacoco gate). Use
@@ -97,7 +110,27 @@ OIDC (image push/sign, deploy, plan, apply).
   `trivy-severity` defaults to `CRITICAL,HIGH` with `ignore-unfixed`; reviewed
   exceptions go in `.trivyignore` with an expiry comment.
 - `helm-deploy`: empty `chart-path` = platform chart at `platform-ref`;
-  `values-files` are applied in order; `image-digest` must be `sha256:...`.
+  `values-files` (relative paths) are applied in order; `image-digest` must be
+  `sha256:...`.
+  - Same bytes: the validate job resolves `platform-ref` to a commit, checks the
+    chart out once, packages chart + values into a bundle, lints/renders/
+    kubeconforms that bundle and publishes its sha256 as a job output. The
+    deploy job checks nothing out; it downloads the bundle, re-checks the digest
+    and every file, and deploys the packaged chart.
+  - `platform-ref` for `prod`/`production` must be a 40-char commit SHA or a
+    tag; a branch (or a name that is both a branch and a tag) fails the run.
+  - Signature: before `helm upgrade` the deploy job runs `cosign verify` on
+    `image-repository@image-digest` (keyless, issuer
+    `cosign-certificate-oidc-issuer`, default
+    `https://token.actions.githubusercontent.com`; GitHub workflow repository =
+    the calling repo or `cosign-source-repository`). Default identity: this
+    repo's `.github/workflows/container-image.yml` at a tag or commit SHA (dev
+    and staging also accept `refs/heads/main`), because a reusable workflow
+    signs with its own identity. `cosign-certificate-identity-regexp` overrides
+    it and must be anchored. There is no skip input; a failed verification
+    stops the deploy. The EKS deploy role needs ECR read
+    (`ecr:GetAuthorizationToken`, `ecr:BatchGetImage`,
+    `ecr:GetDownloadUrlForLayer`) on the service repository.
 - `terraform`: backend from `environments/<env>.backend.hcl` or
   `state-bucket`/`state-key`/`lock-table`; apply runs the saved plan only.
 - `contract-checks`: allowlist file `<spec>.accepted-breaking.txt` next to the

@@ -17,17 +17,23 @@ Bu repository, FinTechBankX DDD/EDA dönüşümünde **svc-dly-templates** servi
 ## What this repository provides (Proposed)
 
 The delivery platform every FinTechBankX service consumes. Nothing here is
-deployed or released yet; consumers pin `@main` until the first tag.
+deployed or released yet. Callers pin every reusable workflow to a release
+commit SHA (`@<sha> # v1.0.0`; the sample callers name the tag `v1.0.0`, which
+is cut on merge) and pass the same release as `platform-ref`; Renovate or
+Dependabot bumps them. `@main` is for dev experiments only; `helm-deploy`
+rejects a branch `platform-ref` for prod. Actions in jobs that hold OIDC
+credentials are pinned to commit SHAs (checked by
+`scripts/ci/test/workflow-supply-chain.test.mjs`).
 
 | Capability | Path | How a service uses it |
 |---|---|---|
-| Java 23 CI (gradle `check` with jacoco gate, optional PostgreSQL + `TEST_DB_URL`, controller guardrail) | [.github/workflows/java-service-ci.yml](.github/workflows/java-service-ci.yml) | `uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/java-service-ci.yml@main` |
+| Java 23 CI (gradle `check` with jacoco gate, optional PostgreSQL + `TEST_DB_URL`, controller guardrail) | [.github/workflows/java-service-ci.yml](.github/workflows/java-service-ci.yml) | `uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/java-service-ci.yml@<release-sha>` |
 | ArchUnit gate (ADR-028: the four hexagonal rules on the service's compiled classes, both package layouts) | [tools/archunit-gate](tools/archunit-gate/README.md) | runs inside `java-service-ci.yml` after `check` |
 | TDD gate (ADR-029: `src/main` changes need `src/test` changes, opt-out label `no-behaviour-change`) | [.github/workflows/tdd-gate.yml](.github/workflows/tdd-gate.yml) | PR gate |
 | Ephemeral environment (compose runtime + service images + optional monolith image or build, parity test actors, SQL fixtures, seed and test commands, always torn down) | [.github/workflows/ephemeral-env.yml](.github/workflows/ephemeral-env.yml) | regression / parity runs |
 | Shared local runtime (PostgreSQL per service, KRaft Kafka, Keycloak realm, OTel, service and monolith profiles) | [compose](compose/README.md) | `compose/fbx-local.sh up <profiles>` |
 | Container image (Buildx, Trivy, Syft SBOM, ECR via OIDC, SHA tag, cosign keyless) | [.github/workflows/container-image.yml](.github/workflows/container-image.yml) | outputs `image-digest`, `image-repository`, `image-tag` |
-| Helm deploy to EKS (lint, template, kubeconform, environment-gated `helm upgrade --install --atomic --wait` by digest) | [.github/workflows/helm-deploy.yml](.github/workflows/helm-deploy.yml) | one call per environment |
+| Helm deploy to EKS (lint, template, kubeconform on one packaged chart+values bundle, cosign signature check of the digest, environment-gated `helm upgrade --install --atomic --wait` of that same bundle) | [.github/workflows/helm-deploy.yml](.github/workflows/helm-deploy.yml) | one call per environment |
 | Terraform (fmt/validate, OIDC plan on S3 backend, plan artifact, optional PR comment, environment-gated apply) | [.github/workflows/terraform.yml](.github/workflows/terraform.yml) | for `deploy/terraform` |
 | Contracts (Redocly, oasdiff with `<spec>.accepted-breaking.txt`, FAPI guard, AsyncAPI) | [.github/workflows/contract-checks.yml](.github/workflows/contract-checks.yml) | PR gate |
 | Database migration rehearsal (Flyway migrate twice + validate, `scripts/migration/verify-backfill.sh`) | [.github/workflows/db-migration-verify.yml](.github/workflows/db-migration-verify.yml) | PR gate |

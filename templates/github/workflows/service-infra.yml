@@ -7,6 +7,13 @@ name: service-infra
 # Repository variables: AWS_REGION, TF_PLAN_ROLE_ARN_DEV|STAGING|PROD,
 # TF_APPLY_ROLE_ARN_DEV|STAGING|PROD. Backend files
 # deploy/terraform/environments/<env>.backend.hcl must be committed (no secrets).
+#
+# Pinning: the reusable workflow is pinned to the platform release v1.0.0
+# because its jobs assume AWS roles through OIDC. In a service repo pin the
+# release commit SHA with the tag as a comment
+# (".../terraform.yml@<40-hex sha> # v1.0.0") and let Renovate or Dependabot
+# (github-actions ecosystem) bump it. @main is only for experiments in dev,
+# never in a pipeline that can reach staging or prod.
 
 on:
   pull_request:
@@ -20,7 +27,7 @@ permissions:
 
 jobs:
   dev:
-    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/terraform.yml@main
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/terraform.yml@v1.0.0
     permissions:
       contents: read
       id-token: write
@@ -35,7 +42,7 @@ jobs:
 
   staging:
     needs: dev
-    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/terraform.yml@main
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/terraform.yml@v1.0.0
     permissions:
       contents: read
       id-token: write
@@ -50,7 +57,7 @@ jobs:
 
   prod:
     needs: staging
-    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/terraform.yml@main
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/terraform.yml@v1.0.0
     permissions:
       contents: read
       id-token: write

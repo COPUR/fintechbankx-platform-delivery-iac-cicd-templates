@@ -18,7 +18,7 @@ name: terraform
 #
 # Usage (caller job):
 #   infra-dev:
-#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/terraform.yml@main
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/terraform.yml@<release-sha> # v1.0.0 (pin a SHA; Renovate/Dependabot bump it)
 #     permissions:
 #       contents: read
 #       id-token: write
@@ -103,8 +103,8 @@ jobs:
       run:
         working-directory: ${{ inputs.working-directory }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: ${{ inputs.terraform-version }}
           terraform_wrapper: false
@@ -138,14 +138,14 @@ jobs:
       AWS_REGION_INPUT: ${{ inputs.aws-region }}
       VAR_FILE: ${{ inputs.var-file }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: ${{ inputs.terraform-version }}
           terraform_wrapper: false
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ inputs.aws-role-to-assume }}
           role-session-name: gha-tfplan-${{ inputs.environment }}-${{ github.run_id }}
@@ -192,7 +192,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload plan
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           # The binary plan can contain sensitive values; keep retention short.
           name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
@@ -212,7 +212,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
           path: plan
@@ -259,20 +259,20 @@ jobs:
       LOCK_TABLE: ${{ inputs.lock-table }}
       AWS_REGION_INPUT: ${{ inputs.aws-region }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: ${{ inputs.terraform-version }}
           terraform_wrapper: false
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ inputs.apply-role-to-assume != '' && inputs.apply-role-to-assume || inputs.aws-role-to-assume }}
           role-session-name: gha-tfapply-${{ inputs.environment }}-${{ github.run_id }}
           aws-region: ${{ inputs.aws-region }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
           path: ${{ inputs.working-directory }}

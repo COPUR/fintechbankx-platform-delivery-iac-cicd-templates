@@ -2,26 +2,50 @@ name: helm-deploy
 
 # Reusable Helm deploy to Amazon EKS.
 #
-#   validate: helm lint + helm template + kubeconform (no cloud access)
-#   deploy:   GitHub environment gate -> AWS OIDC -> helm upgrade --install --atomic --wait
+#   validate: resolve platform-ref to a commit (prod: commit SHA or tag only),
+#             check the chart out once, package chart + values into a bundle,
+#             helm lint + helm template + kubeconform on that bundle (no cloud access),
+#             upload the bundle and publish its digest as a job output
+#   deploy:   GitHub environment gate -> download the bundle and check its digest
+#             -> AWS OIDC -> cosign verify of the image digest (keyless, fail closed)
+#             -> helm upgrade --install --atomic --wait with the bundled chart
 #
-# The image is always passed by digest. Environments are GitHub environments
-# named after inputs.environment; configure "Required reviewers" on staging and
-# prod in the service repository settings so those deploys wait for approval.
+# The deploy job never checks anything out: it deploys exactly the bytes the
+# validate job checked (time-of-check equals time-of-use).
+#
+# The image is always passed by digest and must carry a cosign keyless
+# signature from container-image.yml: certificate identity = this repository's
+# .github/workflows/container-image.yml at a tag or commit SHA (dev/staging also
+# accept refs/heads/main), issuer https://token.actions.githubusercontent.com,
+# and the certificate's GitHub workflow repository = the calling repository.
+# Override with cosign-certificate-identity-regexp when the image is built by a
+# different workflow. The deploy role therefore also needs ECR read
+# (ecr:GetAuthorizationToken, ecr:BatchGetImage, ecr:GetDownloadUrlForLayer) on
+# the service repository to fetch the signature.
+#
+# Environments are GitHub environments named after inputs.environment;
+# configure "Required reviewers" on staging and prod in the service repository
+# settings so those deploys wait for approval.
 #
 # Chart source: by default the generic chart charts/fintechbankx-service from
 # this repository at inputs.platform-ref; set chart-path to use a chart that
 # lives in the service repo (e.g. deploy/helm/loan-lifecycle-service).
 #
-# Usage (caller job):
+# Pinning: callers pin this workflow to a release commit SHA (or tag) and pass
+# the same release as platform-ref; Renovate or Dependabot (github-actions
+# ecosystem) bumps both. prod rejects a platform-ref that is a branch.
+#
+# Usage (caller job; dev example, see templates/microservice for the pinned
+# dev -> staging -> prod pipeline):
 #   deploy-dev:
 #     needs: image
-#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/helm-deploy.yml@main
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/helm-deploy.yml@<release-sha> # v1.0.0
 #     permissions:
 #       contents: read
 #       id-token: write
 #     with:
 #       environment: dev
+#       platform-ref: <release-sha>
 #       namespace: lending
 #       release-name: loan-lifecycle-service
 #       values-files: deploy/helm/values.yaml deploy/helm/values-dev.yaml
@@ -55,11 +79,14 @@ on:
         type: string
         default: COPUR/fintechbankx-platform-delivery-iac-cicd-templates
       platform-ref:
-        description: Ref of the platform repository (pin a tag once released).
+        description: >-
+          Ref of the platform repository for the generic chart. prod (and production)
+          require a 40-char commit SHA or a tag; branches are rejected. Pass the same
+          release this workflow is pinned to. main is accepted for dev and staging only.
         type: string
         default: main
       values-files:
-        description: Space or newline separated values files in the caller repo, applied in order.
+        description: Space or newline separated values files in the caller repo, applied in order (relative paths).
         type: string
         default: ""
       image-repository:
@@ -74,11 +101,26 @@ on:
         description: Git SHA tag, used only for the version label.
         type: string
         default: ""
+      cosign-certificate-identity-regexp:
+        description: >-
+          Anchored (^...$) regexp for the signing certificate identity. Empty = this
+          platform repository's .github/workflows/container-image.yml at a tag or commit
+          SHA (dev and staging also accept refs/heads/main).
+        type: string
+        default: ""
+      cosign-certificate-oidc-issuer:
+        description: OIDC issuer of the signing certificate.
+        type: string
+        default: https://token.actions.githubusercontent.com
+      cosign-source-repository:
+        description: Repository whose workflow run must have signed the image. Empty = the calling repository.
+        type: string
+        default: ""
       aws-region:
         type: string
         default: me-central-1
       aws-role-to-assume:
-        description: IAM role for this environment's deploys (mapped to a namespaced RBAC role in EKS access entries).
+        description: IAM role for this environment's deploys (mapped to a namespaced RBAC role in EKS access entries; needs ECR read for signature verification).
         type: string
         required: true
       eks-cluster-name:
@@ -119,22 +161,105 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    outputs:
+      bundle-digest: ${{ steps.bundle.outputs.digest }}
+      platform-sha: ${{ steps.platform-ref.outputs.sha }}
     steps:
-      - name: Checkout service
-        uses: actions/checkout@v4
+      - name: Resolve platform-ref (prod requires a commit SHA or tag)
+        id: platform-ref
+        env:
+          TARGET_ENV: ${{ inputs.environment }}
+          USES_PLATFORM_CHART: ${{ inputs.chart-path == '' }}
+          PLATFORM_REF: ${{ inputs.platform-ref }}
+          PLATFORM_REMOTE: https://github.com/${{ inputs.platform-repository }}.git
+          PLATFORM_TOKEN: ${{ secrets.platform-repo-token || github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$USES_PLATFORM_CHART" != "true" ]; then
+            echo "chart-path is set; platform-ref is not used"
+            echo "sha=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          prod=false
+          case "$TARGET_ENV" in prod|production) prod=true ;; esac
+          ls_remote() {
+            if [ -n "${PLATFORM_TOKEN:-}" ]; then
+              auth="$(printf 'x-access-token:%s' "$PLATFORM_TOKEN" | base64 -w0)"
+              GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+                git ls-remote "$PLATFORM_REMOTE" "$@"
+            else
+              git ls-remote "$PLATFORM_REMOTE" "$@"
+            fi
+          }
+          ref="$PLATFORM_REF"
+          sha=""
+          if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+            sha="$ref"
+          else
+            explicit=""
+            name="$ref"
+            case "$ref" in
+              refs/heads/*) explicit=branch; name="${ref#refs/heads/}" ;;
+              refs/tags/*) explicit=tag; name="${ref#refs/tags/}" ;;
+            esac
+            if [ -z "$name" ]; then
+              echo "::error::platform-ref is empty"; exit 1
+            fi
+            head_sha="$(ls_remote --heads "refs/heads/$name" | awk 'NF {print $1; exit}')"
+            tags="$(ls_remote --tags "refs/tags/$name" "refs/tags/$name^{}")"
+            tag_sha="$(printf '%s\n' "$tags" | awk '$2 ~ /\^\{\}$/ {print $1; exit}')"
+            if [ -z "$tag_sha" ]; then tag_sha="$(printf '%s\n' "$tags" | awk 'NF {print $1; exit}')"; fi
+            if [ "$prod" = true ]; then
+              if [ "$explicit" = branch ] || [ -n "$head_sha" ]; then
+                echo "::error::$TARGET_ENV deploys need platform-ref = a 40-char commit SHA or a tag; '$ref' is a branch"; exit 1
+              fi
+              if [ -z "$tag_sha" ]; then
+                echo "::error::$TARGET_ENV deploys need platform-ref = a 40-char commit SHA or a tag; '$ref' is neither"; exit 1
+              fi
+              sha="$tag_sha"
+            else
+              case "$explicit" in
+                branch) sha="$head_sha" ;;
+                tag) sha="$tag_sha" ;;
+                *) sha="${tag_sha:-$head_sha}" ;;
+              esac
+              if [ -z "$sha" ]; then
+                echo "::error::platform-ref '$ref' does not resolve in the platform repository"; exit 1
+              fi
+            fi
+          fi
+          echo "platform-ref $ref -> $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout platform chart
+      - name: Checkout service
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Checkout platform chart (once, at the resolved commit)
         if: ${{ inputs.chart-path == '' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ inputs.platform-repository }}
-          ref: ${{ inputs.platform-ref }}
+          ref: ${{ steps.platform-ref.outputs.sha }}
           path: .fbx-platform
           token: ${{ secrets.platform-repo-token || github.token }}
           sparse-checkout: charts
+          persist-credentials: false
+
+      - name: Confirm the checked-out platform commit
+        if: ${{ inputs.chart-path == '' }}
+        env:
+          EXPECTED_SHA: ${{ steps.platform-ref.outputs.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git -C .fbx-platform rev-parse HEAD)"
+          if [ "$actual" != "$EXPECTED_SHA" ]; then
+            echo "::error::platform checkout is at $actual, expected $EXPECTED_SHA"; exit 1
+          fi
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: ${{ inputs.helm-version }}
 
@@ -148,7 +273,8 @@ jobs:
             | tar -xz -C "$tmpdir"
           sudo install "$tmpdir/kubeconform" /usr/local/bin/kubeconform
 
-      - name: Lint, render and validate manifests
+      - name: Bundle, lint, render and validate manifests
+        id: bundle
         env:
           CHART_PATH: ${{ inputs.chart-path != '' && inputs.chart-path || '.fbx-platform/charts/fintechbankx-service' }}
           VALUES_FILES: ${{ inputs.values-files }}
@@ -160,16 +286,30 @@ jobs:
           KUBE_VERSION: ${{ inputs.kube-version }}
         run: |
           set -euo pipefail
-          case "$IMAGE_DIGEST" in
-            sha256:*) ;;
-            *) echo "::error::image-digest must be a sha256 digest"; exit 1 ;;
-          esac
+          if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::image-digest must be a sha256 digest"; exit 1
+          fi
+          bundle=fbx-deploy-bundle
+          rm -rf "$bundle"
+          mkdir -p "$bundle/chart" "$bundle/values"
+          helm package "$CHART_PATH" --destination "$bundle/chart"
+          charts=("$bundle"/chart/*.tgz)
+          if [ "${#charts[@]}" -ne 1 ]; then echo "::error::expected one packaged chart"; exit 1; fi
+          chart="${charts[0]}"
           args=()
-          for f in $VALUES_FILES; do args+=(-f "$f"); done
+          for f in $VALUES_FILES; do
+            case "$f" in
+              /*|*..*) echo "::error::values file '$f' must be a relative path inside the repository"; exit 1 ;;
+            esac
+            if [ ! -f "$f" ]; then echo "::error::values file '$f' not found"; exit 1; fi
+            mkdir -p "$bundle/values/$(dirname "$f")"
+            cp "$f" "$bundle/values/$f"
+            args+=(-f "$bundle/values/$f")
+          done
           args+=(--set-string "image.repository=$IMAGE_REPOSITORY" --set-string "image.digest=$IMAGE_DIGEST")
           if [ -n "$IMAGE_TAG" ]; then args+=(--set-string "image.tag=$IMAGE_TAG"); fi
-          helm lint "$CHART_PATH" "${args[@]}"
-          helm template "$RELEASE" "$CHART_PATH" --namespace "$NAMESPACE" --kube-version "$KUBE_VERSION" "${args[@]}" > rendered.yaml
+          helm lint "$chart" "${args[@]}"
+          helm template "$RELEASE" "$chart" --namespace "$NAMESPACE" --kube-version "$KUBE_VERSION" "${args[@]}" > rendered.yaml
           kubeconform -strict -summary -kubernetes-version "$KUBE_VERSION" \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
@@ -177,9 +317,26 @@ jobs:
           if grep -nE 'image: .*:latest"?$' rendered.yaml; then
             echo "::error::rendered manifests reference a :latest image"; exit 1
           fi
+          (cd "$bundle" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) > SHA256SUMS.tmp
+          mv SHA256SUMS.tmp "$bundle/SHA256SUMS"
+          digest="$(sha256sum "$bundle/SHA256SUMS" | cut -d' ' -f1)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Validated deploy bundle"
+            echo "- chart: \`$(basename "$chart")\` (sha256 \`$(sha256sum "$chart" | cut -d' ' -f1)\`)"
+            echo "- bundle digest: \`$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deploy bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: deploy-bundle-${{ inputs.release-name }}-${{ inputs.environment }}
+          path: fbx-deploy-bundle
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload rendered manifests
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rendered-${{ inputs.release-name }}-${{ inputs.environment }}
           path: rendered.yaml
@@ -201,30 +358,100 @@ jobs:
     outputs:
       revision: ${{ steps.deploy.outputs.revision }}
     steps:
-      - name: Checkout service
-        uses: actions/checkout@v4
-
-      - name: Checkout platform chart
-        if: ${{ inputs.chart-path == '' }}
-        uses: actions/checkout@v4
+      - name: Download the validated deploy bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          repository: ${{ inputs.platform-repository }}
-          ref: ${{ inputs.platform-ref }}
-          path: .fbx-platform
-          token: ${{ secrets.platform-repo-token || github.token }}
-          sparse-checkout: charts
+          name: deploy-bundle-${{ inputs.release-name }}-${{ inputs.environment }}
+          path: fbx-deploy-bundle
+
+      - name: Verify the bundle is the one validate checked
+        id: verify-bundle
+        env:
+          EXPECTED_DIGEST: ${{ needs.validate.outputs.bundle-digest }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$EXPECTED_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::validate job published no bundle digest"; exit 1
+          fi
+          actual="$(sha256sum fbx-deploy-bundle/SHA256SUMS | cut -d' ' -f1)"
+          if [ "$actual" != "$EXPECTED_DIGEST" ]; then
+            echo "::error::bundle digest $actual does not match the validated digest $EXPECTED_DIGEST"; exit 1
+          fi
+          cd fbx-deploy-bundle
+          sha256sum --check --strict --quiet SHA256SUMS
+          listed="$(awk '{print $2}' SHA256SUMS | sort)"
+          present="$(find . -type f ! -name SHA256SUMS | sort)"
+          if [ "$listed" != "$present" ]; then
+            echo "::error::bundle contains files that were not validated"; exit 1
+          fi
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: ${{ inputs.helm-version }}
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ inputs.aws-role-to-assume }}
           role-session-name: gha-deploy-${{ inputs.environment }}-${{ github.run_id }}
           aws-region: ${{ inputs.aws-region }}
+
+      - name: Log cosign in to the image registry (ECR)
+        env:
+          IMAGE_REPOSITORY: ${{ inputs.image-repository }}
+          REGION: ${{ inputs.aws-region }}
+        run: |
+          set -euo pipefail
+          registry="${IMAGE_REPOSITORY%%/*}"
+          case "$registry" in
+            *.dkr.ecr.*.amazonaws.com)
+              aws ecr get-login-password --region "$REGION" | cosign login "$registry" --username AWS --password-stdin ;;
+            *) echo "registry $registry is not ECR; cosign uses ambient registry credentials" ;;
+          esac
+
+      - name: Verify image signature (cosign keyless, fail closed)
+        id: verify-signature
+        env:
+          TARGET_ENV: ${{ inputs.environment }}
+          IMAGE_REPOSITORY: ${{ inputs.image-repository }}
+          IMAGE_DIGEST: ${{ inputs.image-digest }}
+          IDENTITY_REGEXP: ${{ inputs.cosign-certificate-identity-regexp }}
+          OIDC_ISSUER: ${{ inputs.cosign-certificate-oidc-issuer }}
+          SOURCE_REPOSITORY: ${{ inputs.cosign-source-repository != '' && inputs.cosign-source-repository || github.repository }}
+          PLATFORM_REPOSITORY: ${{ inputs.platform-repository }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::image-digest must be a sha256 digest"; exit 1
+          fi
+          if [ -n "$IDENTITY_REGEXP" ]; then
+            identity_re="$IDENTITY_REGEXP"
+            case "$identity_re" in
+              ^https://*\$) ;;
+              *) echo "::error::cosign-certificate-identity-regexp must be anchored: ^https://...\$"; exit 1 ;;
+            esac
+          else
+            # shellcheck disable=SC2016 # sed expression, not a shell expansion
+            platform_re="$(printf '%s' "$PLATFORM_REPOSITORY" | sed -e 's/[][\.*^$()+?{}|]/\\&/g')"
+            case "$TARGET_ENV" in
+              prod|production) refs='refs/tags/[A-Za-z0-9._-]+|[0-9a-f]{40}' ;;
+              *) refs='refs/tags/[A-Za-z0-9._-]+|refs/heads/main|[0-9a-f]{40}' ;;
+            esac
+            identity_re="^https://github\\.com/${platform_re}/\\.github/workflows/container-image\\.yml@(${refs})\$"
+          fi
+          echo "identity: $identity_re"
+          echo "issuer:   $OIDC_ISSUER"
+          echo "source:   $SOURCE_REPOSITORY"
+          cosign verify \
+            --certificate-identity-regexp "$identity_re" \
+            --certificate-oidc-issuer "$OIDC_ISSUER" \
+            --certificate-github-workflow-repository "$SOURCE_REPOSITORY" \
+            "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}" > /dev/null
+          echo "- signature verified for \`${IMAGE_REPOSITORY}@${IMAGE_DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update kubeconfig
         env:
@@ -235,7 +462,6 @@ jobs:
       - name: helm upgrade --install --atomic --wait
         id: deploy
         env:
-          CHART_PATH: ${{ inputs.chart-path != '' && inputs.chart-path || '.fbx-platform/charts/fintechbankx-service' }}
           VALUES_FILES: ${{ inputs.values-files }}
           IMAGE_REPOSITORY: ${{ inputs.image-repository }}
           IMAGE_DIGEST: ${{ inputs.image-digest }}
@@ -246,11 +472,15 @@ jobs:
           TARGET_ENV: ${{ inputs.environment }}
         run: |
           set -euo pipefail
+          charts=(fbx-deploy-bundle/chart/*.tgz)
+          if [ "${#charts[@]}" -ne 1 ] || [ ! -f "${charts[0]}" ]; then
+            echo "::error::expected exactly one packaged chart in the bundle"; exit 1
+          fi
           args=()
-          for f in $VALUES_FILES; do args+=(-f "$f"); done
+          for f in $VALUES_FILES; do args+=(-f "fbx-deploy-bundle/values/$f"); done
           args+=(--set-string "image.repository=$IMAGE_REPOSITORY" --set-string "image.digest=$IMAGE_DIGEST")
           if [ -n "$IMAGE_TAG" ]; then args+=(--set-string "image.tag=$IMAGE_TAG"); fi
-          helm upgrade --install "$RELEASE" "$CHART_PATH" \
+          helm upgrade --install "$RELEASE" "${charts[0]}" \
             --namespace "$NAMESPACE" \
             --atomic --wait --timeout "$HELM_TIMEOUT" \
             --history-max 10 \

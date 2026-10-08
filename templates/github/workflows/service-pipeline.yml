@@ -17,6 +17,15 @@ name: service-pipeline
 # deployment branch rule: main only).
 #
 # This example uses svc-ln-loan-lifecycle; adjust names for your service.
+#
+# Pinning: every reusable workflow below is pinned to the platform release
+# v1.0.0, and platform-ref names the same release, so the workflow code and the
+# chart/tools it fetches come from one reviewed commit. In a service repo pin
+# the release commit SHA with the tag as a comment
+# (".../helm-deploy.yml@<40-hex sha> # v1.0.0") and let Renovate or Dependabot
+# (github-actions ecosystem) bump all of them together. helm-deploy rejects a
+# branch as platform-ref for prod. @main is only for experiments in dev, never
+# in a pipeline that can reach staging or prod.
 
 on:
   pull_request:
@@ -36,10 +45,11 @@ concurrency:
 
 jobs:
   ci:
-    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/java-service-ci.yml@main
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/java-service-ci.yml@v1.0.0
     permissions:
       contents: read
     with:
+      platform-ref: v1.0.0
       postgres-enabled: true
       postgres-db: db_ln_loan_lifecycle_test
       postgres-user: loan_test
@@ -48,24 +58,26 @@ jobs:
 
   tdd:
     if: ${{ github.event_name == 'pull_request' }}
-    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/tdd-gate.yml@main
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/tdd-gate.yml@v1.0.0
     permissions:
       contents: read
+    with:
+      platform-ref: v1.0.0
 
   contracts:
-    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/contract-checks.yml@main
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/contract-checks.yml@v1.0.0
     permissions:
       contents: read
 
   migrations:
-    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/db-migration-verify.yml@main
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/db-migration-verify.yml@v1.0.0
     permissions:
       contents: read
     with:
       schema: sc_ln_loan_lifecycle
 
   security:
-    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/security.yml@main
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/security.yml@v1.0.0
     permissions:
       contents: read
       actions: read
@@ -76,7 +88,7 @@ jobs:
   image:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: [ci, contracts, migrations, security]
-    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/container-image.yml@main
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/container-image.yml@v1.0.0
     permissions:
       contents: read
       id-token: write
@@ -87,11 +99,12 @@ jobs:
 
   deploy-dev:
     needs: image
-    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/helm-deploy.yml@main
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/helm-deploy.yml@v1.0.0
     permissions:
       contents: read
       id-token: write
     with:
+      platform-ref: v1.0.0
       environment: dev
       namespace: lending
       release-name: loan-lifecycle-service
@@ -105,11 +118,12 @@ jobs:
 
   deploy-staging:
     needs: [image, deploy-dev]
-    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/helm-deploy.yml@main
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/helm-deploy.yml@v1.0.0
     permissions:
       contents: read
       id-token: write
     with:
+      platform-ref: v1.0.0
       environment: staging
       namespace: lending
       release-name: loan-lifecycle-service
@@ -123,11 +137,12 @@ jobs:
 
   deploy-prod:
     needs: [image, deploy-staging]
-    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/helm-deploy.yml@main
+    uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/helm-deploy.yml@v1.0.0
     permissions:
       contents: read
       id-token: write
     with:
+      platform-ref: v1.0.0
       environment: prod
       namespace: lending
       release-name: loan-lifecycle-service
