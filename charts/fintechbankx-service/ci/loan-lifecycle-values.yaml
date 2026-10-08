@@ -1,0 +1,27 @@
+# CI fixture mirroring svc-ln-loan-lifecycle (fintechbankx-lendingpayments-loan-lifecycle-core).
+serviceName: loan-lifecycle-service
+serviceId: svc-ln-loan-lifecycle
+boundedContext: lending
+owningSquad: Loan Lifecycle Squad
+environment: staging
+image:
+  repository: 123456789012.dkr.ecr.me-central-1.amazonaws.com/fintechbankx/loan-lifecycle-service
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+serviceAccount:
+  roleArn: arn:aws:iam::123456789012:role/staging-loan-lifecycle-service-workload
+config:
+  DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_staging?sslmode=require
+  DB_USERNAME: loan_lifecycle_app
+  KAFKA_SECURITY_PROTOCOL: SASL_SSL
+  CUSTOMER_SERVICE_BASE_URL: http://customer-profile-kyc-service.customer.svc.cluster.local:8080
+externalSecret:
+  remoteSecretName: staging/loan-lifecycle-service/db-app
+  extraData:
+    - secretKey: OIDC_CLIENT_SECRET
+      remoteSecretName: staging/loan-lifecycle-service/oidc-client
+      property: client_secret
+istio:
+  authorizationPolicy:
+    enabled: true
+    allowedPrincipals:
+      - cluster.local/ns/payments/sa/payment-initiation-settlement-service

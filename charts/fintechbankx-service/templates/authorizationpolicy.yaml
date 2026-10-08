@@ -1,0 +1,43 @@
+{{- if .Values.istio.authorizationPolicy.enabled }}
+{{- $principals := .Values.istio.authorizationPolicy.allowedPrincipals }}
+{{- $gw := .Values.istio.authorizationPolicy.ingressGatewayPrincipal }}
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "fbx.name" . }}-allow
+  labels:
+    {{- include "fbx.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "fbx.selectorLabels" . | nindent 6 }}
+  action: ALLOW
+  rules:
+    {{- if or $principals $gw }}
+    - from:
+        - source:
+            principals:
+              {{- range $principals }}
+              - {{ . | quote }}
+              {{- end }}
+              {{- with $gw }}
+              - {{ . | quote }}
+              {{- end }}
+      to:
+        - operation:
+            ports: [{{ .Values.service.port | quote }}]
+    {{- end }}
+    {{- with .Values.networkPolicy.monitoringNamespaces }}
+    - from:
+        - source:
+            namespaces:
+              {{- range . }}
+              - {{ . | quote }}
+              {{- end }}
+      to:
+        - operation:
+            ports: [{{ $.Values.service.managementPort | quote }}]
+            paths: ["/actuator/prometheus"]
+            methods: ["GET"]
+    {{- end }}
+{{- end }}

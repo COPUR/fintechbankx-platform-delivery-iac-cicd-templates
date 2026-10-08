@@ -1,0 +1,21 @@
+# CI fixture: smallest dev shape, tag instead of digest, no HPA, no ServiceMonitor.
+serviceName: customer-profile-kyc-service
+serviceId: svc-cus-profile-kyc
+boundedContext: customer
+environment: dev
+image:
+  repository: 123456789012.dkr.ecr.me-central-1.amazonaws.com/fintechbankx/customer-profile-kyc-service
+  tag: 3f2c1e0
+replicaCount: 2
+autoscaling:
+  enabled: false
+podDisruptionBudget:
+  minAvailable: 1
+topologySpread:
+  maxSkew: 2
+  zoneWhenUnsatisfiable: ScheduleAnyway
+observability:
+  serviceMonitor:
+    enabled: false
+externalSecret:
+  remoteSecretName: dev/customer-profile-kyc-service/db-app

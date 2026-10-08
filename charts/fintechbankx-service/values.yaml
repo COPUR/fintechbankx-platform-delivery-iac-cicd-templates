@@ -1,0 +1,171 @@
+# Generic FinTechBankX service chart. Defaults are production-shaped
+# (3 replicas, zone spread, PDB, non-root, read-only root FS). Override per
+# environment with values-<env>.yaml in the service repo.
+#
+# Required (enforced by values.schema.json and `required`):
+#   serviceName, serviceId, boundedContext, image.repository and image.tag or image.digest
+
+# Kubernetes name of the workload; also app.kubernetes.io/name and the default
+# ServiceAccount name (PLATFORM_CONTRACT: <sa>, e.g. loan-lifecycle-service).
+serviceName: ""
+# Service id from the naming standard, e.g. svc-ln-loan-lifecycle.
+serviceId: ""
+# Bounded context / namespace context, e.g. lending, payments, customer, risk, compliance.
+boundedContext: ""
+owningSquad: ""
+# dev | staging | prod; used for telemetry resource attributes.
+environment: ""
+
+image:
+  repository: ""   # <account>.dkr.ecr.<region>.amazonaws.com/fintechbankx/<serviceName>
+  tag: ""          # immutable tag (git SHA); "latest" is rejected
+  digest: ""       # sha256:...; when set the image is pinned by digest (preferred for deploys)
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+replicaCount: 3
+revisionHistoryLimit: 5
+terminationGracePeriodSeconds: 45
+
+serviceAccount:
+  create: true
+  name: ""          # defaults to serviceName
+  # IRSA role (service repo deploy/terraform output workload_role_arn).
+  roleArn: ""
+  annotations: {}
+  automountToken: true
+
+podLabels: {}
+podAnnotations: {}
+
+service:
+  port: 8080            # API
+  managementPort: 8081  # actuator health + prometheus
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 768Mi
+    ephemeral-storage: 128Mi
+  limits:
+    memory: 1Gi
+    ephemeral-storage: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 12
+  targetCPUUtilizationPercentage: 65
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+topologySpread:
+  maxSkew: 1
+  # Zones are a hard constraint so a single-AZ outage never takes all replicas.
+  zoneWhenUnsatisfiable: DoNotSchedule
+  hostWhenUnsatisfiable: ScheduleAnyway
+
+probes:
+  startup:
+    path: /actuator/health/liveness
+    periodSeconds: 5
+    failureThreshold: 36
+  liveness:
+    path: /actuator/health/liveness
+    periodSeconds: 10
+    failureThreshold: 3
+  readiness:
+    path: /actuator/health/readiness
+    periodSeconds: 5
+    failureThreshold: 3
+
+# Seconds the pod keeps serving after it is removed from endpoints.
+preStopSleepSeconds: 10
+
+javaToolOptions: "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+
+# Non-secret runtime settings, rendered into a ConfigMap and loaded with envFrom.
+config: {}
+
+# Extra env entries (Kubernetes EnvVar objects).
+extraEnv: []
+
+# Secrets synced from AWS Secrets Manager by External Secrets Operator.
+externalSecret:
+  enabled: true
+  apiVersion: external-secrets.io/v1beta1
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: aws-secrets-manager
+  # Secrets Manager secret name (service repo deploy/terraform output app_db_secret_name).
+  remoteSecretName: ""
+  refreshInterval: 1h
+  # Env var name -> JSON property of the remote secret.
+  data:
+    - secretKey: SPRING_DATASOURCE_PASSWORD
+      property: password
+  # Additional remote secrets, e.g. the Keycloak client credential
+  # <env>/<service-slug>/oidc-client.
+  extraData: []
+  #  - secretKey: OIDC_CLIENT_SECRET
+  #    remoteSecretName: dev/loan-lifecycle-service/oidc-client
+  #    property: client_secret
+
+observability:
+  tracing:
+    enabled: true
+    otlpEndpoint: http://otel-collector.observability.svc.cluster.local:4318
+  serviceMonitor:
+    # Requires the Prometheus Operator CRDs (platform-observability).
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+networkPolicy:
+  enabled: true
+  # Namespaces allowed to call the API port (the own namespace is always allowed).
+  ingressNamespaces:
+    - istio-ingress
+  # Namespaces allowed to scrape the management port and Envoy stats.
+  monitoringNamespaces:
+    - observability
+  # In-cluster egress: namespace + TCP ports.
+  egressNamespaces:
+    - name: istio-system
+      ports: [15012, 15017]
+    - name: observability
+      ports: [4317, 4318]
+    - name: identity
+      ports: [8080, 8443]
+  # Egress outside the cluster (Aurora 5432, MSK IAM 9098, AWS APIs 443).
+  # Narrow the CIDR to the VPC / VPC endpoint ranges per environment.
+  egressCidrs:
+    - cidr: 0.0.0.0/0
+      ports: [443, 5432, 9098]
+
+istio:
+  # Labels and annotations that make the pod mesh-ready. The namespace carries
+  # istio-injection=enabled; mTLS and default-deny come from platform-service-mesh-security.
+  inject: true
+  holdApplicationUntilProxyStarts: true
+  # Only if Prometheus runs outside the mesh and cannot present mesh mTLS:
+  # bypasses Envoy (and STRICT mTLS) for the management port. Keep false unless
+  # the platform-observability squad and the mesh owners agree.
+  excludeManagementPortFromMesh: false
+  # Optional per-service ALLOW policy on top of the namespace default-deny.
+  authorizationPolicy:
+    enabled: false
+    # SPIFFE principals, e.g. cluster.local/ns/lending/sa/loan-lifecycle-service
+    allowedPrincipals: []
+    # Ingress gateway principal, allowed when non-empty.
+    ingressGatewayPrincipal: cluster.local/ns/istio-ingress/sa/istio-ingressgateway
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
