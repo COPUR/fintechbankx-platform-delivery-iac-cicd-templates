@@ -263,7 +263,9 @@
           }
         },
         "remoteSecretName": {
-          "type": "string"
+          "type": "string",
+          "description": "This service's own secret. Must start with <environment>/<serviceName>/ (prefix enforced at template time); empty only when externalSecret is disabled.",
+          "pattern": "^(|(dev|staging|prod)/[a-z][a-z0-9-]{1,61}[a-z0-9]/[A-Za-z0-9/_+=.@-]+)$"
         },
         "data": {
           "type": "array",

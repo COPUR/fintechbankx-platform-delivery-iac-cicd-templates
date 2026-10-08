@@ -48,8 +48,10 @@ Migration notes from the per-service charts:
 - The rendered secret is `<serviceName>-secrets` (the per-service charts used `<chart>-db`).
 - `externalSecret.data` lists the env var to JSON property mapping; the default
   keeps `SPRING_DATASOURCE_PASSWORD <- password`.
-- `externalSecret.extraData` may only read the release's own secrets: every
-  `remoteSecretName` must start with `<environment>/<serviceName>/` (e.g.
+- `externalSecret.remoteSecretName` and every `externalSecret.extraData`
+  `remoteSecretName` may only read the release's own secrets: they must start
+  with `<environment>/<serviceName>/` (e.g. `staging/loan-lifecycle-service/db-app`,
   `staging/loan-lifecycle-service/oidc-client`). The schema checks the
   `<env>/<slug>/...` shape, the template fails on any other service, environment
-  or platform secret, and `environment` is required once `extraData` is set.
+  or platform secret, and `environment` is required once the ExternalSecret
+  has any key. With `data: []` the main `remoteSecretName` may stay empty.

@@ -89,3 +89,10 @@ tests:
           ports: [5432]
     asserts:
       - notFailedTemplate: {}
+  - it: rejects a main remote secret name outside <env>/<service>/...
+    template: templates/deployment.yaml
+    set:
+      externalSecret.remoteSecretName: shared-platform-db
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.remoteSecretName: Does not match pattern"

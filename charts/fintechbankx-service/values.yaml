@@ -102,6 +102,7 @@ externalSecret:
     kind: ClusterSecretStore
     name: aws-secrets-manager
   # Secrets Manager secret name (service repo deploy/terraform output app_db_secret_name).
+  # Must start with <environment>/<serviceName>/ (schema checks the shape, template the prefix).
   remoteSecretName: ""
   refreshInterval: 1h
   # Env var name -> JSON property of the remote secret.
