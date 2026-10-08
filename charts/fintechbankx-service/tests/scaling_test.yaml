@@ -18,6 +18,7 @@ tests:
     asserts:
       - isKind: {of: PodDisruptionBudget}
       - equal: {path: spec.minAvailable, value: 2}
+      - equal: {path: "spec.selector.matchLabels[\"app.kubernetes.io/component\"]", value: service}
   - it: refuses a PDB that would block node drains
     template: templates/pdb.yaml
     set:

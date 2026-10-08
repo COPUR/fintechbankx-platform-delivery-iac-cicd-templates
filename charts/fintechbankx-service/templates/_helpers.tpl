@@ -19,15 +19,21 @@
 {{- end -}}
 {{- end -}}
 
+{{/*
+Selector labels. app.kubernetes.io/component=service keeps the Service, PDB,
+NetworkPolicy and topology spread off the Flyway migration Job pods, which
+carry the same app.kubernetes.io/name=<sa> (the mesh keys datastore egress on
+it) with app.kubernetes.io/component=db-migration.
+*/}}
 {{- define "fbx.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "fbx.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: service
 {{- end -}}
 
 {{- define "fbx.labels" -}}
 {{ include "fbx.selectorLabels" . }}
 app.kubernetes.io/version: {{ include "fbx.version" . | quote }}
-app.kubernetes.io/component: service
 app.kubernetes.io/part-of: {{ printf "fintechbankx-%s" (required "boundedContext is required (e.g. lending)" .Values.boundedContext) }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
