@@ -1,0 +1,224 @@
+{
+  "_comment": "Parity test actors for the local/ephemeral compose stack only (compose/scripts/init-env.sh --parity-fixtures). Layered onto the identity repo's realm by the parity-fixtures-import service after realm-import; never imported anywhere else. init-env renders it into .cache/parity/ and adds the realm's LDAP federation as disabled (no OpenLDAP in compose).",
+  "realm": "fintechbankx",
+  "users": [
+    {
+      "username": "parity-banker",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Banker",
+      "email": "parity-banker@parity.invalid",
+      "realmRoles": [
+        "banker"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_BANKER)",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "parity-admin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Admin",
+      "email": "parity-admin@parity.invalid",
+      "realmRoles": [
+        "admin"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_ADMIN)",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "parity-loan-officer",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Loan Officer",
+      "email": "parity-loan-officer@parity.invalid",
+      "realmRoles": [
+        "loan_officer"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_LOAN_OFFICER)",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "parity-compliance-officer",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Compliance Officer",
+      "email": "parity-compliance-officer@parity.invalid",
+      "realmRoles": [
+        "compliance_officer"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_COMPLIANCE_OFFICER)",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "parity-auditor",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Auditor",
+      "email": "parity-auditor@parity.invalid",
+      "realmRoles": [
+        "auditor"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_AUDITOR)",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "parity-customer",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Customer",
+      "email": "parity-customer@parity.invalid",
+      "realmRoles": [
+        "customer"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_CUSTOMER)",
+          "temporary": false
+        }
+      ],
+      "attributes": {
+        "customer_id": [
+          "CUST-12345678"
+        ]
+      }
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "parity-suite",
+      "name": "Regression parity suite (ephemeral only)",
+      "description": "Confidential client of the monolith-vs-services parity suite. Ephemeral/local compose fixture only; never part of the identity repo's realm. Password grant is enabled here and nowhere else.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:PARITY_SECRET_PARITY_SUITE)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "parity-test",
+        "access.token.lifespan": "300",
+        "use.refresh.tokens": "false",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-svc-ln-loan-lifecycle",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-ln-loan-lifecycle",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-initiation-settlement",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-initiation-settlement",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-cus-profile-kyc",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cus-profile-kyc",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-rsk-decisioning",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-rsk-decisioning",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-cmp-evidence",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cmp-evidence",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "roles",
+        "profile",
+        "email",
+        "customer-id"
+      ],
+      "optionalClientScopes": []
+    }
+  ]
+}

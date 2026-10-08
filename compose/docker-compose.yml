@@ -6,7 +6,8 @@
 #                   kafka (single-broker KRaft) + topic-init from the Kafka repo's catalog,
 #                   keycloak 26 + realm-import of the identity repo's realm
 #   profiles:       lending, payments, customer, riskcompliance, services (all five),
-#                   monolith (ELMS side by side, with redis), observability (otel-collector + jaeger)
+#                   monolith (ELMS / monolith-oracle side by side, with redis), observability (otel-collector + jaeger),
+#                   parity-fixtures (regression parity test actors layered onto the realm, ephemeral/local only)
 #
 # Never start it directly: compose/fbx-local.sh fetches the platform assets into
 # .cache/, generates .env and realm.env (random dev-only credentials, git-ignored)
@@ -15,6 +16,9 @@
 #
 # Host ports bind to 127.0.0.1 only: postgres 15432, kafka 29092, keycloak 8180,
 # jaeger UI 16686, services 18010-18050, monolith 18000.
+#
+# Extra per-service environment (e.g. ACCOUNTS_ADAPTER=in-memory) comes from
+# the override rendered by `fbx-local.sh service-env FILE` (scripts/service-env.mjs).
 name: fintechbankx-local
 
 services:
@@ -123,6 +127,42 @@ services:
       - ./.cache/identity:/config:ro
     restart: "no"
 
+  # --- parity-fixtures profile -------------------------------------------------------
+  # Regression parity test actors (users banker, admin, loan_officer,
+  # compliance_officer, auditor, customer and the confidential parity-suite
+  # client) layered onto the imported realm. Rendered by
+  # `init-env.sh --parity-fixtures` into .cache/parity from
+  # keycloak/parity-fixtures.template.json; credentials come from realm.env.
+  # Ephemeral/local only: never part of the identity repo's realm. Runs without
+  # remote state and with every managed resource type on no-delete, so it only
+  # adds to what realm-import created.
+  parity-fixtures-import:
+    image: docker.io/adorsys/keycloak-config-cli:6.5.1-26.5.5@sha256:0955d98c8a341898b7aa177477edf8a1e90569ae50bbe7598141c1270b773274
+    profiles: [parity-fixtures]
+    depends_on:
+      realm-import:
+        condition: service_completed_successfully
+    env_file: ${FBX_REALM_ENV_FILE:-realm.env}
+    environment:
+      IMPORT_FILES_LOCATIONS: file:/config/*.json
+      IMPORT_REMOTESTATE_ENABLED: "false"
+      IMPORT_MANAGED_CLIENT: no-delete
+      IMPORT_MANAGED_ROLE: no-delete
+      IMPORT_MANAGED_GROUP: no-delete
+      IMPORT_MANAGED_COMPONENT: no-delete
+      IMPORT_MANAGED_SUBCOMPONENT: no-delete
+      IMPORT_MANAGED_CLIENTSCOPE: no-delete
+      IMPORT_MANAGED_SCOPEMAPPING: no-delete
+      IMPORT_MANAGED_REQUIREDACTION: no-delete
+      IMPORT_MANAGED_AUTHENTICATIONFLOW: no-delete
+      IMPORT_MANAGED_IDENTITYPROVIDER: no-delete
+      IMPORT_MANAGED_IDENTITYPROVIDERMAPPER: no-delete
+      IMPORT_MANAGED_CLIENTAUTHORIZATIONRESOURCES: no-delete
+      IMPORT_MANAGED_MESSAGEBUNDLES: no-delete
+    volumes:
+      - ./.cache/parity:/config:ro
+    restart: "no"
+
   # --- observability profile --------------------------------------------------
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.130.0
@@ -160,6 +200,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-ln-loan-lifecycle
@@ -193,6 +235,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-pay-initiation-settlement
@@ -225,6 +269,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-cus-profile-kyc
@@ -238,6 +284,8 @@ services:
       OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
       OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
       OIDC_CLIENT_ID: svc-cus-profile-kyc
+      # token azp values allowed to call (read by the service as SERVICE_CALLERS)
+      SERVICE_CALLERS: svc-ln-loan-lifecycle
       OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_CUS_PROFILE_KYC:?run compose/fbx-local.sh init}
       OTEL_SERVICE_NAME: svc-cus-profile-kyc
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
@@ -257,6 +305,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-rsk-decisioning
       SERVER_PORT: "8080"
@@ -267,6 +317,8 @@ services:
       OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
       OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
       OIDC_CLIENT_ID: svc-rsk-decisioning
+      # token azp values allowed to call (read by the service as SERVICE_CALLERS)
+      SERVICE_CALLERS: svc-pay-initiation-settlement
       OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_RSK_DECISIONING:?run compose/fbx-local.sh init}
       OTEL_SERVICE_NAME: svc-rsk-decisioning
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
@@ -286,6 +338,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-cmp-evidence
       SERVER_PORT: "8080"
@@ -296,6 +350,8 @@ services:
       OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
       OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
       OIDC_CLIENT_ID: svc-cmp-evidence
+      # token azp values allowed to call (read by the service as SERVICE_CALLERS)
+      SERVICE_CALLERS: svc-pay-initiation-settlement
       OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_CMP_EVIDENCE:?run compose/fbx-local.sh init}
       OTEL_SERVICE_NAME: svc-cmp-evidence
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
@@ -309,7 +365,14 @@ services:
       retries: 30
       start_period: 60s
 
-  # Enterprise Loan Management System, side by side for regression comparison.
+  # Comparison target for the regression parity suite, side by side. Default
+  # wiring is for the monolith-oracle app (enterprise-loan-management-system
+  # regression-parity/monolith-oracle): ORACLE_PORT, OIDC_ISSUER_URI (the
+  # in-stack Keycloak issuer as tokens carry it), OIDC_JWK_SET_URI (in-network),
+  # Spring profile `local` (its in-memory repositories) and /actuator/health.
+  # For the full ELMS image set FBX_MONOLITH_SPRING_PROFILES=docker and
+  # FBX_MONOLITH_HEALTH_PATH=/api/actuator/health; the datasource, Redis and
+  # Kafka settings below are for that image and ignored by the oracle.
   monolith:
     image: ${FBX_MONOLITH_IMAGE:-enterprise-loan-system:1.0.0}
     profiles: [monolith]
@@ -317,9 +380,15 @@ services:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
       kafka: {condition: service_healthy}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
     environment:
-      SPRING_PROFILES_ACTIVE: ${FBX_MONOLITH_SPRING_PROFILES:-docker}
+      SPRING_PROFILES_ACTIVE: ${FBX_MONOLITH_SPRING_PROFILES:-local}
+      ORACLE_PORT: "8080"
       SERVER_PORT: "8080"
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/db_elms_monolith_local
       SPRING_DATASOURCE_USERNAME: elms_monolith_app
       SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_ELMS_MONOLITH:?run compose/fbx-local.sh init}
@@ -331,8 +400,9 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports:
       - "127.0.0.1:18000:8080"
+    # curl, wget or bash (the oracle's eclipse-temurin JRE base has bash).
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080${FBX_MONOLITH_HEALTH_PATH:-/api/actuator/health} >/dev/null"]
+      test: ["CMD-SHELL", "url=http://127.0.0.1:8080${FBX_MONOLITH_HEALTH_PATH:-/actuator/health}; curl -fsS \"$$url\" >/dev/null 2>&1 || wget -qO- \"$$url\" >/dev/null 2>&1 || FBX_HC_PATH=\"${FBX_MONOLITH_HEALTH_PATH:-/actuator/health}\" bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf \"GET %s HTTP/1.0\\r\\n\\r\\n\" \"$$FBX_HC_PATH\" >&3 && grep -q UP <&3'"]
       interval: 10s
       timeout: 5s
       retries: 30

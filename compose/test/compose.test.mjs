@@ -1,7 +1,7 @@
 // Tests for the shared local/ephemeral runtime under compose/ and for the
 // ephemeral-env reusable workflow. Docker-dependent and PostgreSQL-dependent
 // cases skip (with a reason) when the tool is not available.
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -19,6 +19,7 @@ const fetchAssets = path.join(composeDir, "scripts", "fetch-platform-assets.sh")
 const composeFile = path.join(composeDir, "docker-compose.yml");
 const servicesTsv = path.join(composeDir, "services.tsv");
 const pgInit = path.join(composeDir, "postgres", "init", "10-service-databases.sh");
+const sqlFixtures = path.join(composeDir, "scripts", "apply-sql-fixtures.sh");
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "fbx-compose-"));
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: "utf8", ...opts });
@@ -238,9 +239,10 @@ function localPostgres() {
 }
 
 const pg = localPostgres();
+after(() => pg?.stop());
 
 test("postgres init creates one database and schema per service and isolates the roles", { skip: !pg && "no PostgreSQL available" }, () => {
-  try {
+  {
     const { out } = generate();
     const env = parseEnv(path.join(out, ".env"));
     const pgEnv = { ...process.env, ...env, FBX_SERVICES_TSV: servicesTsv,
@@ -263,7 +265,66 @@ test("postgres init creates one database and schema per service and isolates the
       res = q("select 1", { ...asSvc, PGDATABASE: other.database });
       assert.notEqual(res.status, 0, `${s.role} must not connect to ${other.database}`);
     }
-  } finally {
-    pg.stop();
   }
+});
+
+// --- SQL fixtures (post-boot seed per service) ----------------------------------
+
+function sqlFixtureRun(lines, { env, baseDir, check = false }) {
+  const list = path.join(tmp(), "sql-fixtures.txt");
+  fs.writeFileSync(list, lines.join("\n") + "\n");
+  const args = [sqlFixtures, "--env-file", env, "--services", servicesTsv, "--base-dir", baseDir, "--fixtures", list];
+  if (check) args.push("--check");
+  return run("bash", args, { env: { ...process.env, FBX_PG_HOST: pg?.host ?? "", FBX_PG_PORT: pg?.port ?? "" } });
+}
+
+test("sql fixtures: unknown service, escaping paths and missing files are rejected before running", () => {
+  const { out } = generate();
+  const base = tmp();
+  fs.mkdirSync(path.join(base, "db", "fixtures"), { recursive: true });
+  fs.writeFileSync(path.join(base, "db", "fixtures", "ok.sql"), "select 1;\n");
+  for (const [line, why] of [
+    ["svc-unknown=db/fixtures/ok.sql", /not in services\.tsv/],
+    ["customer-profile-kyc-service=../outside.sql", /inside the caller workspace/],
+    ["customer-profile-kyc-service=/etc/passwd", /relative/],
+    ["customer-profile-kyc-service=db/fixtures/missing.sql", /not found/],
+    ["customer-profile-kyc-service db/fixtures/ok.sql", /<service>=<path>/]
+  ]) {
+    const res = sqlFixtureRun([line], { env: path.join(out, ".env"), baseDir: base, check: true });
+    assert.notEqual(res.status, 0, line);
+    assert.match(res.stderr, why, line);
+  }
+  const ok = sqlFixtureRun(["# seed", "svc-cus-profile-kyc=db/fixtures/ok.sql", "customer-profile-kyc-service=db/fixtures/ok.sql"],
+    { env: path.join(out, ".env"), baseDir: base, check: true });
+  assert.equal(ok.status, 0, ok.stderr);
+});
+
+test("sql fixtures run in the service's own database and schema with its own role, atomically", { skip: !pg && "no PostgreSQL available" }, () => {
+  const { out } = generate();
+  const env = parseEnv(path.join(out, ".env"));
+  const pgEnv = { ...process.env, ...env, FBX_SERVICES_TSV: servicesTsv,
+    PGHOST: pg.host, PGPORT: pg.port, PGUSER: pg.user, PGPASSWORD: pg.cred, PGDATABASE: "postgres" };
+  let res = run("bash", [pgInit], { env: pgEnv });
+  assert.equal(res.status, 0, res.stderr);
+  const base = tmp();
+  fs.mkdirSync(path.join(base, "db"), { recursive: true });
+  fs.writeFileSync(path.join(base, "db", "seed.sql"), [
+    "create table if not exists parity_seed_customers (customer_id text primary key, applied_by text not null);",
+    "insert into parity_seed_customers values ('CUST-12345678', current_user) on conflict do nothing;", ""
+  ].join("\n"));
+  fs.writeFileSync(path.join(base, "db", "broken.sql"),
+    "create table parity_half_applied (id int);\nselect * from no_such_table;\n");
+  const envFile = path.join(out, ".env");
+  res = sqlFixtureRun(["customer-profile-kyc-service=db/seed.sql"], { env: envFile, baseDir: base });
+  assert.equal(res.status, 0, res.stderr);
+  res = sqlFixtureRun(["svc-cus-profile-kyc=db/seed.sql"], { env: envFile, baseDir: base });
+  assert.equal(res.status, 0, `fixtures must be re-runnable: ${res.stderr}`);
+  const q = (sql) => run("psql", ["-X", "-At", "-v", "ON_ERROR_STOP=1", "-c", sql], { env: { ...pgEnv,
+    PGUSER: "customer_profile_app", PGPASSWORD: env.FBX_DB_CRED_CUS_PROFILE_KYC, PGDATABASE: "db_cus_profile_kyc_local" } });
+  res = q("select t.schemaname || ':' || t.tableowner || ':' || (select string_agg(applied_by, ',') from sc_cus_profile_kyc.parity_seed_customers) from pg_tables t where t.tablename = 'parity_seed_customers'");
+  assert.equal(res.stdout.trim(), "sc_cus_profile_kyc:customer_profile_app:customer_profile_app", res.stderr);
+  res = sqlFixtureRun(["customer-profile-kyc-service=db/broken.sql"], { env: envFile, baseDir: base });
+  assert.notEqual(res.status, 0, "a failing fixture fails the step");
+  res = q("select count(*) from pg_tables where tablename = 'parity_half_applied'");
+  assert.equal(res.stdout.trim(), "0", "a failing fixture is rolled back (single transaction)");
 });

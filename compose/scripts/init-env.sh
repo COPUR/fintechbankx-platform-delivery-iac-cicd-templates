@@ -5,23 +5,36 @@
 #                        the OIDC client credentials
 #   <out-dir>/realm.env  keycloak-config-cli settings plus every $(env:NAME)
 #                        placeholder of the identity repo's realm
+# With --parity-fixtures (regression parity runs, local/ephemeral only) also:
+#   PARITY_USERNAME_<ACTOR> / PARITY_PASSWORD_<ACTOR> for the actors banker,
+#   admin, loan_officer, compliance_officer, auditor and customer,
+#   PARITY_SECRET_PARITY_SUITE (parity-suite client) and
+#   PARITY_SECRET_SVC_LN_LOAN_LIFECYCLE / PARITY_SECRET_SVC_PAY_INITIATION_SETTLEMENT
+#   (the same values the realm import gives those service clients), and renders
+#   <cache-dir>/parity/parity-fixtures.json from compose/keycloak/ for the
+#   parity-fixtures-import service.
 # Every credential is random (openssl), dev-only and never committed. Existing
 # values are kept, so re-running is safe; delete the files to rotate.
 # An unknown realm placeholder is an error: add it to dev_value() below.
 #
 # usage: init-env.sh [--out-dir DIR] [--realm FILE] [--services FILE]
+#                    [--cache-dir DIR] [--parity-fixtures]
 set -euo pipefail
 
 compose_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out_dir="$compose_dir"
 realm="$compose_dir/.cache/identity/fintechbankx-realm.json"
 services="$compose_dir/services.tsv"
+cache_dir="$compose_dir/.cache"
+parity=false
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --out-dir) out_dir="$2"; shift 2 ;;
     --realm) realm="$2"; shift 2 ;;
     --services) services="$2"; shift 2 ;;
+    --cache-dir) cache_dir="$2"; shift 2 ;;
+    --parity-fixtures) parity=true; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -88,6 +101,8 @@ put() { # put KEY VALUE (keeps an existing value)
   order+=("$key")
 }
 secret() { put "$1" "$(random_value)"; }
+# Satisfies the realm password policy (length, upper, lower, digit, special).
+policy_password() { printf '%s-Aa1' "$(random_value)"; }
 
 mapfile -t realm_placeholders < <(grep -oE '\$\(env:[A-Z0-9_]+\)' "$realm" | sed -E 's/^\$\(env:(.*)\)$/\1/' | sort -u)
 unknown=()
@@ -115,6 +130,26 @@ for name in "${realm_placeholders[@]}"; do
 done
 mapfile -t oidc_names < <(printf '%s\n' "${oidc_names[@]}" | sort -u)
 for name in "${oidc_names[@]}"; do secret "$name"; done
+
+# Parity test actors (ephemeral/local only, never in the identity repo's realm).
+parity_actors=(banker admin loan_officer compliance_officer auditor customer)
+parity_realm_keys=()
+if [ "$parity" = true ]; then
+  command -v node >/dev/null || die "node is required for --parity-fixtures"
+  for actor in "${parity_actors[@]}"; do
+    upper="$(echo "$actor" | tr 'a-z' 'A-Z')"
+    put "PARITY_USERNAME_$upper" "parity-${actor//_/-}"
+    put "PARITY_PASSWORD_$upper" "$(policy_password)"
+    parity_realm_keys+=("PARITY_PASSWORD_$upper")
+  done
+  secret PARITY_SECRET_PARITY_SUITE
+  parity_realm_keys+=(PARITY_SECRET_PARITY_SUITE)
+  # Same value the realm import gives the service client (never a second secret).
+  for svc in SVC_LN_LOAN_LIFECYCLE SVC_PAY_INITIATION_SETTLEMENT; do
+    value["PARITY_SECRET_$svc"]="${value[FBX_OIDC_SECRET_$svc]}"
+    order+=("PARITY_SECRET_$svc")
+  done
+fi
 env_keys_end=${#order[@]}
 
 write() { # write FILE FROM TO
@@ -149,6 +184,13 @@ for name in "${realm_placeholders[@]}"; do
     put "$name" "$(dev_value "$name")"
   fi
 done
+for name in "${parity_realm_keys[@]}"; do put "$name" "${value[$name]}"; done
 write "$out_dir/realm.env" "$realm_start" "${#order[@]}"
+
+if [ "$parity" = true ]; then
+  node "$compose_dir/scripts/render-parity-fixtures.mjs" \
+    --template "$compose_dir/keycloak/parity-fixtures.template.json" \
+    --realm "$realm" --out "$cache_dir/parity/parity-fixtures.json"
+fi
 
 echo "[init-env] wrote $out_dir/.env and $out_dir/realm.env (${#realm_placeholders[@]} realm placeholders)"
