@@ -64,6 +64,9 @@ must_fail "remoteSecretName of another service" \
   --set-string 'externalSecret.remoteSecretName=dev/other-service/db-app'
 must_fail "any-address egress CIDR" --set networkPolicy.enabled=true \
   --set-string 'networkPolicy.egressCidrs[0].cidr=0.0.0.0/0' --set 'networkPolicy.egressCidrs[0].ports[0]=443'
+must_fail "egress CIDR split into halves (0.0.0.0/1, shorter than /8)" --set networkPolicy.enabled=true \
+  --set-string 'networkPolicy.egressCidrs[0].cidr=0.0.0.0/1' --set 'networkPolicy.egressCidrs[0].ports[0]=443' \
+  --set-string 'networkPolicy.egressCidrs[1].cidr=128.0.0.0/1' --set 'networkPolicy.egressCidrs[1].ports[0]=443'
 if "$helm" lint "$chart" >/dev/null 2>&1; then
   echo "expected bare values.yaml to fail lint (required identity values)"; exit 1
 fi

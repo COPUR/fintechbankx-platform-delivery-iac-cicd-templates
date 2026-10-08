@@ -71,7 +71,7 @@ tests:
           ports: [443]
     asserts:
       - failedTemplate:
-          errorPattern: "networkPolicy.egressCidrs.0.cidr: Must not validate"
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
   - it: rejects an IPv6 any-address egress CIDR
     template: templates/deployment.yaml
     set:
@@ -80,7 +80,110 @@ tests:
           ports: [443]
     asserts:
       - failedTemplate:
-          errorPattern: "networkPolicy.egressCidrs.0.cidr: Must not validate"
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR 0.0.0.0/1 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "0.0.0.0/1"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR 128.0.0.0/1 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "128.0.0.0/1"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR 10.0.0.0/7 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "10.0.0.0/7"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR ::/1 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "::/1"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR 2001:db8::/31 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "2001:db8::/31"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR 10.0.0.0 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "10.0.0.0"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR not-a-cidr/16 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "not-a-cidr/16"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: accepts egress CIDR 10.0.0.0/8
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "10.0.0.0/8"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR 100.64.0.0/10
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "100.64.0.0/10"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR 10.20.30.40/32
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "10.20.30.40/32"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR 2001:db8::/32
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "2001:db8::/32"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR fd00:10::/48
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "fd00:10::/48"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
   - it: accepts a narrowed egress CIDR
     template: templates/deployment.yaml
     set:

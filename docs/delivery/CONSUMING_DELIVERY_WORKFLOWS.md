@@ -189,5 +189,6 @@ removes duplicated templates; see the chart README for the value mapping.
 - NetworkPolicy belongs to the service-mesh platform repo
   (`fintechbankx-platform-mesh-security-service-mesh`), like
   AuthorizationPolicy: the chart renders none unless `networkPolicy.enabled:
-  true`, and then only with narrowed `egressCidrs` (`0.0.0.0/0` and `::/0` are
-  rejected by the chart schema).
+  true`, and then only with narrowed `egressCidrs` (the chart schema accepts
+  IPv4 `/8`-`/32` and IPv6 `/32`-`/128` only, so `0.0.0.0/0`, `::/0` and
+  halves such as `0.0.0.0/1` are rejected).
