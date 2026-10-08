@@ -128,8 +128,12 @@ observability:
     scrapeTimeout: 10s
     labels: {}
 
+# NetworkPolicy is owned by the service-mesh platform repo
+# (fintechbankx-platform-mesh-security-service-mesh, k8s/istio/security/network-policies.yaml),
+# like AuthorizationPolicy, so the chart renders none by default. Enable only for a
+# cluster the mesh repo does not cover, and never with an any-address CIDR.
 networkPolicy:
-  enabled: true
+  enabled: false
   # Namespaces allowed to call the API port (the own namespace is always allowed).
   ingressNamespaces:
     - istio-ingress
@@ -144,11 +148,12 @@ networkPolicy:
       ports: [4317, 4318]
     - name: identity
       ports: [8080, 8443]
-  # Egress outside the cluster (Aurora 5432, MSK IAM 9098, AWS APIs 443).
-  # Narrow the CIDR to the VPC / VPC endpoint ranges per environment.
-  egressCidrs:
-    - cidr: 0.0.0.0/0
-      ports: [443, 5432, 9098]
+  # Egress outside the cluster (Aurora 5432, MSK IAM 9098, AWS APIs 443), as
+  # VPC / VPC endpoint ranges per environment, e.g.
+  #   - cidr: 10.20.0.0/16
+  #     ports: [443, 5432, 9098]
+  # 0.0.0.0/0 and ::/0 are rejected by values.schema.json.
+  egressCidrs: []
 
 istio:
   # Labels and annotations that make the pod mesh-ready (PLATFORM_CONTRACT

@@ -353,7 +353,12 @@
             ],
             "properties": {
               "cidr": {
-                "type": "string"
+                "type": "string",
+                "description": "A narrowed range (VPC or VPC endpoint subnets). Any-address ranges (0.0.0.0/0, ::/0, any /0) are rejected.",
+                "minLength": 1,
+                "not": {
+                  "pattern": "/0+$"
+                }
               },
               "ports": {
                 "type": "array",

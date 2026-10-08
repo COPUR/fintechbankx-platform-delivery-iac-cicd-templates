@@ -15,8 +15,36 @@ tests:
       - equal: {path: "spec.endpoints[0].port", value: http-management}
       - equal: {path: "spec.endpoints[0].path", value: /actuator/prometheus}
       - contains: {path: spec.namespaceSelector.matchNames, content: lending}
-  - it: is default-deny for both directions with explicit allows
+  - it: renders no NetworkPolicy by default (the service-mesh platform repo owns NetworkPolicy)
     template: templates/networkpolicy.yaml
+    asserts:
+      - hasDocuments: {count: 0}
+  - it: opted in, it adds no ipBlock egress unless egressCidrs are given
+    template: templates/networkpolicy.yaml
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - hasDocuments: {count: 1}
+      - lengthEqual: {path: spec.egress, count: 5}
+  - it: opted in, it renders narrowed egressCidrs
+    template: templates/networkpolicy.yaml
+    set:
+      networkPolicy.enabled: true
+      networkPolicy.egressCidrs:
+        - cidr: 10.20.0.0/16
+          ports: [5432]
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - ipBlock: {cidr: 10.20.0.0/16}
+            ports:
+              - {protocol: TCP, port: 5432}
+  - it: is default-deny for both directions with explicit allows when opted in
+    template: templates/networkpolicy.yaml
+    set:
+      networkPolicy.enabled: true
     asserts:
       - contains: {path: spec.policyTypes, content: Ingress}
       - contains: {path: spec.policyTypes, content: Egress}

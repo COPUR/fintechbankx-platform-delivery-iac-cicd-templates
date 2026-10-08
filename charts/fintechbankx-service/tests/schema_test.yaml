@@ -63,3 +63,29 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "remoteSecretName: Does not match pattern"
+  - it: rejects an IPv4 any-address egress CIDR
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: 0.0.0.0/0
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Must not validate"
+  - it: rejects an IPv6 any-address egress CIDR
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: ::/0
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Must not validate"
+  - it: accepts a narrowed egress CIDR
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: 10.20.0.0/16
+          ports: [5432]
+    asserts:
+      - notFailedTemplate: {}

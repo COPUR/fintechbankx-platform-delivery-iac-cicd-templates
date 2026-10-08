@@ -14,7 +14,7 @@ follows the platform contract (ports, labels, ExternalSecret store, IRSA).
 | Secrets | `ExternalSecret` against `ClusterSecretStore/aws-secrets-manager` |
 | Identity | ServiceAccount annotated with the IRSA role (`serviceAccount.roleArn`) |
 | Observability | `ServiceMonitor` on `http-management`, OTLP env to the platform collector |
-| Network | `NetworkPolicy` (own namespace, ingress gateway, observability, DNS, istiod, VPC egress) |
+| Network | none by default: `NetworkPolicy` is owned by the service-mesh platform repo (`fintechbankx-platform-mesh-security-service-mesh`, `k8s/istio/security/network-policies.yaml`), like AuthorizationPolicy. `networkPolicy.enabled: true` renders an opt-in policy (own namespace, ingress gateway, observability, DNS, istiod, `egressCidrs`) for clusters the mesh repo does not cover; `egressCidrs` defaults to `[]` and the schema rejects `0.0.0.0/0`, `::/0` and any other `/0` |
 | Mesh | `app`/`version` labels, `sidecar.istio.io/inject: "true"`, Service ports named `http` (8080) and `http-management` (8081); no AuthorizationPolicy, PeerAuthentication, DestinationRule or `excludeInboundPorts` (owned by the mesh repo / forbidden by the contract) |
 
 ## Required values

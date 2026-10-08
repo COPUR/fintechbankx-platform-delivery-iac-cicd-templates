@@ -60,6 +60,8 @@ must_fail "extraData secret of another service" \
   --set 'externalSecret.extraData[0].secretKey=X' \
   --set-string 'externalSecret.extraData[0].remoteSecretName=dev/other-service/oidc-client' \
   --set-string 'externalSecret.extraData[0].property=client_secret'
+must_fail "any-address egress CIDR" --set networkPolicy.enabled=true \
+  --set-string 'networkPolicy.egressCidrs[0].cidr=0.0.0.0/0' --set 'networkPolicy.egressCidrs[0].ports[0]=443'
 if "$helm" lint "$chart" >/dev/null 2>&1; then
   echo "expected bare values.yaml to fail lint (required identity values)"; exit 1
 fi

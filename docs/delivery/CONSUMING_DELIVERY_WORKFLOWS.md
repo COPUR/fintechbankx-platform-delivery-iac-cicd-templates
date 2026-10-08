@@ -178,3 +178,8 @@ removes duplicated templates; see the chart README for the value mapping.
   daemon in the authoring environment).
 - The chart's `ServiceMonitor` needs the Prometheus Operator CRDs from
   platform-observability; disable it where they are missing.
+- NetworkPolicy belongs to the service-mesh platform repo
+  (`fintechbankx-platform-mesh-security-service-mesh`), like
+  AuthorizationPolicy: the chart renders none unless `networkPolicy.enabled:
+  true`, and then only with narrowed `egressCidrs` (`0.0.0.0/0` and `::/0` are
+  rejected by the chart schema).
