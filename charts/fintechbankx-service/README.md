@@ -60,22 +60,37 @@ October 2026 (what each one checks in detail is in its own repository):
 
 Every other service, and every new one, is to add the assertion in the first
 shape (`fintechbankx.tls.enforce`, `application-local.yml`,
-`application-kafka-msk.yml`, `application-kafka-strimzi.yml`); the services in
-the second and third rows are aligning with it. Until they do, note on this
-chart: this chart renders only the `kafka-*` profile, never `aws`, so an
-open-finance assertion gated on `aws` alone does not run here; and
-`kafka.runtime: strimzi` stops risk and compliance at startup while their
-outbox relay is on.
+`application-kafka-msk.yml`, `application-kafka-strimzi.yml`). Moving the services
+in the second and third rows to it is proposed, not started: none of their
+branches has it, so for them the off switch is the absence of
+`DB_SSL_ROOT_CERT` or of the `aws` profile. Consequences on this chart today:
+
+- It renders only the `kafka-*` profile, never `aws`, so an open-finance
+  assertion gated on `aws` alone does not run here.
+- It sets `DB_SSL_ROOT_CERT` only while `databaseCa.enabled`; with
+  `databaseCa.enabled: false` customer, risk and compliance register neither
+  guard. Those three keep the default `true`.
+- `kafka.runtime: strimzi` stops risk and compliance at startup while their
+  outbox relay is on.
 
 The assertion's off switch is the property `fintechbankx.tls.enforce` (env
 `FINTECHBANKX_TLS_ENFORCE`), set by the `local` profile and test resources
-only. The chart refuses it, and every other `fintechbankx.tls.*` name
+only. This chart refuses it, and every other `fintechbankx.tls.*` name
 in any spelling, as a `config` key, an `extraEnv` name (`value` or
 `valueFrom`), an ExternalSecret key or inside JVM options; `SPRING_APPLICATION_JSON`
 is refused by name, whatever it carries. The chart also refuses every
 `spring.profiles.*` name it does not render itself, so `local` (or a
 `spring.profiles.default` / `spring.profiles.group.*` that leads to it) cannot
 be switched on through the chart.
+
+That covers this chart only. A service deployed with its own chart (`deploy/helm`
+in the lending and payment repositories) depends on that chart's own name check,
+and in October 2026 none matches every spelling: the loan-lifecycle-core chart
+compares the upper-cased `config` key with `FINTECHBANKX_TLS_ENFORCE`, so a
+`config` key `fintechbankx.tls.enforce` renders into the ConfigMap the pod loads
+through `envFrom`; the four payment charts also read `.` and `-` as `_`, but not
+the bracket form `fintechbankx.tls[enforce]`. The customer, risk, compliance and
+open-finance charts do not check the name, which their code does not read.
 
 JVM options: the chart checks `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and
 `_JAVA_OPTIONS`, the variables the JVM reads itself (`fbx.isJvmOptionsName`).
@@ -84,8 +99,13 @@ launcher that expands them; the template image
 (`templates/microservice/Dockerfile`) and the service images start the JVM in
 exec form (`ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]`),
 and the chart sets no `command` or `args` on the application container, so no
-such variable reaches the command line. An image that adds a launcher script
-must have its variable added to `fbx.isJvmOptionsName`.
+such variable reaches the command line. An image that adds a launcher must have
+every variable it expands into the java command line added to
+`fbx.isJvmOptionsName`; `scripts/ci/test/microservice-launcher.test.mjs` fails
+when the template image's start (last `ENTRYPOINT` plus `CMD`, as Docker joins
+them) runs a shell that expands a variable not in that list, runs a launcher
+script (with or without `.sh`) whose java line does, or runs anything else it
+cannot read.
 
 ### Selecting the Kafka profile
 

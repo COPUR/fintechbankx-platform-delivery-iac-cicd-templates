@@ -204,19 +204,27 @@ test("every service in services.tsv is wired in compose with its own database an
   }
 });
 
-test("every service in services.tsv runs the local profile, which alone allows the stack's PLAINTEXT Kafka and non-TLS PostgreSQL", () => {
+test("every service in services.tsv runs the local profile and sets neither a TLS off switch nor DB_SSL_ROOT_CERT", () => {
   // The stack runs Kafka on PLAINTEXT and PostgreSQL without sslmode=verify-full.
   // The service-side TLS assertion (Kafka repo SERVICE_CLIENT_CONFIGURATION.md,
-  // chart README "Service-side TLS assertion") refuses both outside local runs;
-  // in loan and payment initiation-settlement only the local profile sets its
-  // off switch.
+  // chart README "Service-side TLS assertion") refuses both outside local runs.
+  // Loan and payment initiation-settlement switch it off through their local
+  // profile (fintechbankx.tls.enforce: false in application-local.yml), never
+  // through an environment variable. Customer, risk and compliance have no local
+  // profile file: their guards run only while DB_SSL_ROOT_CERT is set, so the
+  // stack must not set it.
   const doc = composeDoc();
   for (const s of services().filter((x) => x.key !== "monolith")) {
     const env = doc.services[s.key].environment;
     const profiles = String(env.SPRING_PROFILES_ACTIVE ?? "").split(",").map((p) => p.trim());
     assert.ok(profiles.includes("local"), `${s.key} must set SPRING_PROFILES_ACTIVE=local (got ${env.SPRING_PROFILES_ACTIVE})`);
     for (const k of Object.keys(env)) {
-      assert.doesNotMatch(k, /^FINTECHBANKX_TLS/i, `${s.key}.${k}: the off switch comes from the local profile only`);
+      assert.doesNotMatch(k, /^FINTECHBANKX[._-]?TLS/i, `${s.key}.${k}: the off switch comes from the local profile only`);
+      assert.doesNotMatch(
+        k,
+        /^DB[._-]?SSL[._-]?ROOT[._-]?CERT$/i,
+        `${s.key}.${k}: DB_SSL_ROOT_CERT turns on the customer/risk/compliance TLS guards, which refuse the stack's PLAINTEXT Kafka and non-TLS PostgreSQL`,
+      );
     }
   }
 });

@@ -37,35 +37,61 @@ const lastStage = (text) => {
 
 const VAR = /\$\{?([A-Za-z_][A-Za-z0-9_]*)/g;
 
+// ENTRYPOINT or CMD argument as Docker runs it: exec form (JSON array) as is, shell
+// form under /bin/sh -c.
+const startArgv = (instruction) => {
+  const rest = instruction.replace(/^\S+\s+/, "");
+  try {
+    const argv = JSON.parse(rest);
+    if (Array.isArray(argv) && argv.every((a) => typeof a === "string")) return { argv, shellForm: false };
+  } catch {
+    // not JSON: shell form
+  }
+  return { argv: ["/bin/sh", "-c", rest], shellForm: true };
+};
+
+const SHELL = /(^|\/)(sh|bash|dash|ash|zsh|ksh)$/;
+const JAVA = /(^|\/)java$/;
+
+// The argv the container runs: the last ENTRYPOINT and the last CMD of the stage. An
+// exec-form ENTRYPOINT receives CMD as further arguments; a shell-form ENTRYPOINT
+// ignores CMD; CMD alone is the whole command.
+const effectiveArgv = (stage) => {
+  const last = (re) => stage.filter((l) => re.test(l)).at(-1);
+  const entry = last(/^ENTRYPOINT\s/i);
+  const cmd = last(/^CMD\s/i);
+  const e = entry ? startArgv(entry) : null;
+  const c = cmd ? startArgv(cmd) : null;
+  if (e && e.shellForm) return e.argv;
+  return [...(e ? e.argv : []), ...(c ? c.argv : [])];
+};
+
 // Variables a container started from this Dockerfile expands into its java command
-// line: none in exec form (no shell), every $VAR of the command in shell form, and
-// every $VAR on a java line of a launcher script that the image copies from the
-// template directory.
+// line. java itself (exec form) expands nothing. A shell expands every $VAR of its
+// arguments. Anything else (a launcher script with or without .sh, an init such as
+// tini) is read from the template directory, and every $VAR on a java line of it
+// counts; a start that cannot be read is reported as <unreadable launcher ...>, so
+// the test fails until someone looks. A .sh argument of a shell is read the same way.
 export const launcherVariables = (text, readScript = () => null) => {
-  const stage = lastStage(text);
-  const start = stage.filter((l) => /^(ENTRYPOINT|CMD)\s/i.test(l)).map((l) => l.replace(/^\S+\s+/, ""));
+  const argv = effectiveArgv(lastStage(text));
   const found = new Set();
-  for (const cmd of start) {
-    let argv = null;
-    try {
-      argv = JSON.parse(cmd);
-    } catch {
-      argv = null;
+  const readLauncher = (arg) => {
+    const script = readScript(arg);
+    if (script === null) {
+      found.add(`<unreadable launcher ${arg}>`);
+      return;
     }
-    const shell = !Array.isArray(argv) || /(^|\/)(ba|da)?sh$/.test(argv[0]);
-    const body = Array.isArray(argv) ? argv.join(" ") : cmd;
-    if (shell) for (const [, v] of body.matchAll(VAR)) found.add(v);
-    const scriptArg = (Array.isArray(argv) ? argv : body.split(/\s+/)).find((a) => /\.sh$/.test(a));
-    if (scriptArg) {
-      const script = readScript(scriptArg);
-      if (script === null) {
-        found.add(`<unreadable launcher ${scriptArg}>`);
-        continue;
-      }
-      for (const line of script.split(/\r?\n/).filter((l) => /\bjava\b/.test(l) && !/^\s*#/.test(l))) {
-        for (const [, v] of line.matchAll(VAR)) found.add(v);
-      }
+    for (const line of script.split(/\r?\n/).filter((l) => /\bjava\b/.test(l) && !/^\s*#/.test(l))) {
+      for (const [, v] of line.matchAll(VAR)) found.add(v);
     }
+  };
+  if (argv.length === 0 || JAVA.test(argv[0])) return [];
+  if (SHELL.test(argv[0])) {
+    const body = argv.slice(1).join(" ");
+    for (const [, v] of body.matchAll(VAR)) found.add(v);
+    for (const a of body.split(/\s+/).filter((x) => /\.sh$/.test(x))) readLauncher(a);
+  } else {
+    readLauncher(argv[0]);
   }
   return [...found].sort();
 };
@@ -111,6 +137,32 @@ test("launcherVariables finds JAVA_OPTS in a shell-form start, a sh -c start and
   assert.deepEqual(launcherVariables(script), ["<unreadable launcher /app/run.sh>"]);
   assert.equal(isJvm.test("JAVA_OPTS"), false, "JAVA_OPTS is not a JVM options name today; a launcher using it must add it");
   assert.equal(isJvm.test("java_tool_options"), true);
+});
+
+test("launcherVariables follows a launcher script without a .sh extension", () => {
+  const text = 'FROM b\nCOPY entrypoint /app/entrypoint\nENTRYPOINT ["/app/entrypoint"]\n';
+  const entrypoint = "#!/bin/sh\nexec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher\n";
+  assert.deepEqual(launcherVariables(text, (arg) => (arg === "/app/entrypoint" ? entrypoint : null)), ["JAVA_OPTS"]);
+  // A start that is neither java nor a shell and cannot be read is reported, not trusted.
+  assert.deepEqual(launcherVariables(text), ["<unreadable launcher /app/entrypoint>"]);
+  assert.deepEqual(launcherVariables('FROM b\nENTRYPOINT ["tini", "--"]\nCMD ["java", "Main"]\n'), [
+    "<unreadable launcher tini>",
+  ]);
+});
+
+test("launcherVariables reads CMD as arguments of an exec-form ENTRYPOINT (Docker joins them)", () => {
+  const shEntry = 'FROM b\nENTRYPOINT ["/bin/sh", "-c"]\nCMD ["exec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher"]\n';
+  assert.deepEqual(launcherVariables(shEntry), ["JAVA_OPTS"]);
+  // CMD before ENTRYPOINT in the same stage is kept as well.
+  const cmdFirst = 'FROM b\nCMD ["exec java ${JVM_ARGS} Main"]\nENTRYPOINT ["bash", "-c"]\n';
+  assert.deepEqual(launcherVariables(cmdFirst), ["JVM_ARGS"]);
+  // A shell-form CMD alone runs under /bin/sh -c.
+  assert.deepEqual(launcherVariables("FROM b\nCMD java $JAVA_OPTS Main\n"), ["JAVA_OPTS"]);
+  // A shell-form ENTRYPOINT ignores CMD; an exec-form java ENTRYPOINT passes CMD unexpanded.
+  assert.deepEqual(launcherVariables('FROM b\nENTRYPOINT java Main\nCMD ["$IGNORED"]\n'), []);
+  assert.deepEqual(launcherVariables('FROM b\nENTRYPOINT ["java", "Main"]\nCMD ["$NOT_EXPANDED"]\n'), []);
+  // Only the last ENTRYPOINT and the last CMD take effect.
+  assert.deepEqual(launcherVariables('FROM b\nENTRYPOINT sh -c "java $OLD"\nENTRYPOINT ["java", "Main"]\n'), []);
 });
 
 test("launcherVariables ignores exec-form java starts and earlier build stages", () => {
