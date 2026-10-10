@@ -93,20 +93,39 @@ the env names the Secret materialises and whose values are never seen here):
     SPRING_DATASOURCE_USERNAME and SPRING_DATASOURCE_PASSWORD;
   - spring.application.json in any spelling ([._-] or none, any case);
   - any name containing jdbc[._-]?url, sslfactory or sslhostnameverifier;
-  - DB_URL outside config (config.DB_URL is the one allowed place).
+  - DB_URL outside config (config.DB_URL is the one allowed place);
+  - (?i)^spring[._-]?config[._-]?(import|location|additional[._-]?location)$:
+    an imported file or config tree can set spring.datasource.* where the
+    chart never sees it. The chart renders no config import; a configtree, if
+    a service ever needs one, must be rendered by the chart itself on the fixed
+    mount optional:configtree:/etc/fintechbankx/config/ from a boolean value,
+    never taken from a user-supplied value;
+  - (?i)^spring[._-]?profiles[._-]?(active|include)$: a profile switches on an
+    application-<profile>.yml inside the image. The chart renders no
+    SPRING_PROFILES_ACTIVE, so no user-set profile name is allowed.
+The helper prints the reason (non-empty means rejected).
 JVM options (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS and the chart's
-javaToolOptions) can set -Dspring.datasource.url=... or -Djavax.net.ssl.*: a
-value that mentions datasource, flyway, liquibase, r2dbc, jdbc, ssl or
-application[._-]json (case-insensitive) is rejected, and these names may not
-come from extraEnv valueFrom or the ExternalSecret.
-This closes the chart-side routes only; a profile or config file inside the
-image is the service's own startup check.
+javaToolOptions) can set -Dspring.datasource.url=..., -Djavax.net.ssl.*,
+-Dspring.config.* or -Dspring.profiles.*, or read more options from a file:
+a value that mentions datasource, flyway, liquibase, r2dbc, jdbc, ssl,
+application[._-]json, spring[._-]config or spring[._-]profiles, an option that
+starts with '@' (argument file), -XX:VMOptionsFile or -XX:Flags
+(case-insensitive) is rejected, and these names may not come from extraEnv
+valueFrom or the ExternalSecret.
+This closes the chart-side routes only; a profile or config file baked into
+the image, and TLS on routes the chart does not see (the Kafka client, a
+datasource built in code), are the service's own startup check (README,
+"Service-side TLS assertion").
 */}}
 {{- define "fbx.datasourceOverrideName" -}}
 {{- $n := toString . -}}
 {{- if regexMatch "(?i)^SPRING_DATASOURCE_(USERNAME|PASSWORD)$" $n -}}
 {{- else if regexMatch "(?i)^spring[._-]?(datasource|flyway|liquibase|r2dbc)[._-]|^spring[._-]?application[._-]?json$|jdbc[._-]?url|sslfactory|sslhostnameverifier" $n -}}
-true
+it can redirect or override the datasource past the sslmode=verify-full check; set the JDBC URL in config.DB_URL
+{{- else if regexMatch "(?i)^spring[._-]?config[._-]?(import|location|additional[._-]?location)$" $n -}}
+a config import or location can load a file or config tree that overrides the datasource past the sslmode=verify-full check; the chart renders no config import
+{{- else if regexMatch "(?i)^spring[._-]?profiles[._-]?(active|include)$" $n -}}
+a profile can activate an application-<profile> config in the image whose datasource the chart cannot check; the chart sets no profile
 {{- end -}}
 {{- end -}}
 
@@ -115,8 +134,8 @@ true
 {{- end -}}
 
 {{- define "fbx.validateJvmOptions" -}}
-{{- if regexMatch "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json" (toString .value) -}}
-{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl or application.json (JVM system properties would override the datasource past the sslmode=verify-full check)" .where) -}}
+{{- if regexMatch "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|(^|\\s)@|-XX:(VMOptionsFile|Flags)" (toString .value) -}}
+{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config or spring.profiles, nor read options from a file ('@' argument file, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check)" .where) -}}
 {{- end -}}
 {{- end -}}
 
@@ -124,8 +143,8 @@ true
 {{- $root := . -}}
 {{- include "fbx.validateJvmOptions" (dict "where" "javaToolOptions" "value" .Values.javaToolOptions) -}}
 {{- range $name, $value := .Values.config -}}
-{{- if include "fbx.datasourceOverrideName" $name -}}
-{{- fail (printf "config.%s is not allowed: it can redirect or override the datasource past the sslmode=verify-full check; set the JDBC URL in config.DB_URL" $name) -}}
+{{- with include "fbx.datasourceOverrideName" $name -}}
+{{- fail (printf "config.%s is not allowed: %s" $name .) -}}
 {{- end -}}
 {{- if include "fbx.isJvmOptionsName" $name -}}
 {{- include "fbx.validateJvmOptions" (dict "where" (printf "config.%s" $name) "value" $value) -}}
@@ -134,8 +153,11 @@ true
 {{- end -}}
 {{- range $env := .Values.extraEnv -}}
 {{- $envName := toString (default "" $env.name) -}}
-{{- if or (eq (upper $envName) "DB_URL") (include "fbx.datasourceOverrideName" $envName) -}}
+{{- if eq (upper $envName) "DB_URL" -}}
 {{- fail (printf "extraEnv must not set %s (value or valueFrom); set the JDBC URL in config.DB_URL, where sslmode=verify-full is enforced" $envName) -}}
+{{- end -}}
+{{- with include "fbx.datasourceOverrideName" $envName -}}
+{{- fail (printf "extraEnv must not set %s (value or valueFrom): %s" $envName .) -}}
 {{- end -}}
 {{- if include "fbx.isJvmOptionsName" $envName -}}
 {{- if not (hasKey $env "value") -}}
@@ -151,8 +173,11 @@ true
 {{- range $field := list "data" "extraData" -}}
 {{- range $entry := (index $root.Values.externalSecret $field | default list) -}}
 {{- $key := toString (default "" $entry.secretKey) -}}
-{{- if or (eq (upper $key) "DB_URL") (include "fbx.datasourceOverrideName" $key) (include "fbx.isJvmOptionsName" $key) -}}
+{{- if or (eq (upper $key) "DB_URL") (include "fbx.isJvmOptionsName" $key) -}}
 {{- fail (printf "externalSecret.%s must not materialise %s; set the JDBC URL in config.DB_URL and JVM options in javaToolOptions, where they are checked (keep only the credentials in the secret)" $field $key) -}}
+{{- end -}}
+{{- with include "fbx.datasourceOverrideName" $key -}}
+{{- fail (printf "externalSecret.%s must not materialise %s (keep only the credentials in the secret): %s" $field $key .) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

@@ -85,6 +85,12 @@ must_fail "extraEnv SPRING_R2DBC_URL from valueFrom" \
   --set-string 'extraEnv[0].valueFrom.secretKeyRef.key=url'
 must_fail "javaToolOptions with -Dspring.datasource.url" \
   --set-string 'javaToolOptions=-Dspring.datasource.url=jdbc:postgresql://db.example.internal:5432/db'
+must_fail "extraEnv SPRING_PROFILES_ACTIVE" \
+  --set 'extraEnv[0].name=SPRING_PROFILES_ACTIVE' --set-string 'extraEnv[0].value=local'
+must_fail "config SPRING_CONFIG_IMPORT" \
+  --set-string 'config.SPRING_CONFIG_IMPORT=optional:file:/tmp/override.yml'
+must_fail "javaToolOptions reading an argument file" \
+  --set-string 'javaToolOptions=@/tmp/jvm.args'
 must_fail "public IPv6 egress CIDR broader than /48 (2001:db8::/32)" --set networkPolicy.enabled=true \
   --set-string 'networkPolicy.egressCidrs[0].cidr=2001:db8::/32' --set 'networkPolicy.egressCidrs[0].ports[0]=443'
 if "$helm" lint "$chart" >/dev/null 2>&1; then

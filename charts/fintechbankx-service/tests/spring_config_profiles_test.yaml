@@ -1,0 +1,137 @@
+suite: database TLS - Spring config import/location and profile names, JVM option files
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # fbx.datasourceOverrideName also rejects, for config keys, extraEnv names
+  # (value or valueFrom) and externalSecret data/extraData secretKeys:
+  #   (?i)^spring[._-]?config[._-]?(import|location|additional[._-]?location)$
+  #   (?i)^spring[._-]?profiles[._-]?(active|include)$
+  # A config import/location can load a file or config tree whose
+  # spring.datasource.* the chart never sees, and a profile can switch on an
+  # application-<profile>.yml inside the image. The chart renders neither.
+  - it: rejects config SPRING_CONFIG_IMPORT
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_CONFIG_IMPORT: "optional:configtree:/etc/fintechbankx/config/"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_CONFIG_IMPORT is not allowed"
+  - it: rejects config spring.profiles.active (dotted, lower case)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.profiles.active: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.profiles.active is not allowed"
+  - it: rejects extraEnv SPRING_PROFILES_ACTIVE (value)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_PROFILES_ACTIVE
+          value: prod
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_PROFILES_ACTIVE"
+  - it: rejects extraEnv SPRING_CONFIG_ADDITIONAL_LOCATION from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_CONFIG_ADDITIONAL_LOCATION
+          valueFrom:
+            configMapKeyRef: {name: other, key: location}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_CONFIG_ADDITIONAL_LOCATION"
+  - it: rejects extraEnv spring-config-additionallocation (kebab, no separator inside additional-location)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring-config-additionallocation
+          value: file:/tmp/
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring-config-additionallocation"
+  - it: rejects externalSecret.data materialising SPRING_CONFIG_LOCATION
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_CONFIG_LOCATION
+          property: location
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_CONFIG_LOCATION"
+  - it: rejects externalSecret.extraData materialising SPRING_PROFILES_INCLUDE
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: SPRING_PROFILES_INCLUDE
+          remoteSecretName: staging/loan-lifecycle-service/profiles
+          property: include
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise SPRING_PROFILES_INCLUDE"
+  - it: accepts names that only start like the rejected ones (control)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_CONFIG_NAME_SUFFIX: x
+      config.SPRING_PROFILES_GROUP_NOTE: x
+      extraEnv:
+        - name: APP_SPRING_PROFILES_ACTIVE_LABEL
+          value: x
+    asserts:
+      - notFailedTemplate: {}
+  # JVM options: -Dspring.config.* / -Dspring.profiles.* set the same
+  # properties, a leading '@' reads an argument file, and -XX:VMOptionsFile /
+  # -XX:Flags read options from a file the chart cannot see.
+  - it: rejects javaToolOptions with -Dspring.profiles.active
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:MaxRAMPercentage=75 -Dspring.profiles.active=local"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects config JDK_JAVA_OPTIONS with -Dspring.config.import
+    template: templates/deployment.yaml
+    set:
+      config.JDK_JAVA_OPTIONS: "-Dspring.config.import=file:/tmp/override.yml"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.JDK_JAVA_OPTIONS must not mention"
+  - it: rejects extraEnv JDK_JAVA_OPTIONS with a leading '@' argument file
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JDK_JAVA_OPTIONS
+          value: "-Xss512k @/tmp/jvm.args"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not mention"
+  - it: rejects extraEnv _JAVA_OPTIONS with -XX:VMOptionsFile
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _JAVA_OPTIONS
+          value: "-XX:VMOptionsFile=/tmp/vm.options"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv._JAVA_OPTIONS must not mention"
+  - it: rejects javaToolOptions with -XX:Flags
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:Flags=/tmp/.hotspotrc"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: accepts an '@' that does not start an option (control)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:MaxRAMPercentage=75 -Dmail.from=ops@example.invalid"
+    asserts:
+      - notFailedTemplate: {}
