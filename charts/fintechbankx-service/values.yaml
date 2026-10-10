@@ -104,7 +104,7 @@ config: {}
 # externalSecret secretKeys may not name a spring.datasource/flyway/liquibase/
 # r2dbc property (SPRING_DATASOURCE_USERNAME/PASSWORD excepted),
 # spring.application.json, or anything containing JDBC_URL, SSLFACTORY or
-# SSLHOSTNAMEVERIFIER, spring.config.import/location/additional-location or
+# SSLHOSTNAMEVERIFIER, spring.config.import/location/additional-location/name or
 # spring.profiles.active/include in any spelling (the chart renders no config
 # import and no profile); DB_URL belongs in config only; JVM options
 # (javaToolOptions, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS) must not

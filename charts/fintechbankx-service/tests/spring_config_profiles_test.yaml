@@ -10,7 +10,7 @@ release:
 tests:
   # fbx.datasourceOverrideName also rejects, for config keys, extraEnv names
   # (value or valueFrom) and externalSecret data/extraData secretKeys:
-  #   (?i)^spring[._-]?config[._-]?(import|location|additional[._-]?location)$
+  #   (?i)^spring[._-]?config[._-]?(import|location|additional[._-]?location|name)$
   #   (?i)^spring[._-]?profiles[._-]?(active|include)$
   # A config import/location can load a file or config tree whose
   # spring.datasource.* the chart never sees, and a profile can switch on an
@@ -77,6 +77,15 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "externalSecret.extraData must not materialise SPRING_PROFILES_INCLUDE"
+  - it: rejects extraEnv SPRING_CONFIG_NAME (another config file name in the image)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_CONFIG_NAME
+          value: override
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_CONFIG_NAME"
   - it: accepts names that only start like the rejected ones (control)
     template: templates/deployment.yaml
     set:
@@ -129,6 +138,13 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention"
+  - it: rejects config JAVA_TOOL_OPTIONS with -Dspring.config.name
+    template: templates/deployment.yaml
+    set:
+      config.JAVA_TOOL_OPTIONS: "-Dspring.config.name=override"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.JAVA_TOOL_OPTIONS must not mention"
   - it: accepts an '@' that does not start an option (control)
     template: templates/deployment.yaml
     set:
