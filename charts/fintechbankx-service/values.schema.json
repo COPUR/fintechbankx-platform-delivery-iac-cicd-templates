@@ -226,7 +226,10 @@
           "boolean"
         ]
       },
-      "description": "Non-secret settings rendered into the ConfigMap. Keys and values are checked by fbx.guard (README \"Datasource and TLS guard\"): no spring.config.*, spring.profiles.*, spring.ssl.*, *ssl.bundle, fintechbankx.tls.*, spring.application.json or datasource/Flyway/Liquibase/R2DBC override names (relaxed-binding spellings included), DB_URL only under exactly that key and as a jdbc:[<wrapper>:]postgresql: URL with one sslmode=verify-full, Kafka security.protocol SASL_SSL/SSL."
+      "description": "Non-secret settings rendered into the ConfigMap. Keys and values are checked by fbx.guard (README \"Datasource and TLS guard\"): no spring.config.*, spring.profiles.*, spring.ssl.*, *ssl.bundle, fintechbankx.tls.*, spring.application.json or datasource/Flyway/Liquibase/R2DBC override names (relaxed-binding spellings included), DB_URL only under exactly that key and as a jdbc:[<wrapper>:]postgresql: URL with one sslmode=verify-full, Kafka security.protocol SASL_SSL/SSL.",
+      "propertyNames": {
+        "pattern": "^[\\x21-\\x7e]+$"
+      }
     },
     "javaToolOptions": {
       "type": "string",
@@ -239,7 +242,13 @@
         "type": "object",
         "required": [
           "name"
-        ]
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[\\x20-\\x3c\\x3e-\\x7e]+$"
+          }
+        }
       }
     },
     "kafka": {
@@ -304,7 +313,18 @@
             "required": [
               "secretKey",
               "property"
-            ]
+            ],
+            "properties": {
+              "secretKey": {
+                "type": "string",
+                "pattern": "^[\\x21-\\x7e]+$"
+              },
+              "property": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+              }
+            }
           },
           "description": "Env var name (secretKey) to JSON property of remoteSecretName. fbx.guard refuses secretKeys that name DB_URL, JVM options, Kafka TLS settings or any refused override name; keep only credentials here. dataFrom is not supported."
         },
@@ -321,7 +341,8 @@
             "properties": {
               "secretKey": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "pattern": "^[\\x21-\\x7e]+$"
               },
               "remoteSecretName": {
                 "type": "string",
@@ -329,7 +350,8 @@
               },
               "property": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
               }
             }
           }

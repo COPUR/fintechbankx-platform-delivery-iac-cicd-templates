@@ -85,6 +85,54 @@ and fbx.validateKafkaTls.
 {{- include "fbx.validateEnvSources" . -}}
 {{- include "fbx.validateDatabaseTls" . -}}
 {{- include "fbx.validateKafkaTls" . -}}
+{{- include "fbx.validateKeyNames" . -}}
+{{- end -}}
+
+{{/*
+Key and name shapes. The guard reads a config key, an extraEnv name or an
+ExternalSecret secretKey as one name; a key with a newline or quote that a
+template writes unquoted can open further keys (SPRING_CONFIG_IMPORT, DB_URL,
+SPRING_DATASOURCE_URL) the guard never sees. So, after the name rules (whose
+messages are more specific):
+  - config keys and externalSecret data/extraData secretKeys must be
+    Kubernetes ConfigMap / Secret keys, [-._a-zA-Z0-9]+;
+  - extraEnv names must be printable ASCII other than '=' and white space
+    (what Kubernetes 1.32+ accepts, without the space; non-ASCII letters such
+    as U+0130 lower-case to ASCII in Spring Boot);
+  - an ExternalSecret property or remoteSecretName must not contain a control
+    character.
+The chart's templates also quote every key and value they interpolate; a
+vendoring chart must do the same.
+*/}}
+{{- define "fbx.validateKeyNames" -}}
+{{- range $name, $value := .Values.config -}}
+{{- if not (regexMatch "^[-._a-zA-Z0-9]+$" (toString $name)) -}}
+{{- fail (printf "config key %q is not a ConfigMap key ([-._a-zA-Z0-9]+); a newline, quote or other character can inject keys the datasource/TLS guard never sees" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- range $env := .Values.extraEnv -}}
+{{- $envName := toString (default "" ($env | default dict).name) -}}
+{{- if not (regexMatch "^[\\x21-\\x3c\\x3e-\\x7e]+$" $envName) -}}
+{{- fail (printf "extraEnv name %q must be printable ASCII other than '=' and white space (a non-ASCII letter can spell a refused name)" $envName) -}}
+{{- end -}}
+{{- end -}}
+{{- $es := .Values.externalSecret | default dict -}}
+{{- if $es.enabled -}}
+{{- range $field := list "data" "extraData" -}}
+{{- range $entry := (index $es $field | default list) -}}
+{{- $e := $entry | default dict -}}
+{{- $key := toString (default "" $e.secretKey) -}}
+{{- if not (regexMatch "^[-._a-zA-Z0-9]+$" $key) -}}
+{{- fail (printf "externalSecret.%s secretKey %q is not a Secret key ([-._a-zA-Z0-9]+); a newline, quote or other character can inject keys the datasource/TLS guard never sees" $field $key) -}}
+{{- end -}}
+{{- range $f := list "property" "remoteSecretName" -}}
+{{- if regexMatch "[\\x00-\\x1f\\x7f]" (toString (index $e $f | default "")) -}}
+{{- fail (printf "externalSecret.%s %s %q must not contain a control character (a newline can inject another key)" $field $f (toString (index $e $f))) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/*

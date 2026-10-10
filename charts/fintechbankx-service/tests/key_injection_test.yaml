@@ -1,0 +1,82 @@
+suite: keys and names that would inject entries the guard never sees
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+  - templates/externalsecret.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # A config key, an ExternalSecret secretKey or property containing a newline
+  # used to be written into the ConfigMap / ExternalSecret unquoted and opened
+  # further keys (SPRING_CONFIG_IMPORT, DB_URL, SPRING_DATASOURCE_URL) that the
+  # pod loads through envFrom, while the guard read the whole string as one
+  # name. Config keys and secretKeys must be Kubernetes ConfigMap / Secret keys
+  # ([-._a-zA-Z0-9]+), extraEnv names printable ASCII other than '=' and white
+  # space, and the templates quote every key and value they interpolate.
+  - it: rejects a config key with a newline that injects SPRING_CONFIG_IMPORT
+    template: templates/deployment.yaml
+    set:
+      config:
+        "LOG_LEVEL: \"INFO\"\n  SPRING_CONFIG_IMPORT": "optional:file:/tmp/x.yml"
+    asserts:
+      - failedTemplate: {}
+  - it: rejects a config key with a newline that injects an unchecked JDBC URL
+    template: templates/deployment.yaml
+    set:
+      config:
+        "A: \"x\"\n  SPRING_DATASOURCE_URL: \"jdbc:postgresql://evil.example:5432/db\"\n  B": "y"
+    asserts:
+      - failedTemplate: {}
+  - it: rejects a config key with a newline that injects SPRING_PROFILES_ACTIVE
+    template: templates/deployment.yaml
+    set:
+      config:
+        "A: \"1\"\n  SPRING_PROFILES_ACTIVE": local
+    asserts:
+      - failedTemplate: {}
+  - it: rejects an externalSecret.data secretKey with a newline that injects SPRING_DATASOURCE_URL
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: "DB_PASSWORD\n      remoteRef:\n        key: staging/loan-lifecycle-service/db-app\n        property: password\n    - secretKey: SPRING_DATASOURCE_URL"
+          property: url
+    asserts:
+      - failedTemplate: {}
+  - it: rejects an externalSecret.extraData property with a newline that injects SPRING_DATASOURCE_URL
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: OIDC_CLIENT_SECRET
+          remoteSecretName: staging/loan-lifecycle-service/oidc-client
+          property: "client_secret\n    - secretKey: SPRING_DATASOURCE_URL\n      remoteRef:\n        key: staging/loan-lifecycle-service/db-app\n        property: url"
+    asserts:
+      - failedTemplate: {}
+  - it: rejects an extraEnv name with a non-ASCII letter (sprİng.profiles.active, U+0130; already refused through the canonical form)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "sprİng.profiles.active"
+          value: local
+    asserts:
+      - failedTemplate: {}
+  - it: renders ordinary config keys and secretKeys unchanged (control)
+    template: templates/configmap.yaml
+    set:
+      config:
+        app.feature-flags.new-ui: "true"
+    asserts:
+      - equal:
+          path: data["app.feature-flags.new-ui"]
+          value: "true"
+      - equal: {path: data.KAFKA_SECURITY_PROTOCOL, value: SASL_SSL}
+  - it: renders the ExternalSecret keys unchanged (control)
+    template: templates/externalsecret.yaml
+    asserts:
+      - contains:
+          path: spec.data
+          content:
+            secretKey: OIDC_CLIENT_SECRET
+            remoteRef: {key: staging/loan-lifecycle-service/oidc-client, property: client_secret}

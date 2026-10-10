@@ -8,5 +8,5 @@ data:
   SERVER_PORT: {{ .Values.service.port | quote }}
   MANAGEMENT_SERVER_PORT: {{ .Values.service.managementPort | quote }}
   {{- range $key, $value := .Values.config }}
-  {{ $key }}: {{ $value | quote }}
+  {{ $key | quote }}: {{ $value | quote }}
   {{- end }}

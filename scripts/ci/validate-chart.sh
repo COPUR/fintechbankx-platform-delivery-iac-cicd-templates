@@ -154,6 +154,19 @@ vendored_must_fail "additionalEnv SPRING_SSL_BUNDLE_* from valueFrom" \
   --set-string 'additionalEnv[0].valueFrom.configMapKeyRef.name=other' --set-string 'additionalEnv[0].valueFrom.configMapKeyRef.key=ca'
 vendored_must_fail "secret key FINTECHBANKX_TLS_ENFORCE" \
   --set 'secrets.keys[1].secretKey=FINTECHBANKX_TLS_ENFORCE' --set-string 'secrets.keys[1].property=enforce'
+cat > "$work/vg-config-key-newline.yaml" <<'VALUES'
+env:
+  "LOG_LEVEL: \"INFO\"\n  SPRING_CONFIG_IMPORT": "optional:file:/tmp/x.yml"
+VALUES
+vendored_must_fail "env key with a newline (injects SPRING_CONFIG_IMPORT)" -f "$work/vg-config-key-newline.yaml"
+cat > "$work/vg-secret-key-newline.yaml" <<'VALUES'
+secrets:
+  enabled: true
+  keys:
+    - secretKey: "DB_PASSWORD\n      remoteRef: {key: x, property: password}\n    - secretKey: SPRING_DATASOURCE_URL"
+      property: url
+VALUES
+vendored_must_fail "secret key with a newline (injects SPRING_DATASOURCE_URL)" -f "$work/vg-secret-key-newline.yaml"
 vendored_must_fail "jvmOptions with -Dspring.profiles.active" --set-string 'jvmOptions=-Dspring.profiles.active=local'
 vendored_must_fail "KAFKA_SECURITY_PROTOCOL PLAINTEXT" --set-string 'env.KAFKA_SECURITY_PROTOCOL=PLAINTEXT'
 
