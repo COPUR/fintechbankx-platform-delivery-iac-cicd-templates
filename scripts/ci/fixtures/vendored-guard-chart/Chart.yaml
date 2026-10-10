@@ -1,0 +1,10 @@
+apiVersion: v2
+name: vendored-guard-example
+description: >-
+  Test fixture for scripts/ci/validate-chart.sh: a service chart with its own
+  value names that vendors charts/fintechbankx-service/templates/_helpers.tpl
+  unchanged (copied in at test time) and calls fbx.guard through an adapter
+  dict, as described in the chart README ("Vendoring the guard").
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,90 @@
+suite: environment sources - only the chart's ConfigMap and Secret, no envFrom or dataFrom from values
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+  - templates/externalsecret.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # The guard (fbx.guard) checks every key the pod's environment can get from
+  # values: config (rendered into the chart's ConfigMap), extraEnv (value or
+  # valueFrom) and externalSecret data/extraData secretKeys. An envFrom
+  # ConfigMap/Secret or an ExternalSecret dataFrom would load keys the guard
+  # never sees, so the chart renders exactly its own configMapRef and
+  # secretRef and fbx.validateEnvSources refuses envFrom, extraEnvFrom and
+  # externalSecret.dataFrom values (a service chart that vendors the guard
+  # drops such values).
+  - it: renders only the chart's ConfigMap and Secret as envFrom
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].envFrom
+          value:
+            - configMapRef: {name: loan-lifecycle-service}
+            - secretRef: {name: loan-lifecycle-service-secrets}
+  - it: rejects an extraEnvFrom value (configMapRef)
+    template: templates/deployment.yaml
+    set:
+      extraEnvFrom:
+        - configMapRef: {name: other}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnvFrom is not supported"
+  - it: rejects an envFrom value (secretRef)
+    template: templates/deployment.yaml
+    set:
+      envFrom:
+        - secretRef: {name: other}
+    asserts:
+      - failedTemplate:
+          errorPattern: "envFrom is not supported"
+  - it: rejects externalSecret.dataFrom (extracts every key of a remote secret)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.dataFrom:
+        - extract: {key: staging/loan-lifecycle-service/db-app}
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.dataFrom is not supported"
+  - it: accepts empty envFrom, extraEnvFrom and dataFrom values (control)
+    template: templates/deployment.yaml
+    set:
+      envFrom: []
+      extraEnvFrom: []
+      externalSecret.dataFrom: []
+    asserts:
+      - notFailedTemplate: {}
+  # SPRING_APPLICATION_JSON in further spellings and routes (regression cases;
+  # the rule is (?i)^spring[._-]?application[._-]?json$ on the name and its
+  # canonical form).
+  - it: rejects extraEnv SPRING_APPLICATION_JSON from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_APPLICATION_JSON
+          valueFrom:
+            configMapKeyRef: {name: other, key: json}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_APPLICATION_JSON"
+  - it: rejects config spring-application-json (kebab)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring-application-json: "{}"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring-application-json is not allowed"
+  - it: rejects externalSecret.extraData materialising spring.application[json]
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: "spring.application[json]"
+          remoteSecretName: staging/loan-lifecycle-service/json
+          property: json
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring.application\\[json\\]"

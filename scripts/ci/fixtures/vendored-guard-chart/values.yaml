@@ -1,0 +1,16 @@
+# Value names deliberately differ from charts/fintechbankx-service.
+env:
+  DB_URL: jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
+  KAFKA_SECURITY_PROTOCOL: SASL_SSL
+additionalEnv: []
+jvmOptions: "-XX:MaxRAMPercentage=75"
+kafkaRuntime: msk
+databaseCaBundle:
+  enabled: true
+  mountPath: /etc/fintechbankx/rds-ca
+  key: global-bundle.pem
+secrets:
+  enabled: true
+  keys:
+    - secretKey: SPRING_DATASOURCE_PASSWORD
+      property: password

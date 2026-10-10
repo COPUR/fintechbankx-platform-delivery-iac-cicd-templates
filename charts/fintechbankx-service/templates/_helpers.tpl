@@ -68,6 +68,44 @@ sidecar.istio.io/inject: "true"
 {{- end -}}
 
 {{/*
+fbx.guard: the datasource / TLS guard, the one entry point a chart calls (at
+the top of its deployment template; any one rendered template is enough, a
+failure stops the whole render). It reads only .Values, so a service chart
+with other value names vendors this file unchanged and passes an adapter dict
+(README "Vendoring the guard"):
+  include "fbx.guard" (dict "Values" (dict "config" <map> "extraEnv" <list>
+    "javaToolOptions" <string> "databaseCa" <dict enabled/mountPath/key>
+    "kafka" (dict "runtime" <""|msk|strimzi>)
+    "externalSecret" (dict "enabled" <bool> "data" <list> "extraData" <list>)))
+Every key is optional except that a databaseCa with enabled: true needs
+mountPath and key. It runs fbx.validateEnvSources, fbx.validateDatabaseTls
+and fbx.validateKafkaTls.
+*/}}
+{{- define "fbx.guard" -}}
+{{- include "fbx.validateEnvSources" . -}}
+{{- include "fbx.validateDatabaseTls" . -}}
+{{- include "fbx.validateKafkaTls" . -}}
+{{- end -}}
+
+{{/*
+Environment sources: the guard sees config keys, extraEnv names and the
+ExternalSecret data/extraData secretKeys. An envFrom ConfigMap or Secret, or
+an ExternalSecret dataFrom (every key of a remote secret), would load names
+it never sees, so values envFrom, extraEnvFrom and externalSecret.dataFrom
+are refused (the chart renders only its own configMapRef and secretRef).
+*/}}
+{{- define "fbx.validateEnvSources" -}}
+{{- range $k := list "envFrom" "extraEnvFrom" -}}
+{{- if index $.Values $k -}}
+{{- fail (printf "%s is not supported: an envFrom ConfigMap or Secret loads keys the datasource/TLS guard never sees; use config, extraEnv or externalSecret.data/extraData" $k) -}}
+{{- end -}}
+{{- end -}}
+{{- if (.Values.externalSecret | default dict).dataFrom -}}
+{{- fail "externalSecret.dataFrom is not supported: it materialises every key of a remote secret, which the datasource/TLS guard never sees; list the keys in externalSecret.data/extraData" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Every PostgreSQL JDBC URL the chart passes to the workload must verify the
 server certificate and host name (sslmode=require encrypts but trusts any
 certificate). The query string is parsed the way PgJDBC reads it (split after
@@ -236,7 +274,7 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 
 {{- define "fbx.validateDatabaseTls" -}}
 {{- $root := . -}}
-{{- include "fbx.validateJvmOptions" (dict "where" "javaToolOptions" "value" .Values.javaToolOptions) -}}
+{{- include "fbx.validateJvmOptions" (dict "where" "javaToolOptions" "value" (.Values.javaToolOptions | default "")) -}}
 {{- range $name, $value := .Values.config -}}
 {{- if and (ne $name "DB_URL") (include "fbx.isDbUrlName" $name) -}}
 {{- fail (printf "config.%s is DB_URL in another spelling; use the key DB_URL, where the JDBC URL is checked" $name) -}}
@@ -270,9 +308,10 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- include "fbx.validateJdbcUrl" (dict "root" $root "where" (printf "extraEnv.%s" $envName) "url" (toString $env.value)) -}}
 {{- end -}}
 {{- end -}}
-{{- if .Values.externalSecret.enabled -}}
+{{- $es := .Values.externalSecret | default dict -}}
+{{- if $es.enabled -}}
 {{- range $field := list "data" "extraData" -}}
-{{- range $entry := (index $root.Values.externalSecret $field | default list) -}}
+{{- range $entry := (index $es $field | default list) -}}
 {{- $key := toString (default "" $entry.secretKey) -}}
 {{- if or (include "fbx.isDbUrlName" $key) (include "fbx.isJvmOptionsName" $key) -}}
 {{- fail (printf "externalSecret.%s must not materialise %s; set the JDBC URL in config.DB_URL and JVM options in javaToolOptions, where they are checked (keep only the credentials in the secret)" $field $key) -}}
@@ -335,7 +374,6 @@ check covers clients built in code; README "Service-side TLS assertion"):
 {{- end -}}
 
 {{- define "fbx.validateKafkaTls" -}}
-{{- $root := . -}}
 {{- $runtime := toString ((.Values.kafka | default dict).runtime | default "") -}}
 {{- range $name, $value := .Values.config -}}
 {{- with include "fbx.kafkaTlsName" $name -}}
@@ -351,9 +389,10 @@ check covers clients built in code; README "Service-side TLS assertion"):
 {{- include "fbx.validateKafkaTlsValue" (dict "kind" . "where" (printf "extraEnv.%s" $envName) "value" $env.value "runtime" $runtime) -}}
 {{- end -}}
 {{- end -}}
-{{- if .Values.externalSecret.enabled -}}
+{{- $es := .Values.externalSecret | default dict -}}
+{{- if $es.enabled -}}
 {{- range $field := list "data" "extraData" -}}
-{{- range $entry := (index $root.Values.externalSecret $field | default list) -}}
+{{- range $entry := (index $es $field | default list) -}}
 {{- $key := toString (default "" $entry.secretKey) -}}
 {{- if include "fbx.kafkaTlsName" $key -}}
 {{- fail (printf "externalSecret.%s must not materialise %s; set it as a literal in config or extraEnv, where SASL_SSL/SSL and https are enforced" $field $key) -}}
@@ -367,7 +406,7 @@ check covers clients built in code; README "Service-side TLS assertion"):
 {{- $where := .where -}}
 {{- $url := trim .url -}}
 {{- if regexMatch "(?i)^jdbc:(?:[a-z0-9-]+:)*postgresql:" $url -}}
-{{- $ca := .root.Values.databaseCa -}}
+{{- $ca := .root.Values.databaseCa | default dict -}}
 {{- $want := printf "%s/%s" (trimSuffix "/" (toString $ca.mountPath)) (toString $ca.key) -}}
 {{- $parts := regexSplit "\\?" $url 2 -}}
 {{- $base := index $parts 0 -}}

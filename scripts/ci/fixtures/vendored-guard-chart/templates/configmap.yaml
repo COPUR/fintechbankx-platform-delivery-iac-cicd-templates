@@ -1,0 +1,19 @@
+{{- /* Adapter: map this chart's value names onto the ones fbx.guard reads. */ -}}
+{{- include "fbx.guard" (dict "Values" (dict
+      "config" .Values.env
+      "extraEnv" .Values.additionalEnv
+      "javaToolOptions" .Values.jvmOptions
+      "databaseCa" .Values.databaseCaBundle
+      "kafka" (dict "runtime" .Values.kafkaRuntime)
+      "externalSecret" (dict "enabled" .Values.secrets.enabled "data" .Values.secrets.keys))) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}
+data:
+  {{- range $k, $v := .Values.env }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+  {{- with include "fbx.kafkaProfile" (dict "Values" (dict "kafka" (dict "runtime" .Values.kafkaRuntime))) }}
+  SPRING_PROFILES_ACTIVE: {{ . | quote }}
+  {{- end }}

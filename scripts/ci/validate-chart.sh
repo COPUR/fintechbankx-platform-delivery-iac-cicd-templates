@@ -2,6 +2,7 @@
 # Validates charts/fintechbankx-service: helm lint (strict) and helm template
 # for every CI fixture and for the microservice skeleton values, kubeconform on
 # the rendered manifests (core + CRD schemas), negative cases that must fail,
+# the vendored-guard smoke chart (scripts/ci/fixtures/vendored-guard-chart),
 # helm-unittest suites (charts/fintechbankx-service/tests) and the strict-mTLS
 # validator over the rendered output.
 # Usage: scripts/ci/validate-chart.sh
@@ -15,7 +16,8 @@ kubeconform="${KUBECONFORM:-kubeconform}"
 kube_version="${KUBE_VERSION:-1.30.0}"
 chart=charts/fintechbankx-service
 out="$(mktemp -d)"
-trap 'rm -rf "$out"' EXIT
+work="$(mktemp -d)"
+trap 'rm -rf "$out" "$work"' EXIT
 
 kc() {
   "$kubeconform" -strict -summary -kubernetes-version "$kube_version" \
@@ -103,6 +105,8 @@ must_fail "extraEnv DB_SSL_ROOT_CERT empty (replaces the chart's entry; TLS guar
   --set 'extraEnv[0].name=DB_SSL_ROOT_CERT' --set-string 'extraEnv[0].value='
 must_fail "config PGJDBC_SSL_FACTORY (sslfactory with a separator)" \
   --set-string 'config.PGJDBC_SSL_FACTORY=org.postgresql.ssl.NonValidatingFactory'
+must_fail "extraEnvFrom ConfigMap (keys the guard never sees)" \
+  --set-string 'extraEnvFrom[0].configMapRef.name=other'
 must_fail "javaToolOptions reading an argument file" \
   --set-string 'javaToolOptions=@/tmp/jvm.args'
 must_fail "javaToolOptions with -Djava.security.properties (security properties file)" \
@@ -124,6 +128,32 @@ if "$helm" lint "$chart" >/dev/null 2>&1; then
   echo "expected bare values.yaml to fail lint (required identity values)"; exit 1
 fi
 echo "[negative] bare values.yaml rejected as expected"
+
+# The guard is meant to be vendored: copy _helpers.tpl unchanged into a chart
+# with other value names and call fbx.guard through an adapter dict
+# (README "Vendoring the guard").
+vendored="$work/vendored-guard-chart"
+cp -R scripts/ci/fixtures/vendored-guard-chart "$vendored"
+cp "$chart/templates/_helpers.tpl" "$vendored/templates/_helpers.tpl"
+echo "[vendored guard] renders with the adapter dict"
+"$helm" template vg "$vendored" > /dev/null
+vendored_must_fail() {
+  local why="$1"; shift
+  if "$helm" template vg "$vendored" "$@" >/dev/null 2>&1; then
+    echo "expected failure did not happen (vendored guard): $why"; exit 1
+  fi
+  echo "[vendored guard] rejected as expected: $why"
+}
+vendored_must_fail "SPRING_CONFIG_IMPORT_0_" --set-string 'env.SPRING_CONFIG_IMPORT_0_=optional:file:/tmp/x.yml'
+vendored_must_fail "DB_URL with sslmode=require" \
+  --set-string 'env.DB_URL=jdbc:postgresql://db.example.internal:5432/db?sslmode=require'
+vendored_must_fail "additionalEnv SPRING_SSL_BUNDLE_* from valueFrom" \
+  --set 'additionalEnv[0].name=SPRING_SSL_BUNDLE_PEM_DB_TRUSTSTORE_CERTIFICATE' \
+  --set-string 'additionalEnv[0].valueFrom.configMapKeyRef.name=other' --set-string 'additionalEnv[0].valueFrom.configMapKeyRef.key=ca'
+vendored_must_fail "secret key FINTECHBANKX_TLS_ENFORCE" \
+  --set 'secrets.keys[1].secretKey=FINTECHBANKX_TLS_ENFORCE' --set-string 'secrets.keys[1].property=enforce'
+vendored_must_fail "jvmOptions with -Dspring.profiles.active" --set-string 'jvmOptions=-Dspring.profiles.active=local'
+vendored_must_fail "KAFKA_SECURITY_PROTOCOL PLAINTEXT" --set-string 'env.KAFKA_SECURITY_PROTOCOL=PLAINTEXT'
 
 echo "[helm-unittest] $chart/tests"
 "$helm" unittest "$chart"
