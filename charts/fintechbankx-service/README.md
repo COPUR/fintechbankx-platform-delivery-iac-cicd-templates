@@ -249,8 +249,15 @@ editing it:
    share one adapter dict between several workload templates) that calls it
    unconditionally before any output of its own. Only comments, variable
    assignments, `fail` and `if`/`range`/`with` blocks that write nothing may
-   come before the call; an `{{ if }}` without `{{ else }}` may enclose the
-   whole template (an optional Job). With this chart's value
+   come before the call, and none of them may change what the guard reads:
+   no `set`, `unset`, `merge` or `mergeOverwrite` (or a `must*` form) except
+   on a variable bound to a dict the template built (`$vals := dict ...`), and
+   no `tpl`, also through an included define (an include whose name is chosen
+   at render time counts with every template of the chart); an `{{ if }}`
+   without `{{ else }}` may enclose the whole template (an optional Job).
+   The script does not read what runs after the call: a template must not change `.Values` after the guard has run
+   (so that it renders a value the guard never saw); that, like the
+   adapter's mapping, is for review. With this chart's value
    names it is `{{- include "fbx.guard" . -}}`. With other names, pass an
    adapter dict; the guard reads only `.Values`, and every key is optional
    except `databaseCa.mountPath` and `key` while `databaseCa.enabled`. The

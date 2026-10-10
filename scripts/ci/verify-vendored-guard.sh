@@ -34,9 +34,16 @@
 #       applied; text an action writes inside a value (a value holding a
 #       newline) is not followed, which is why every interpolated value is
 #       quoted (README step 3). Before the call only comments, variable
-#       assignments, fail and if/range/with blocks that write nothing may run.
-#       The call may sit inside an {{ if }} (without else) that encloses the
-#       whole template, the form of an optional migration Job.
+#       assignments, fail and if/range/with blocks that write nothing may run,
+#       and none of them may change what the guard reads: no set, unset,
+#       merge, mergeOverwrite (or a must* form) except on a variable bound to
+#       a dict the template built ($vals := dict ...), and no tpl, also
+#       through an included define (an include whose name is chosen at render
+#       time counts with every template of the chart). The call may sit
+#       inside an {{ if }} (without else) that encloses the whole template,
+#       the form of an optional migration Job. What runs after the call is
+#       not read: a template that changes .Values after the guard has run is
+#       a review matter, like the adapter's mapping.
 #
 # Prints the guard file(s) found with their sha256, one line per check, and
 # exits 0 when every check passes, 1 when one fails, 2 on a usage error.
@@ -449,13 +456,93 @@ function callsIn(tokens) {
   return calls;
 }
 
+// What runs before the guard must not change what it reads. sprig's set,
+// unset, merge and mergeOverwrite (and the must* forms) change their first
+// argument in place, so they may only target a variable bound to a dict the
+// template built itself ($vals := dict ...), never .Values, $, an alias of
+// .Values or a dict reached through index; tpl runs template text taken from
+// a value. An include counts with what the included define runs, and an
+// include whose name is chosen at render time with what any template of the
+// chart runs. actionMutation returns why an action can change what the guard
+// reads ("calls set", "includes x, which calls set", ...) or null, and records
+// in fresh the variables an assignment binds to a new dict.
+const MUTATORS = /(?<![\w.$])(set|unset|merge|mergeOverwrite|mustMerge|mustMergeOverwrite)(?![\w])\s*(\$[A-Za-z0-9_]+(?![\w.]))?/g;
+const stripStrings = (body) => body.replace(/"(?:[^"\\]|\\.)*"|`[^`]*`|'(?:[^'\\]|\\.)*'/g, '""');
+const defineMutationMemo = new Map();
+let chartMutationMemo;
+let chartMutationBusy = false;
+
+function actionMutation(t, fresh, stack) {
+  const flat = stripStrings(t.body);
+  if (/(?<![\w.$])tpl(?![\w])/.test(flat)) return "calls tpl";
+  for (const m of flat.matchAll(MUTATORS)) {
+    if (!(m[2] && fresh.has(m[2]))) return `calls ${m[1]}`;
+  }
+  for (const m of t.body.matchAll(/(?<![\w.$])(?:include|template)\s+("(?:[^"\\]|\\.)*"|`[^`]*`)/g)) {
+    const r = readString(m[1]);
+    const why = r ? defineMutation(r.value, stack) : chartMutation();
+    if (why) return r ? `includes ${r.value}, which ${why}` : `includes a template chosen at render time, and ${why}`;
+  }
+  if (/(?<![\w.$])include\s+[^\s"`]/.test(flat)) {
+    const why = chartMutation();
+    if (why) return `includes a template chosen at render time, and ${why}`;
+  }
+  const assign = /^(\$[A-Za-z0-9_]+)\s*:?=\s*([\s\S]*)$/.exec(t.body);
+  if (assign) {
+    if (/^dict(?![\w])/.test(assign[2].trim())) fresh.add(assign[1]);
+    else fresh.delete(assign[1]);
+  }
+  return null;
+}
+
+function mutationInTokens(tokens, stack) {
+  const fresh = new Set();
+  for (const t of tokens) {
+    if (t.type === "text" || t.type === "comment") continue;
+    const why = actionMutation(t, fresh, stack);
+    if (why) return why;
+  }
+  return null;
+}
+
+function defineMutation(name, stack) {
+  if (!defines.has(name) || stack.has(name)) return null;
+  if (defineMutationMemo.has(name)) return defineMutationMemo.get(name);
+  stack.add(name);
+  let why = null;
+  for (const d of defines.get(name)) {
+    why = mutationInTokens(d.body, stack);
+    if (why) break;
+  }
+  stack.delete(name);
+  defineMutationMemo.set(name, why);
+  return why;
+}
+
+function chartMutation() {
+  if (chartMutationMemo !== undefined) return chartMutationMemo;
+  if (chartMutationBusy) return null;
+  chartMutationBusy = true;
+  let why = null;
+  for (const f of templateFiles) {
+    const tokens = tokenize(f);
+    const w = tokens ? mutationInTokens(tokens, new Set()) : "cannot be parsed";
+    if (w) { why = `${f.display} ${w}`; break; }
+  }
+  chartMutationBusy = false;
+  chartMutationMemo = why;
+  return why;
+}
+
 // Checks that tokens (a template file, mode "file", or a define body, mode
-// "define") call fbx.guard, directly or through an adapter, before any output.
+// "define") call fbx.guard, directly or through an adapter, before any output
+// and before anything that can change what it reads.
 // Returns { via } or { error }.
 function guardFirst(tokens, mode, where, seen) {
   const calls = callsIn(tokens).filter((c) => c.type === "call" && reachesGuard(c.name));
   if (calls.length === 0) return { error: "no fbx.guard call (directly or through an adapter define)" };
   const stack = [];
+  const fresh = new Set();
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (t.type === "text") {
@@ -465,7 +552,12 @@ function guardFirst(tokens, mode, where, seen) {
       }
       continue;
     }
-    if (t.type === "comment" || t.type === "quiet" || t.type === "else") continue;
+    if (t.type === "comment") continue;
+    if (t.type === "quiet" || t.type === "else" || (t.type === "open" && t.word !== "define" && t.word !== "block")) {
+      const why = actionMutation(t, fresh, new Set());
+      if (why) return { error: `${quote(t.body)} (line ${t.line}${where}) can change what the guard reads before it runs: it ${why}` };
+    }
+    if (t.type === "quiet" || t.type === "else") continue;
     if (t.type === "open" && t.word === "define") { const e = matchingEnd(tokens, i); i = e < 0 ? tokens.length : e; continue; }
     if (t.type === "open" && t.word !== "block") { stack.push({ word: t.word, index: i, line: t.line }); continue; }
     if (t.type === "end") { stack.pop(); continue; }

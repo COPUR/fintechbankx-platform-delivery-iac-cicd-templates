@@ -8,7 +8,8 @@
 //   (c) every workload template (one whose document's top-level kind, in any
 //       spelling, is outside the pod-free list or unreadable, or that writes
 //       unread text there) runs the guard, directly or through an adapter
-//       define, before it writes any output.
+//       define, before it writes any output and before anything that can
+//       change what the guard reads (set, unset, merge*, tpl).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -552,6 +553,71 @@ test("(c) pod-free kinds in any spelling, nested kinds and unread text inside a 
   const r = verify(makeChart(t, files));
   assertPass(r);
   assert.doesNotMatch(r.out, /\(c\) templates\/(configmap\.yaml|hpa\.json|service\.yaml|NOTES\.txt)/);
+});
+
+// (c) what runs before the guard must not change what the guard reads: an
+// assignment or condition that calls set, unset, merge, mergeOverwrite (also
+// mustMerge, mustMergeOverwrite) or tpl, itself or through a define it
+// includes, can empty .Values.extraEnv for the guard and restore it after.
+const RESTORE = '{{- $_ := set .Values "extraEnv" $env -}}\n';
+const mutations = {
+  set: '{{- $_ := set .Values "extraEnv" list -}}',
+  unset: '{{- $_ := unset .Values "extraEnv" -}}',
+  merge: '{{- $_ := merge .Values (dict "extraEnv" list) -}}',
+  mergeOverwrite: '{{- $_ := mergeOverwrite .Values (dict "extraEnv" list) -}}',
+  mustMergeOverwrite: '{{- $_ := mustMergeOverwrite .Values (dict "extraEnv" list) -}}',
+  "set through an alias of .Values": '{{- $v := .Values -}}\n{{- $_ := set $v "extraEnv" list -}}',
+  "set inside a local dict that holds .Values": '{{- $d := dict "v" .Values -}}\n{{- $_ := set (index $d "v") "extraEnv" list -}}',
+  "set in an if condition": '{{- if set .Values "extraEnv" list }}{{- end }}',
+  "tpl of a value": "{{- $_ := tpl .Values.prelude . -}}",
+  "an include of a define that calls set": '{{- $_ := include "example.reset" . -}}'
+};
+for (const [label, action] of Object.entries(mutations)) {
+  test(`(c) fails when an action before the guard can change what it reads: ${label}`, (t) => {
+    const files = baseFiles();
+    files["templates/_helpers.tpl"] = '{{- define "example.reset" -}}{{- $_ := set .Values "extraEnv" list -}}{{- end -}}\n';
+    files["templates/deployment.yaml"] =
+      "{{- $env := .Values.extraEnv -}}\n" + action + '\n{{- include "fbx.guard" . -}}\n' + RESTORE + DEPLOYMENT_BODY;
+    assertFail(
+      verify(makeChart(t, files)),
+      /FAIL \(c\) templates\/deployment\.yaml \(Deployment\): \{\{ .* \}\} \(line \d+\) can change what the guard reads before it runs/
+    );
+  });
+}
+
+test("(c) fails for an adapter define that changes .Values before it calls the guard", (t) => {
+  const files = baseFiles();
+  files["templates/_helpers.tpl"] = '{{- define "example.guard" -}}\n{{- $_ := set .Values "extraEnv" list -}}\n{{- include "fbx.guard" . -}}\n{{- end -}}\n';
+  files["templates/deployment.yaml"] = '{{- include "example.guard" . -}}\n' + DEPLOYMENT_BODY;
+  assertFail(
+    verify(makeChart(t, files)),
+    /FAIL \(c\) templates\/deployment\.yaml \(Deployment\): .*example\.guard.*can change what the guard reads before it runs/
+  );
+});
+
+test("(c) fails for an include chosen at render time before the guard when a template calls set", (t) => {
+  const files = baseFiles();
+  files["templates/configmap.yaml"] = '{{- $_ := set .Values "extraEnv" list -}}\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n';
+  files["templates/deployment.yaml"] =
+    '{{- $cm := include (print .Template.BasePath "/configmap.yaml") . -}}\n{{- include "fbx.guard" . -}}\n' + DEPLOYMENT_BODY;
+  assertFail(
+    verify(makeChart(t, files)),
+    /FAIL \(c\) templates\/deployment\.yaml \(Deployment\): .* can change what the guard reads before it runs: it includes a template chosen at render time, and templates\/configmap\.yaml calls set/
+  );
+});
+
+test("(c) passes with a render-time include, a local dict built with set and pure functions before the guard (control)", (t) => {
+  const files = baseFiles();
+  files["templates/configmap.yaml"] = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n";
+  files["templates/deployment.yaml"] = [
+    '{{- $cm := include (print .Template.BasePath "/configmap.yaml") . -}}',
+    '{{- $vals := dict "config" .Values.config -}}',
+    '{{- $_ := set $vals "extraEnv" (concat (.Values.extraEnv | default list) (list)) -}}',
+    '{{- $_ := merge $vals (dict "kafka" (dict "runtime" "msk")) -}}',
+    '{{- include "fbx.guard" (dict "Values" $vals) -}}',
+    DEPLOYMENT_BODY
+  ].join("\n");
+  assertPass(verify(makeChart(t, files)));
 });
 
 test("reports every failing check, not only the first", (t) => {
