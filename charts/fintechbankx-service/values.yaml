@@ -118,6 +118,14 @@ databaseCa:
   key: global-bundle.pem
   mountPath: /etc/fintechbankx/rds-ca
 
+# Kafka auth profile (the Kafka repo's client guide). The chart renders the
+# only Spring profile from it: msk -> SPRING_PROFILES_ACTIVE=kafka-msk (Amazon
+# MSK IAM, security.protocol SASL_SSL), strimzi -> kafka-strimzi (Strimzi
+# mutual TLS, SSL), "" -> no profile. Every user-set spring.profiles.* name is
+# rejected (config, extraEnv, externalSecret keys, JVM options).
+kafka:
+  runtime: ""
+
 # Extra env entries (Kubernetes EnvVar objects).
 extraEnv: []
 

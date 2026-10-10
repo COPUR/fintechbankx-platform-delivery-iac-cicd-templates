@@ -227,6 +227,21 @@
         ]
       }
     },
+    "kafka": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtime": {
+          "description": "Kafka auth profile the chart renders as the only SPRING_PROFILES_ACTIVE: msk -> kafka-msk (Amazon MSK IAM, security.protocol SASL_SSL), strimzi -> kafka-strimzi (Strimzi mutual TLS, SSL), empty -> no profile.",
+          "type": "string",
+          "enum": [
+            "",
+            "msk",
+            "strimzi"
+          ]
+        }
+      }
+    },
     "externalSecret": {
       "type": "object",
       "required": [

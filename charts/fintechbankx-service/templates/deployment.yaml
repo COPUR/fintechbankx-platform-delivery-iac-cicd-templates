@@ -95,6 +95,10 @@ spec:
               value: {{ .Values.javaToolOptions | quote }}
             - name: FINTECHBANKX_SERVICE_ID
               value: {{ .Values.serviceId | quote }}
+            {{- with include "fbx.kafkaProfile" . }}
+            - name: SPRING_PROFILES_ACTIVE
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.observability.tracing.enabled }}
             - name: OTEL_SERVICE_NAME
               value: {{ .Values.serviceId | quote }}

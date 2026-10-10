@@ -100,9 +100,13 @@ the env names the Secret materialises and whose values are never seen here):
     a service ever needs one, must be rendered by the chart itself on the fixed
     mount optional:configtree:/etc/fintechbankx/config/ from a boolean value,
     never taken from a user-supplied value;
-  - (?i)^spring[._-]?profiles[._-]?(active|include)$: a profile switches on an
-    application-<profile>.yml inside the image. The chart renders no
-    SPRING_PROFILES_ACTIVE, so no user-set profile name is allowed;
+  - (?i)^spring[._-]?profiles([._-]|$): every spring.profiles.* name
+    (active, include, default, group.*, ...). A profile switches on an
+    application-<profile>.yml inside the image; spring.profiles.default
+    activates one (e.g. local) when none is active, and spring.profiles.group.*
+    can expand kafka-msk into local. The chart renders the only
+    SPRING_PROFILES_ACTIVE (fbx.kafkaProfile, from kafka.runtime), so no
+    user-set profile name is allowed;
   - (?i)^fintechbankx[._-]?tls([._-]|$): fintechbankx.tls.enforce
     (FINTECHBANKX_TLS_ENFORCE) is the only switch that turns the service's
     startup TLS assertion off, and only the local profile and test resources
@@ -129,10 +133,26 @@ datasource built in code), are the service's own startup check (README,
 it can redirect or override the datasource past the sslmode=verify-full check; set the JDBC URL in config.DB_URL
 {{- else if regexMatch "(?i)^spring[._-]?config[._-]?(import|location|additional[._-]?location|name)$" $n -}}
 a config import, location or name can load a file or config tree that overrides the datasource past the sslmode=verify-full check; the chart renders no config import
-{{- else if regexMatch "(?i)^spring[._-]?profiles[._-]?(active|include)$" $n -}}
-a profile can activate an application-<profile> config in the image whose datasource the chart cannot check; the chart sets no profile
+{{- else if regexMatch "(?i)^spring[._-]?profiles([._-]|$)" $n -}}
+a profile can activate an application-<profile> config in the image (e.g. local) whose datasource and TLS settings the chart cannot check; the chart renders the only profile, from kafka.runtime
 {{- else if regexMatch "(?i)^fintechbankx[._-]?tls([._-]|$)" $n -}}
 it can switch off the service's startup TLS assertion (fintechbankx.tls.enforce is for the local profile and tests only)
+{{- end -}}
+{{- end -}}
+
+{{/*
+The only Spring profile the chart renders: kafka.runtime selects the Kafka
+auth profile of the Kafka repo's client guide (msk -> kafka-msk, Amazon MSK
+IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
+"" renders no profile. The schema holds the enum; this repeats it for
+--skip-schema-validation.
+*/}}
+{{- define "fbx.kafkaProfile" -}}
+{{- $runtime := toString ((.Values.kafka | default dict).runtime | default "") -}}
+{{- if eq $runtime "msk" -}}kafka-msk
+{{- else if eq $runtime "strimzi" -}}kafka-strimzi
+{{- else if ne $runtime "" -}}
+{{- fail (printf "kafka.runtime must be \"\", msk or strimzi (got %q)" $runtime) -}}
 {{- end -}}
 {{- end -}}
 

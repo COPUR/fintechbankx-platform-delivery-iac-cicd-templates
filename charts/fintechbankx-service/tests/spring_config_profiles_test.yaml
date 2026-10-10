@@ -11,7 +11,8 @@ tests:
   # fbx.datasourceOverrideName also rejects, for config keys, extraEnv names
   # (value or valueFrom) and externalSecret data/extraData secretKeys:
   #   (?i)^spring[._-]?config[._-]?(import|location|additional[._-]?location|name)$
-  #   (?i)^spring[._-]?profiles[._-]?(active|include)$
+  #   (?i)^spring[._-]?profiles([._-]|$) (every spring.profiles.* name;
+  #   kafka_runtime_profiles_test.yaml covers default and group.*)
   # A config import/location can load a file or config tree whose
   # spring.datasource.* the chart never sees, and a profile can switch on an
   # application-<profile>.yml inside the image. The chart renders neither.
@@ -90,7 +91,6 @@ tests:
     template: templates/deployment.yaml
     set:
       config.SPRING_CONFIG_NAME_SUFFIX: x
-      config.SPRING_PROFILES_GROUP_NOTE: x
       extraEnv:
         - name: APP_SPRING_PROFILES_ACTIVE_LABEL
           value: x

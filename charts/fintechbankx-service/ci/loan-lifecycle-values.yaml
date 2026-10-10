@@ -14,6 +14,8 @@ config:
   DB_USERNAME: loan_lifecycle_app
   KAFKA_SECURITY_PROTOCOL: SASL_SSL
   CUSTOMER_SERVICE_BASE_URL: http://customer-profile-kyc-service.customer.svc.cluster.local:8080
+kafka:
+  runtime: msk
 externalSecret:
   remoteSecretName: staging/loan-lifecycle-service/db-app
   extraData:

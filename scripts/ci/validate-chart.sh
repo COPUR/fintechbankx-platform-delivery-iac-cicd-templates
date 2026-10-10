@@ -93,6 +93,9 @@ must_fail "javaToolOptions reading an argument file" \
   --set-string 'javaToolOptions=@/tmp/jvm.args'
 must_fail "config FINTECHBANKX_TLS_ENFORCE (service TLS assertion off switch)" \
   --set-string 'config.FINTECHBANKX_TLS_ENFORCE=false'
+must_fail "config SPRING_PROFILES_DEFAULT=local (every spring.profiles.* name)" \
+  --set-string 'config.SPRING_PROFILES_DEFAULT=local'
+must_fail "kafka.runtime outside the enum" --set-string 'kafka.runtime=local'
 must_fail "public IPv6 egress CIDR broader than /48 (2001:db8::/32)" --set networkPolicy.enabled=true \
   --set-string 'networkPolicy.egressCidrs[0].cidr=2001:db8::/32' --set 'networkPolicy.egressCidrs[0].ports[0]=443'
 if "$helm" lint "$chart" >/dev/null 2>&1; then
