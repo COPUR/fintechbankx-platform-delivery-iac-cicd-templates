@@ -94,12 +94,16 @@ the env names the Secret materialises and whose values are never seen here):
   - spring.application.json in any spelling ([._-] or none, any case);
   - any name containing jdbc[._-]?url, sslfactory or sslhostnameverifier;
   - DB_URL outside config (config.DB_URL is the one allowed place);
-  - (?i)^spring[._-]?config[._-]?(import|location|additional[._-]?location|name)$:
-    an imported file or config tree, or another config file name in the
-    image, can set spring.datasource.* where the chart never sees it. The chart renders no config import; a configtree, if
-    a service ever needs one, must be rendered by the chart itself on the fixed
-    mount optional:configtree:/etc/fintechbankx/config/ from a boolean value,
-    never taken from a user-supplied value;
+  - (?i)^spring[._-]?config([._-]|$): every spring.config.* name by prefix
+    (import, location, additional-location, name, activate.on-profile,
+    on-not-found, and the indexed forms spring.config.import[0] /
+    SPRING_CONFIG_IMPORT_0_). An imported file or config tree, another config
+    file name in the image, or an activation condition can set
+    spring.datasource.* where the chart never sees it. The chart renders no
+    config import; a configtree, if a service ever needs one, must be rendered
+    by the chart itself on the fixed mount
+    optional:configtree:/etc/fintechbankx/config/ from a boolean value, never
+    taken from a user-supplied value;
   - (?i)^spring[._-]?profiles([._-]|$): every spring.profiles.* name
     (active, include, default, group.*, ...). A profile switches on an
     application-<profile>.yml inside the image; spring.profiles.default
@@ -161,8 +165,8 @@ against the name as given and against this form.
 {{- $n := toString . -}}
 {{- if regexMatch "(?i)^spring[._-]?(datasource|flyway|liquibase|r2dbc)[._-]|^spring[._-]?application[._-]?json$|jdbc[._-]?url|sslfactory|sslhostnameverifier" $n -}}
 it can redirect or override the datasource past the sslmode=verify-full check; set the JDBC URL in config.DB_URL
-{{- else if regexMatch "(?i)^spring[._-]?config[._-]?(import|location|additional[._-]?location|name)$" $n -}}
-a config import, location or name can load a file or config tree that overrides the datasource past the sslmode=verify-full check; the chart renders no config import
+{{- else if regexMatch "(?i)^spring[._-]?config([._-]|$)" $n -}}
+a spring.config.* property (import, location, additional-location, name, activate.*, indexed forms) can load or activate a file or config tree that overrides the datasource past the sslmode=verify-full check; the chart renders no config import
 {{- else if regexMatch "(?i)^spring[._-]?profiles([._-]|$)" $n -}}
 a profile can activate an application-<profile> config in the image (e.g. local) whose datasource and TLS settings the chart cannot check; the chart renders the only profile, from kafka.runtime
 {{- else if regexMatch "(?i)^fintechbankx[._-]?tls([._-]|$)" $n -}}

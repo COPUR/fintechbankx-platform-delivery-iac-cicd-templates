@@ -104,7 +104,8 @@ config: {}
 # externalSecret secretKeys may not name a spring.datasource/flyway/liquibase/
 # r2dbc property (SPRING_DATASOURCE_USERNAME/PASSWORD excepted),
 # spring.application.json, or anything containing JDBC_URL, SSLFACTORY or
-# SSLHOSTNAMEVERIFIER, spring.config.import/location/additional-location/name,
+# SSLHOSTNAMEVERIFIER, any spring.config.* name (import, import[0], location,
+# activate.on-profile, ...),
 # any spring.profiles.* name (active, include, default, group.*; the chart
 # renders the only profile, from kafka.runtime) or any fintechbankx.tls.* name
 # (fintechbankx.tls.enforce turns the service's startup TLS assertion off; it is

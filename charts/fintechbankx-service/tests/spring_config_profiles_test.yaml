@@ -10,7 +10,7 @@ release:
 tests:
   # fbx.datasourceOverrideName also rejects, for config keys, extraEnv names
   # (value or valueFrom) and externalSecret data/extraData secretKeys:
-  #   (?i)^spring[._-]?config[._-]?(import|location|additional[._-]?location|name)$
+  #   (?i)^spring[._-]?config([._-]|$) (every spring.config.* name by prefix)
   #   (?i)^spring[._-]?profiles([._-]|$) (every spring.profiles.* name;
   #   kafka_runtime_profiles_test.yaml covers default and group.*)
   # A config import/location can load a file or config tree whose
@@ -87,10 +87,137 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv must not set SPRING_CONFIG_NAME"
-  - it: accepts names that only start like the rejected ones (control)
+  # spring.config.* is refused by prefix, (?i)^spring[._-]?config([._-]|$):
+  # indexed imports (spring.config.import[0], SPRING_CONFIG_IMPORT_0_),
+  # spring.config.activate.* (on-profile, on-cloud-platform) and any future
+  # spring.config.* key, not only import/location/additional-location/name.
+  - it: rejects config spring.config.import[0] (indexed list element)
+    template: templates/deployment.yaml
+    set:
+      config:
+        "spring.config.import[0]": optional:file:/tmp/override.yml
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.config.import\\[0\\] is not allowed: .*config"
+  - it: rejects extraEnv SPRING_CONFIG_IMPORT_0_ (indexed env form)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_CONFIG_IMPORT_0_
+          value: optional:file:/tmp/override.yml
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_CONFIG_IMPORT_0_"
+  - it: rejects extraEnv SPRING_CONFIG_LOCATION_1_ from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_CONFIG_LOCATION_1_
+          valueFrom:
+            configMapKeyRef: {name: other, key: location}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_CONFIG_LOCATION_1_"
+  - it: rejects config spring.config.activate.on-profile
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.config.activate.on-profile: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.config.activate.on-profile is not allowed"
+  - it: rejects config SPRING_CONFIG_ACTIVATE_ON_CLOUD_PLATFORM
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_CONFIG_ACTIVATE_ON_CLOUD_PLATFORM: none
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_CONFIG_ACTIVATE_ON_CLOUD_PLATFORM is not allowed"
+  - it: rejects config spring.config.on-not-found (any spring.config.* key)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.config.on-not-found: ignore
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.config.on-not-found is not allowed"
+  - it: rejects extraEnv spring[config].import[0] (bracket forms)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "spring[config].import[0]"
+          value: optional:file:/tmp/override.yml
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring\\[config\\].import\\[0\\]"
+  - it: rejects extraEnv Spring.Con-fig.Import (case and dash inside an element)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: Spring.Con-fig.Import
+          value: optional:file:/tmp/override.yml
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set Spring.Con-fig.Import"
+  - it: rejects externalSecret.data materialising SPRING_CONFIG_IMPORT_0_
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_CONFIG_IMPORT_0_
+          property: import
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_CONFIG_IMPORT_0_"
+  - it: rejects externalSecret.extraData materialising spring.config.activate.on-profile
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring.config.activate.on-profile
+          remoteSecretName: staging/loan-lifecycle-service/config
+          property: profile
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring.config.activate.on-profile"
+  - it: rejects config SPRING_CONFIG_NAME_SUFFIX (spring.config.* by prefix)
     template: templates/deployment.yaml
     set:
       config.SPRING_CONFIG_NAME_SUFFIX: x
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_CONFIG_NAME_SUFFIX is not allowed"
+  # spring.profiles.* indexed forms (already refused by prefix; kept as cases).
+  - it: rejects config spring.profiles.active[0] (indexed list element)
+    template: templates/deployment.yaml
+    set:
+      config:
+        "spring.profiles.active[0]": local
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.profiles.active\\[0\\] is not allowed"
+  - it: rejects extraEnv SPRING_PROFILES_INCLUDE_0_ from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_PROFILES_INCLUDE_0_
+          valueFrom:
+            configMapKeyRef: {name: other, key: profile}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_PROFILES_INCLUDE_0_"
+  - it: rejects externalSecret.data materialising spring.profiles.group.kafka-msk[0]
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: "spring.profiles.group.kafka-msk[0]"
+          property: group
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise spring.profiles.group.kafka-msk\\[0\\]"
+  - it: accepts names that only start like the rejected ones (control)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_CONFIGURATION_NOTE: x
+      config.APP_SPRING_CONFIG_IMPORT: x
       extraEnv:
         - name: APP_SPRING_PROFILES_ACTIVE_LABEL
           value: x
