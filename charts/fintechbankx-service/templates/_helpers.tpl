@@ -84,8 +84,9 @@ substring:
     TLS key before the '?'.
 Checked values: every config value and every extraEnv value that starts with
 jdbc:[<wrapper>:]postgresql: (case-insensitive). extraEnv must not set DB_URL or
-SPRING_DATASOURCE_URL at all (a valueFrom would bypass the check); set them in
-config.
+SPRING_DATASOURCE_URL at all (a valueFrom would bypass the check), and neither
+may externalSecret.data / extraData (secretKey is the env name the Secret
+materialises; a URL from Secrets Manager is never seen here); set them in config.
 */}}
 {{- define "fbx.validateDatabaseTls" -}}
 {{- $root := . -}}
@@ -99,6 +100,16 @@ config.
 {{- end -}}
 {{- if hasKey $env "value" -}}
 {{- include "fbx.validateJdbcUrl" (dict "root" $root "where" (printf "extraEnv.%s" $envName) "url" (toString $env.value)) -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.externalSecret.enabled -}}
+{{- range $field := list "data" "extraData" -}}
+{{- range $entry := (index $root.Values.externalSecret $field | default list) -}}
+{{- $key := toString (default "" $entry.secretKey) -}}
+{{- if has (upper $key) (list "DB_URL" "SPRING_DATASOURCE_URL") -}}
+{{- fail (printf "externalSecret.%s must not materialise %s; set the JDBC URL in config.%s, where sslmode=verify-full is enforced (keep only the credentials in the secret)" $field $key (upper $key)) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -166,7 +177,8 @@ subnets", so:
     other range must be /16 or narrower (an AWS VPC CIDR block is /16 at most,
     so a VPC in public address space still fits);
   - IPv6: no range that overlaps the IPv4-mapped block ::ffff:0:0/96 (inside
-    it, or containing it such as ::/80), which would re-open IPv4 egress;
+    it, or containing it such as ::/80) or the NAT64 prefixes 64:ff9b::/96 and
+    64:ff9b:1::/48, which would re-open IPv4 egress;
   - IPv6 text must parse (one '::' at most, 8 hextets, valid dotted tail).
 Ranges are compared as bit strings: two prefixes overlap when their first
 min(p, q) bits are equal.
@@ -226,6 +238,14 @@ min(p, q) bits are equal.
 {{- $m := min $prefix 96 -}}
 {{- if eq (trunc (int $m) $bits) (trunc (int $m) $mapped) -}}
 {{- fail (printf "%s is IPv4-mapped IPv6 or overlaps ::ffff:0:0/96; list the IPv4 range instead" $where) -}}
+{{- end -}}
+{{- /* NAT64: 64:ff9b::/96 (RFC 6052) and 64:ff9b:1::/48 (RFC 8215) translate to any IPv4 address */ -}}
+{{- $nat64 := "00000000011001001111111110011011" -}}
+{{- range $r := list (list (printf "%s%s" $nat64 (repeat 64 "0")) 96 "64:ff9b::/96") (list (printf "%s%s" $nat64 "0000000000000001") 48 "64:ff9b:1::/48") -}}
+{{- $k := int (min $prefix (index $r 1)) -}}
+{{- if eq (trunc $k $bits) (trunc $k (index $r 0)) -}}
+{{- fail (printf "%s overlaps the NAT64 prefix %s, which reaches any IPv4 address; list the IPv4 range instead" $where (index $r 2)) -}}
+{{- end -}}
 {{- end -}}
 {{- else -}}
 {{- /* IPv4 (shape already checked by values.schema.json) */ -}}

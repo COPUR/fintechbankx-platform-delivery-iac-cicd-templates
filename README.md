@@ -56,7 +56,9 @@ Contract waivers (`contract-checks.yml`, Proposed):
 - Labels can be applied by anyone with triage access, so provider repositories
   should also route the waiver files to the data-contracts owners in
   `CODEOWNERS`, for example `**/*.accepted-breaking.txt @<org>/<data-contracts-owners>`,
-  with required code-owner review on `main`.
+  with required code-owner review on `main`. The label is read when the run
+  starts, so once applied it also covers later waiver edits in the same PR;
+  this is accepted, with the CODEOWNERS review as the stronger control.
 - The default `asyncapi-catalog-ref` (`b0e31ee...`) is a commit that is so far
   only on the AsyncAPI catalog's open PR #10 (the `ASYNCAPI_DIR` support). When
   catalog PR #10 merges, bump the pin in a reviewed PR of this repository to the

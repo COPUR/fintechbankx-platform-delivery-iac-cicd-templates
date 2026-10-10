@@ -357,6 +357,59 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "is not a valid IPv6 CIDR"
+  - it: rejects egress CIDR 64:ff9b::/96 (NAT64 well-known prefix)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "64:ff9b::/96"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "overlaps the NAT64 prefix"
+  - it: rejects egress CIDR 64:ff9b::808:808/128 (NAT64 address inside 64:ff9b::/96)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "64:ff9b::808:808/128"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "overlaps the NAT64 prefix"
+  - it: rejects egress CIDR 64:ff9b::/32 (contains both NAT64 prefixes)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "64:ff9b::/32"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "overlaps the NAT64 prefix"
+  - it: rejects egress CIDR 64:ff9b:1::/48 (NAT64 local-use prefix)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "64:ff9b:1::/48"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "overlaps the NAT64 prefix"
+  - it: rejects egress CIDR 64:ff9b:1:abcd::/64 (inside 64:ff9b:1::/48)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "64:ff9b:1:abcd::/64"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "overlaps the NAT64 prefix"
+  - it: accepts egress CIDR 64:ff9b:2::/48 (next to the NAT64 prefixes)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "64:ff9b:2::/48"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
   - it: accepts egress CIDR 172.16.0.0/12 (RFC1918)
     template: templates/deployment.yaml
     set:

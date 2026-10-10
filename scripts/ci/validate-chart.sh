@@ -71,6 +71,11 @@ must_fail "public IPv4 egress CIDR broader than /16 (11.0.0.0/8)" --set networkP
   --set-string 'networkPolicy.egressCidrs[0].cidr=11.0.0.0/8' --set 'networkPolicy.egressCidrs[0].ports[0]=443'
 must_fail "IPv4-mapped IPv6 egress CIDR (::ffff:0:0/96)" --set networkPolicy.enabled=true \
   --set-string 'networkPolicy.egressCidrs[0].cidr=::ffff:0:0/96' --set 'networkPolicy.egressCidrs[0].ports[0]=443'
+must_fail "NAT64 egress CIDR (64:ff9b::/96)" --set networkPolicy.enabled=true \
+  --set-string 'networkPolicy.egressCidrs[0].cidr=64:ff9b::/96' --set 'networkPolicy.egressCidrs[0].ports[0]=443'
+must_fail "DB_URL materialised from the ExternalSecret" --set-string environment=dev \
+  --set-string 'externalSecret.remoteSecretName=dev/customer-profile-kyc-service/db-app' \
+  --set-string 'externalSecret.data[0].secretKey=DB_URL' --set-string 'externalSecret.data[0].property=jdbc_url'
 must_fail "DB_URL with a second sslmode" \
   --set-string 'config.DB_URL=jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslmode=require'
 must_fail "extraEnv SPRING_DATASOURCE_URL" \

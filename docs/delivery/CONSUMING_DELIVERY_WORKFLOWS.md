@@ -200,4 +200,5 @@ removes duplicated templates; see the chart README for the value mapping.
   IPv4 `/8`-`/32` and IPv6 `/32`-`/128` only, so `0.0.0.0/0`, `::/0` and
   halves such as `0.0.0.0/1` are rejected; the template also rejects public
   IPv4 ranges broader than `/16` outside RFC1918 and `100.64.0.0/10`, and any
-  IPv6 range overlapping the IPv4-mapped block `::ffff:0:0/96`).
+  IPv6 range overlapping the IPv4-mapped block `::ffff:0:0/96` or the NAT64
+  prefixes `64:ff9b::/96` and `64:ff9b:1::/48`).

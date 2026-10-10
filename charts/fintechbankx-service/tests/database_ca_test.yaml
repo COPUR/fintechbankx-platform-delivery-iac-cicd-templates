@@ -189,3 +189,42 @@ tests:
       config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full
     asserts:
       - notFailedTemplate: {}
+  # A JDBC URL materialised from Secrets Manager is never seen by the chart, so
+  # the env names the URL lives in may not come from the ExternalSecret.
+  - it: rejects externalSecret.data materialising DB_URL
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: DB_URL
+          property: jdbc_url
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise DB_URL"
+  - it: rejects externalSecret.extraData materialising SPRING_DATASOURCE_URL
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: SPRING_DATASOURCE_URL
+          remoteSecretName: staging/loan-lifecycle-service/db-url
+          property: url
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise SPRING_DATASOURCE_URL"
+  - it: rejects a lower-case spring_datasource_url secret key too
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring_datasource_url
+          remoteSecretName: staging/loan-lifecycle-service/db-url
+          property: url
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring_datasource_url"
+  - it: keeps the database password from the secret (control)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_DATASOURCE_PASSWORD
+          property: password
+    asserts:
+      - notFailedTemplate: {}
