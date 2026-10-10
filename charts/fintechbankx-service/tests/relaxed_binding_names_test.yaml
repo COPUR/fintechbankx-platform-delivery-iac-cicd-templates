@@ -8,13 +8,15 @@ release:
   name: ci
   namespace: lending
 tests:
-  # Spring Boot's relaxed binding ignores '-' inside a property name element and
-  # reads foo[bar] as foo.bar, so spring.pro-files.active, fintech-bankx.tls.enforce
-  # and spring.kafka.properties[security.protocol] bind like the plain names.
+  # Spring Boot's relaxed binding skips every character other than [a-z0-9]
+  # inside a property name element and reads foo[bar] as foo.bar, so
+  # spring.pro-files.active, fintech-bankx.tls.enforce and
+  # spring.kafka.properties[security.protocol] bind like the plain names.
   # Every name rule is therefore also checked against a canonical form (lower
-  # case, '-' and white space removed, '[', ']' and '_' as '.', repeated dots
-  # collapsed, leading and trailing dots trimmed), and every JVM options rule
-  # against the value with '-' removed and brackets read as '.'.
+  # case, '[', ']' and '_' as '.', every other character outside [a-z0-9.]
+  # removed, repeated dots collapsed, leading and trailing dots trimmed), and
+  # every JVM options rule against the value with every character other than
+  # [a-z0-9] removed.
   - it: rejects config spring.pro-files.active (dash inside an element)
     template: templates/deployment.yaml
     set:
@@ -179,3 +181,36 @@ tests:
             configMapKeyRef: {name: other, key: sampler}
     asserts:
       - notFailedTemplate: {}
+  # Spring Boot also skips every other character outside [a-z0-9] inside an
+  # element (checked against Spring Boot 3.3: the env names
+  # spring.pro:files.active and SPRING_PRO:FILES_ACTIVE activate a profile).
+  # Kubernetes 1.32+ accepts any printable ASCII other than '=' in an env name,
+  # so fbx.canonicalName drops such characters.
+  - it: rejects extraEnv spring.pro:files.active (':' inside an element)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "spring.pro:files.active"
+          value: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.pro:files.active"
+  - it: rejects extraEnv SPRING_CON$FIG_IMPORT from valueFrom ('$' inside an element)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "SPRING_CON$FIG_IMPORT"
+          valueFrom:
+            configMapKeyRef: {name: other, key: import}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_CON\\$FIG_IMPORT"
+  - it: rejects extraEnv fintechbankx.t'ls.enforce (quote inside an element)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "fintechbankx.t'ls.enforce"
+          value: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set fintechbankx.t'ls.enforce"

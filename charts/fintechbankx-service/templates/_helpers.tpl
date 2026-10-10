@@ -172,8 +172,10 @@ the env names the Secret materialises and whose values are never seen here):
     startup TLS assertion off, and only the local profile and test resources
     set it; any other fintechbankx.tls.* key is refused with it.
 Each rule is checked against the name as given and against its relaxed-binding
-canonical form (fbx.canonicalName: '-' inside an element and foo[bar] bind like
-the plain name). The helper prints the reason (non-empty means rejected).
+canonical form (fbx.canonicalName: Spring Boot skips every character other than
+[a-z0-9] inside an element and reads foo[bar] as foo.bar, so spring.pro-files,
+spring.pro:files and spring[profiles] bind like the plain name). The helper
+prints the reason (non-empty means rejected).
 JVM options (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS and the chart's
 javaToolOptions) can set -Dspring.datasource.url=..., -Djavax.net.ssl.*,
 -Dspring.config.*, -Dspring.profiles.*, -Dspring.ssl.bundle.*,
@@ -185,9 +187,13 @@ from a file: a value that mentions datasource, flyway, liquibase, r2dbc, jdbc,
 ssl, application[._-]json, spring[._-]config, spring[._-]profiles,
 fintechbankx[._-]tls, security[._-]protocol, endpoint[._-]identification,
 java[._-]security[._-]properties, jdk[._-]tls or hostname[._-]verification
-(also once '-' is removed and brackets read as '.'), an option that starts
-with '@' (argument file; also after a quote), -XX:VMOptionsFile or -XX:Flags
-(case-insensitive) is rejected, and these names need a literal extraEnv
+(also once every character other than [a-z0-9] is removed, keeping and then
+dropping white space: -Dspring..config.import, -Dspring.[profiles].active,
+-Dspring.pro_files.active, a quoted "-Dspring.pro files.active" and JSON
+nested in -Dspring.application..json bind like the plain names), that
+contains a character outside printable ASCII (Character.toLowerCase reads
+U+0130 as 'i'), an option that starts with '@' (argument file; also after a
+quote), -XX:VMOptionsFile or -XX:Flags (case-insensitive) is rejected, and these names need a literal extraEnv
 value (no valueFrom, not even next to an empty value) and may not come from
 the ExternalSecret.
 This closes the chart-side routes only; a profile or config file baked into
@@ -198,16 +204,19 @@ by fbx.validateKafkaTls.
 */}}
 {{/*
 Canonical form of a property or env name for the name rules: Spring Boot's
-relaxed binding ignores '-' inside a name element and reads foo[bar] as
-foo.bar, so spring.pro-files.active, fintech-bankx.tls.enforce or
-spring.kafka.properties[security.protocol] bind like the plain names. Lower
-case, '-' and white space removed, '[', ']' and '_' read as '.', repeated
-dots collapsed, leading and trailing dots trimmed. Every name rule is checked
-against the name as given and against this form.
+relaxed binding skips every character other than [a-z0-9] inside a name
+element and reads foo[bar] as foo.bar, so spring.pro-files.active,
+spring.pro:files.active (an env name Kubernetes 1.32+ accepts),
+fintech-bankx.tls.enforce or spring.kafka.properties[security.protocol] bind
+like the plain names. Lower case, '[', ']' and '_' read as '.', every other
+character outside [a-z0-9.] removed, repeated dots collapsed, leading and
+trailing dots trimmed. Every name rule is checked against the name as given
+and against this form.
 */}}
 {{- define "fbx.canonicalName" -}}
-{{- $c := regexReplaceAll "[\\s-]+" (lower (toString .)) "" -}}
-{{- $c = regexReplaceAll "[\\[\\]_.]+" $c "." -}}
+{{- $c := regexReplaceAll "[\\[\\]_.]+" (lower (toString .)) "." -}}
+{{- $c = regexReplaceAll "[^a-z0-9.]+" $c "" -}}
+{{- $c = regexReplaceAll "[.]+" $c "." -}}
 {{- trimAll "." $c -}}
 {{- end -}}
 
@@ -266,9 +275,13 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 
 {{- define "fbx.validateJvmOptions" -}}
 {{- $v := toString .value -}}
-{{- $alt := regexReplaceAll "[\\[\\]]" (regexReplaceAll "-" $v "") "." -}}
+{{- if not (regexMatch "^[\\t\\n\\r\\x20-\\x7e]*$" $v) -}}
+{{- fail (printf "%s must contain only printable ASCII (Spring Boot lower-cases a property name with Character.toLowerCase, so a non-ASCII letter such as U+0130 can spell a refused name)" .where) -}}
+{{- end -}}
+{{- $alt := regexReplaceAll "[^a-z0-9\\s]+" (lower $v) "" -}}
+{{- $flat := regexReplaceAll "[^a-z0-9]+" (lower $v) "" -}}
 {{- $rule := "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|security[._-]?protocol|endpoint[._-]?identification|java[._-]?security[._-]?properties|jdk[._-]?tls|hostname[._-]?verification|(^|[\\s\"'])@|-XX:(VMOptionsFile|Flags)" -}}
-{{- if or (regexMatch $rule $v) (regexMatch $rule $alt) -}}
+{{- if or (regexMatch $rule $v) (regexMatch $rule $alt) (regexMatch $rule $flat) -}}
 {{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config, spring.profiles, fintechbankx.tls, security.protocol, endpoint.identification, java.security.properties, jdk.tls or hostname verification, nor read options from a file ('@' argument file, also quoted, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check, the trust store, the Kafka TLS settings or the service's TLS assertion)" .where) -}}
 {{- end -}}
 {{- end -}}

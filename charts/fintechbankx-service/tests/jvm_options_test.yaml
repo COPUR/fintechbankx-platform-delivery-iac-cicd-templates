@@ -109,3 +109,104 @@ tests:
           value: "-Xss512k -Dmail.from=ops@example.invalid"
     asserts:
       - notFailedTemplate: {}
+  # Spring Boot skips every character other than [a-z0-9] inside a system
+  # property name element, ignores empty elements and lower-cases with
+  # Character.toLowerCase (U+0130 'İ' -> 'i'), so each of these binds the
+  # refused property (checked against Spring Boot 3.3). fbx.validateJvmOptions
+  # matches its rule against the value with every character other than
+  # [a-z0-9] removed (once keeping and once dropping white space) and refuses
+  # any character outside printable ASCII.
+  - it: rejects javaToolOptions with -Dspring..config.import (empty element)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring..config.import=optional:file:/tmp/x.yml"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects javaToolOptions with -Dspring.[config].import (dot before a bracket)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.[config].import=optional:file:/tmp/x.yml"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects javaToolOptions with -Dspring..profiles.active
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring..profiles.active=local"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects extraEnv JDK_JAVA_OPTIONS with -Dspring.[profiles].active
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JDK_JAVA_OPTIONS
+          value: "-Dspring.[profiles].active=local"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not mention"
+  - it: rejects config _JAVA_OPTIONS with -Dfintechbankx..tls.enforce
+    template: templates/deployment.yaml
+    set:
+      config:
+        _JAVA_OPTIONS: "-Dfintechbankx..tls.enforce=false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config._JAVA_OPTIONS must not mention"
+  - it: rejects javaToolOptions with -Dspring.application..json carrying nested JSON
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: >-
+        -Dspring.application..json='{"spring":{"profiles":{"active":"local"}},"fintechbankx":{"tls":{"enforce":"false"}}}'
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects javaToolOptions with -Dspring[application][json] carrying nested JSON
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: >-
+        -Dspring[application][json]='{"spring":{"config":{"import":"optional:file:/tmp/x.yml"}}}'
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects javaToolOptions with a non-ASCII capital I (-Dsprİng.profiles.active)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dsprİng.profiles.active=local"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must contain only printable ASCII"
+  - it: rejects javaToolOptions with -Dspring.kafka.security..protocol under kafka.runtime msk
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: msk
+      javaToolOptions: "-Dspring.kafka.security..protocol=PLAINTEXT"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects javaToolOptions with -Dspring.con:fig.import (':' inside an element)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.con:fig.import=optional:file:/tmp/x.yml"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects extraEnv JAVA_TOOL_OPTIONS with -Dspring.pro_files.active ('_' inside an element)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JAVA_TOOL_OPTIONS
+          value: "-Dspring.pro_files.active=local"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JAVA_TOOL_OPTIONS must not mention"
+  - it: rejects extraEnv JDK_JAVA_OPTIONS with a quoted name containing a space
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JDK_JAVA_OPTIONS
+          value: '"-Dspring.pro files.active=local"'
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not mention"

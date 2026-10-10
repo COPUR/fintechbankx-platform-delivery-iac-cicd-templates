@@ -109,6 +109,8 @@ must_fail "extraEnvFrom ConfigMap (keys the guard never sees)" \
   --set-string 'extraEnvFrom[0].configMapRef.name=other'
 must_fail "javaToolOptions reading an argument file" \
   --set-string 'javaToolOptions=@/tmp/jvm.args'
+must_fail "javaToolOptions with -Dspring..config.import (empty element binds like spring.config.import)" \
+  --set-string 'javaToolOptions=-Dspring..config.import=optional:file:/tmp/override.yml'
 must_fail "javaToolOptions with -Djava.security.properties (security properties file)" \
   --set-string 'javaToolOptions=-Djava.security.properties==/tmp/override.security'
 must_fail "config FINTECHBANKX_TLS_ENFORCE (service TLS assertion off switch)" \
