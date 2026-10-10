@@ -1,0 +1,181 @@
+suite: relaxed-binding spellings of rejected names and JVM options
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # Spring Boot's relaxed binding ignores '-' inside a property name element and
+  # reads foo[bar] as foo.bar, so spring.pro-files.active, fintech-bankx.tls.enforce
+  # and spring.kafka.properties[security.protocol] bind like the plain names.
+  # Every name rule is therefore also checked against a canonical form (lower
+  # case, '-' and white space removed, '[', ']' and '_' as '.', repeated dots
+  # collapsed, leading and trailing dots trimmed), and every JVM options rule
+  # against the value with '-' removed and brackets read as '.'.
+  - it: rejects config spring.pro-files.active (dash inside an element)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.pro-files.active: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.pro-files.active is not allowed"
+  - it: rejects extraEnv spring.profiles[active] (bracket form)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "spring.profiles[active]"
+          value: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.profiles\\[active\\]"
+  - it: rejects extraEnv spring[profiles].default (bracket form) from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "spring[profiles].default"
+          valueFrom:
+            configMapKeyRef: {name: other, key: profile}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring\\[profiles\\].default"
+  - it: rejects config fintech-bankx.tls.enforce (dash inside an element)
+    template: templates/deployment.yaml
+    set:
+      config:
+        fintech-bankx.tls.enforce: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.fintech-bankx.tls.enforce is not allowed"
+  - it: rejects extraEnv fintechbankx.tls[enforce] (bracket form)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "fintechbankx.tls[enforce]"
+          value: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set fintechbankx.tls\\[enforce\\]"
+  - it: rejects externalSecret.data materialising fintech-bankx.tls.enforce
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: fintech-bankx.tls.enforce
+          property: enforce
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise fintech-bankx.tls.enforce"
+  - it: rejects config spring.data-source.url (dash inside an element)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.data-source.url: jdbc:h2:mem:x
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.data-source.url is not allowed"
+  - it: rejects extraEnv spring.datasource[url] (bracket form)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "spring.datasource[url]"
+          value: jdbc:h2:mem:x
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.datasource\\[url\\]"
+  - it: rejects extraEnv "SPRING_CONFIG_IMPORT " (trailing space)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "SPRING_CONFIG_IMPORT "
+          value: optional:file:/tmp/x.yml
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_CONFIG_IMPORT"
+  - it: rejects extraEnv spring.kafka.properties[security.protocol] PLAINTEXT (bracket form)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "spring.kafka.properties[security.protocol]"
+          value: PLAINTEXT
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.spring.kafka.properties\\[security.protocol\\] must be SASL_SSL or SSL"
+  - it: rejects config spring.kafka.secu-rity.protocol PLAINTEXT (dash inside an element)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.secu-rity.protocol: PLAINTEXT
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.secu-rity.protocol must be SASL_SSL or SSL"
+  - it: rejects config ssl.endpoint.identi-fication.algorithm empty (dash inside an element)
+    template: templates/deployment.yaml
+    set:
+      config:
+        ssl.endpoint.identi-fication.algorithm: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.ssl.endpoint.identi-fication.algorithm must be https"
+  - it: rejects externalSecret.extraData materialising spring.kafka.properties[security.protocol]
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: "spring.kafka.properties[security.protocol]"
+          remoteSecretName: staging/loan-lifecycle-service/kafka
+          property: protocol
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring.kafka.properties\\[security.protocol\\]"
+  # JVM options.
+  - it: rejects javaToolOptions with -Dspring.pro-files.active=local
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.pro-files.active=local"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects config JDK_JAVA_OPTIONS with -Dfintech-bankx.tls.enforce=false
+    template: templates/deployment.yaml
+    set:
+      config.JDK_JAVA_OPTIONS: "-Dfintech-bankx.tls.enforce=false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.JDK_JAVA_OPTIONS must not mention"
+  - it: rejects extraEnv _JAVA_OPTIONS with -Dspring.kafka.secu-rity.protocol=PLAINTEXT
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _JAVA_OPTIONS
+          value: "-Dspring.kafka.secu-rity.protocol=PLAINTEXT"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv._JAVA_OPTIONS must not mention"
+  - it: rejects extraEnv JAVA_TOOL_OPTIONS with an empty value next to valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JAVA_TOOL_OPTIONS
+          value: ""
+          valueFrom:
+            configMapKeyRef: {name: other, key: opts}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv JAVA_TOOL_OPTIONS must set a literal value"
+  - it: accepts plain names and options with dashes and brackets (control)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError -Dlogging.level.root=INFO"
+      config:
+        app.feature-flags.new-ui: "true"
+        CUSTOMER_SERVICE_BASE_URL: http://customer-profile-kyc-service.customer.svc.cluster.local:8080
+      extraEnv:
+        - name: SPRING_DATASOURCE_USERNAME
+          value: loan_lifecycle_app
+        - name: OTEL_TRACES_SAMPLER
+          valueFrom:
+            configMapKeyRef: {name: other, key: sampler}
+    asserts:
+      - notFailedTemplate: {}

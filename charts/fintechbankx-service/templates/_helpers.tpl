@@ -111,28 +111,55 @@ the env names the Secret materialises and whose values are never seen here):
     (FINTECHBANKX_TLS_ENFORCE) is the only switch that turns the service's
     startup TLS assertion off, and only the local profile and test resources
     set it; any other fintechbankx.tls.* key is refused with it.
-The helper prints the reason (non-empty means rejected).
+Each rule is checked against the name as given and against its relaxed-binding
+canonical form (fbx.canonicalName: '-' inside an element and foo[bar] bind like
+the plain name). The helper prints the reason (non-empty means rejected).
 JVM options (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS and the chart's
 javaToolOptions) can set -Dspring.datasource.url=..., -Djavax.net.ssl.*,
 -Dspring.config.*, -Dspring.profiles.*, -Dfintechbankx.tls.* or
 -Dspring.kafka.security.protocol, or read more options from a file: a value
 that mentions datasource, flyway, liquibase, r2dbc, jdbc, ssl,
 application[._-]json, spring[._-]config, spring[._-]profiles,
-fintechbankx[._-]tls, security[._-]protocol or endpoint[._-]identification,
-an option that
-starts with '@' (argument file), -XX:VMOptionsFile or -XX:Flags
-(case-insensitive) is rejected, and these names may not come from extraEnv
-valueFrom or the ExternalSecret.
+fintechbankx[._-]tls, security[._-]protocol or endpoint[._-]identification
+(also once '-' is removed and brackets read as '.'), an option that starts
+with '@' (argument file), -XX:VMOptionsFile or -XX:Flags (case-insensitive)
+is rejected, and these names need a literal extraEnv value (no valueFrom, not
+even next to an empty value) and may not come from the ExternalSecret.
 This closes the chart-side routes only; a profile or config file baked into
 the image, and TLS on routes the chart does not see (a Kafka client or a
 datasource built in code), are the service's own startup check (README,
 "Service-side TLS assertion"). Kafka settings the chart does see are checked
 by fbx.validateKafkaTls.
 */}}
+{{/*
+Canonical form of a property or env name for the name rules: Spring Boot's
+relaxed binding ignores '-' inside a name element and reads foo[bar] as
+foo.bar, so spring.pro-files.active, fintech-bankx.tls.enforce or
+spring.kafka.properties[security.protocol] bind like the plain names. Lower
+case, '-' and white space removed, '[', ']' and '_' read as '.', repeated
+dots collapsed, leading and trailing dots trimmed. Every name rule is checked
+against the name as given and against this form.
+*/}}
+{{- define "fbx.canonicalName" -}}
+{{- $c := regexReplaceAll "[\\s-]+" (lower (toString .)) "" -}}
+{{- $c = regexReplaceAll "[\\[\\]_.]+" $c "." -}}
+{{- trimAll "." $c -}}
+{{- end -}}
+
 {{- define "fbx.datasourceOverrideName" -}}
 {{- $n := toString . -}}
-{{- if regexMatch "(?i)^SPRING_DATASOURCE_(USERNAME|PASSWORD)$" $n -}}
-{{- else if regexMatch "(?i)^spring[._-]?(datasource|flyway|liquibase|r2dbc)[._-]|^spring[._-]?application[._-]?json$|jdbc[._-]?url|sslfactory|sslhostnameverifier" $n -}}
+{{- if not (regexMatch "(?i)^SPRING_DATASOURCE_(USERNAME|PASSWORD)$" $n) -}}
+{{- $reason := include "fbx.overrideNameReason" $n -}}
+{{- if not $reason -}}
+{{- $reason = include "fbx.overrideNameReason" (include "fbx.canonicalName" $n) -}}
+{{- end -}}
+{{- $reason -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "fbx.overrideNameReason" -}}
+{{- $n := toString . -}}
+{{- if regexMatch "(?i)^spring[._-]?(datasource|flyway|liquibase|r2dbc)[._-]|^spring[._-]?application[._-]?json$|jdbc[._-]?url|sslfactory|sslhostnameverifier" $n -}}
 it can redirect or override the datasource past the sslmode=verify-full check; set the JDBC URL in config.DB_URL
 {{- else if regexMatch "(?i)^spring[._-]?config[._-]?(import|location|additional[._-]?location|name)$" $n -}}
 a config import, location or name can load a file or config tree that overrides the datasource past the sslmode=verify-full check; the chart renders no config import
@@ -164,7 +191,10 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- end -}}
 
 {{- define "fbx.validateJvmOptions" -}}
-{{- if regexMatch "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|security[._-]?protocol|endpoint[._-]?identification|(^|\\s)@|-XX:(VMOptionsFile|Flags)" (toString .value) -}}
+{{- $v := toString .value -}}
+{{- $alt := regexReplaceAll "[\\[\\]]" (regexReplaceAll "-" $v "") "." -}}
+{{- $rule := "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|security[._-]?protocol|endpoint[._-]?identification|(^|\\s)@|-XX:(VMOptionsFile|Flags)" -}}
+{{- if or (regexMatch $rule $v) (regexMatch $rule $alt) -}}
 {{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config, spring.profiles, fintechbankx.tls, security.protocol or endpoint.identification, nor read options from a file ('@' argument file, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check, the Kafka TLS settings or the service's TLS assertion)" .where) -}}
 {{- end -}}
 {{- end -}}
@@ -190,7 +220,7 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- fail (printf "extraEnv must not set %s (value or valueFrom): %s" $envName .) -}}
 {{- end -}}
 {{- if include "fbx.isJvmOptionsName" $envName -}}
-{{- if not (hasKey $env "value") -}}
+{{- if or (not (hasKey $env "value")) (hasKey $env "valueFrom") -}}
 {{- fail (printf "extraEnv %s must set a literal value (valueFrom cannot be checked)" $envName) -}}
 {{- end -}}
 {{- include "fbx.validateJvmOptions" (dict "where" (printf "extraEnv.%s" $envName) "value" $env.value) -}}
@@ -233,8 +263,9 @@ check covers clients built in code; README "Service-side TLS assertion"):
 */}}
 {{- define "fbx.kafkaTlsName" -}}
 {{- $n := toString . -}}
-{{- if regexMatch "(?i)(^|[._-])security[._-]?protocol$" $n -}}protocol
-{{- else if regexMatch "(?i)endpoint[._-]?identification[._-]?algorithm" $n -}}endpoint
+{{- $c := include "fbx.canonicalName" $n -}}
+{{- if or (regexMatch "(?i)(^|[._-])security[._-]?protocol$" $n) (regexMatch "(^|\\.)security\\.?protocol$" $c) -}}protocol
+{{- else if or (regexMatch "(?i)endpoint[._-]?identification[._-]?algorithm" $n) (regexMatch "endpoint\\.?identification\\.?algorithm" $c) -}}endpoint
 {{- end -}}
 {{- end -}}
 
