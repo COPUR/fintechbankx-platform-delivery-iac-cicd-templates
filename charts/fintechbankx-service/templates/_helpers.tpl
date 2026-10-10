@@ -111,6 +111,11 @@ the env names the Secret materialises and whose values are never seen here):
     can expand kafka-msk into local. The chart renders the only
     SPRING_PROFILES_ACTIVE (fbx.kafkaProfile, from kafka.runtime), so no
     user-set profile name is allowed;
+  - (?i)^spring[._-]?ssl([._-]|$) and any name containing ssl[._-]?bundle:
+    spring.ssl.bundle.pem.* / jks.* (SPRING_SSL_BUNDLE_*) can replace the
+    trust anchor of a DocumentDB, PostgreSQL or Kafka client, and
+    spring.data.mongodb.ssl.bundle, spring.kafka.ssl.bundle, ... can point a
+    client at another bundle;
   - (?i)^fintechbankx[._-]?tls([._-]|$): fintechbankx.tls.enforce
     (FINTECHBANKX_TLS_ENFORCE) is the only switch that turns the service's
     startup TLS assertion off, and only the local profile and test resources
@@ -169,6 +174,8 @@ it can redirect or override the datasource past the sslmode=verify-full check; s
 a spring.config.* property (import, location, additional-location, name, activate.*, indexed forms) can load or activate a file or config tree that overrides the datasource past the sslmode=verify-full check; the chart renders no config import
 {{- else if regexMatch "(?i)^spring[._-]?profiles([._-]|$)" $n -}}
 a profile can activate an application-<profile> config in the image (e.g. local) whose datasource and TLS settings the chart cannot check; the chart renders the only profile, from kafka.runtime
+{{- else if regexMatch "(?i)^spring[._-]?ssl([._-]|$)|ssl[._-]?bundle" $n -}}
+an SSL bundle property can replace the trust anchor of the service's DocumentDB, PostgreSQL or Kafka client, or point the client at another bundle
 {{- else if regexMatch "(?i)^fintechbankx[._-]?tls([._-]|$)" $n -}}
 it can switch off the service's startup TLS assertion (fintechbankx.tls.enforce is for the local profile and tests only)
 {{- end -}}

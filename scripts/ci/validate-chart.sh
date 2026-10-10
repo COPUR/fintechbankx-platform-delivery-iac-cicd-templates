@@ -93,6 +93,8 @@ must_fail "config spring.config.activate.on-profile (every spring.config.* name)
   --set-string 'config.spring\.config\.activate\.on-profile=local'
 must_fail "extraEnv SPRING_CONFIG_IMPORT_0_ (indexed spring.config.import)" \
   --set 'extraEnv[0].name=SPRING_CONFIG_IMPORT_0_' --set-string 'extraEnv[0].value=optional:file:/tmp/override.yml'
+must_fail "config SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE (trust anchor override)" \
+  --set-string 'config.SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE=file:/tmp/any-ca.pem'
 must_fail "javaToolOptions reading an argument file" \
   --set-string 'javaToolOptions=@/tmp/jvm.args'
 must_fail "config FINTECHBANKX_TLS_ENFORCE (service TLS assertion off switch)" \
