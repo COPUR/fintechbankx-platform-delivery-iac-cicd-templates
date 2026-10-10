@@ -117,8 +117,9 @@ config: {}
 # non-empty config.DB_URL must be a jdbc:[<wrapper>:]postgresql: URL; JVM options (javaToolOptions, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS,
 # _JAVA_OPTIONS) must not mention datasource, flyway, liquibase, r2dbc, jdbc,
 # ssl, application.json, spring.config, spring.profiles, fintechbankx.tls,
-# security.protocol or endpoint.identification, nor read an options file ('@'
-# argument file, -XX:VMOptionsFile, -XX:Flags) (fbx.validateDatabaseTls;
+# security.protocol, endpoint.identification, java.security.properties,
+# jdk.tls or hostname verification, nor read an options file ('@' argument
+# file, also quoted, -XX:VMOptionsFile, -XX:Flags) (fbx.validateDatabaseTls;
 # rendering fails otherwise).
 databaseCa:
   enabled: true

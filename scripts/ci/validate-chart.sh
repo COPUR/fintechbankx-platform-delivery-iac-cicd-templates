@@ -105,6 +105,8 @@ must_fail "config PGJDBC_SSL_FACTORY (sslfactory with a separator)" \
   --set-string 'config.PGJDBC_SSL_FACTORY=org.postgresql.ssl.NonValidatingFactory'
 must_fail "javaToolOptions reading an argument file" \
   --set-string 'javaToolOptions=@/tmp/jvm.args'
+must_fail "javaToolOptions with -Djava.security.properties (security properties file)" \
+  --set-string 'javaToolOptions=-Djava.security.properties==/tmp/override.security'
 must_fail "config FINTECHBANKX_TLS_ENFORCE (service TLS assertion off switch)" \
   --set-string 'config.FINTECHBANKX_TLS_ENFORCE=false'
 must_fail "config SPRING_PROFILES_DEFAULT=local (every spring.profiles.* name)" \

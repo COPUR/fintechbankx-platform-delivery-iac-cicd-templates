@@ -138,14 +138,18 @@ canonical form (fbx.canonicalName: '-' inside an element and foo[bar] bind like
 the plain name). The helper prints the reason (non-empty means rejected).
 JVM options (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS and the chart's
 javaToolOptions) can set -Dspring.datasource.url=..., -Djavax.net.ssl.*,
--Dspring.config.*, -Dspring.profiles.*, -Dfintechbankx.tls.* or
--Dspring.kafka.security.protocol, or read more options from a file: a value
-that mentions datasource, flyway, liquibase, r2dbc, jdbc, ssl,
-application[._-]json, spring[._-]config, spring[._-]profiles,
-fintechbankx[._-]tls, security[._-]protocol or endpoint[._-]identification
+-Dspring.config.*, -Dspring.profiles.*, -Dspring.ssl.bundle.*,
+-Dfintechbankx.tls.*, -Dspring.kafka.security.protocol,
+-Djava.security.properties (a security properties file can replace the trust
+manager algorithm or keystore type), -Djdk.tls.* or
+-Djdk.internal.httpclient.disableHostnameVerification, or read more options
+from a file: a value that mentions datasource, flyway, liquibase, r2dbc, jdbc,
+ssl, application[._-]json, spring[._-]config, spring[._-]profiles,
+fintechbankx[._-]tls, security[._-]protocol, endpoint[._-]identification,
+java[._-]security[._-]properties, jdk[._-]tls or hostname[._-]verification
 (also once '-' is removed and brackets read as '.'), an option that starts
-with '@' (argument file), -XX:VMOptionsFile or -XX:Flags (case-insensitive)
-is rejected, and these names need a literal extraEnv value (no valueFrom, not
+with '@' (argument file; also after a quote), -XX:VMOptionsFile or -XX:Flags
+(case-insensitive) is rejected, and these names need a literal extraEnv value (no valueFrom, not
 even next to an empty value) and may not come from the ExternalSecret.
 This closes the chart-side routes only; a profile or config file baked into
 the image, and TLS on routes the chart does not see (a Kafka client or a
@@ -224,9 +228,9 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- define "fbx.validateJvmOptions" -}}
 {{- $v := toString .value -}}
 {{- $alt := regexReplaceAll "[\\[\\]]" (regexReplaceAll "-" $v "") "." -}}
-{{- $rule := "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|security[._-]?protocol|endpoint[._-]?identification|(^|\\s)@|-XX:(VMOptionsFile|Flags)" -}}
+{{- $rule := "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|security[._-]?protocol|endpoint[._-]?identification|java[._-]?security[._-]?properties|jdk[._-]?tls|hostname[._-]?verification|(^|[\\s\"'])@|-XX:(VMOptionsFile|Flags)" -}}
 {{- if or (regexMatch $rule $v) (regexMatch $rule $alt) -}}
-{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config, spring.profiles, fintechbankx.tls, security.protocol or endpoint.identification, nor read options from a file ('@' argument file, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check, the Kafka TLS settings or the service's TLS assertion)" .where) -}}
+{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config, spring.profiles, fintechbankx.tls, security.protocol, endpoint.identification, java.security.properties, jdk.tls or hostname verification, nor read options from a file ('@' argument file, also quoted, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check, the trust store, the Kafka TLS settings or the service's TLS assertion)" .where) -}}
 {{- end -}}
 {{- end -}}
 

@@ -1,0 +1,111 @@
+suite: JVM option routes (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS, javaToolOptions)
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # The JVM reads JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS and _JAVA_OPTIONS itself
+  # (fbx.isJvmOptionsName); the chart renders javaToolOptions as
+  # JAVA_TOOL_OPTIONS. JAVA_OPTS reaches no JVM in the template image (exec-form
+  # ENTRYPOINT, no launcher; scripts/ci/test/microservice-launcher.test.mjs).
+  # fbx.validateJvmOptions refuses a value that mentions any refused name
+  # (other suites cover datasource, spring.config, spring.profiles,
+  # fintechbankx.tls, application.json, ssl, security.protocol,
+  # endpoint.identification) or reads options or security properties from a
+  # file, and the names need a literal extraEnv value and may not come from
+  # the ExternalSecret.
+  - it: rejects JDK_JAVA_OPTIONS with a quoted '@' argument file
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JDK_JAVA_OPTIONS
+          value: '-Xss512k "@/tmp/jvm.args"'
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not mention"
+  - it: rejects javaToolOptions with a single-quoted '@' argument file
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "'@/tmp/jvm.args'"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects javaToolOptions with -Djava.security.properties (security properties file)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Djava.security.properties==/tmp/override.security"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects config JDK_JAVA_OPTIONS with -Djdk.tls.client.protocols
+    template: templates/deployment.yaml
+    set:
+      config.JDK_JAVA_OPTIONS: "-Djdk.tls.client.protocols=TLSv1"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.JDK_JAVA_OPTIONS must not mention"
+  - it: rejects extraEnv _JAVA_OPTIONS with -Djdk.internal.httpclient.disableHostnameVerification
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _JAVA_OPTIONS
+          value: "-Djdk.internal.httpclient.disableHostnameVerification=true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv._JAVA_OPTIONS must not mention"
+  - it: rejects javaToolOptions with -DSPRING_CONFIG_IMPORT_0_ (env spelling as a system property)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-DSPRING_CONFIG_IMPORT_0_=optional:file:/tmp/x.yml"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects javaToolOptions with -Dspring.ssl.bundle (ssl mention)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.ssl.bundle.pem.x.truststore.certificate=file:/tmp/ca.pem"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects extraEnv JAVA_TOOL_OPTIONS with -Dspring.application.j-s-o-n
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JAVA_TOOL_OPTIONS
+          value: '-Dspring.application.j-s-o-n={"fintechbankx.tls.enforce":false}'
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JAVA_TOOL_OPTIONS must not mention"
+  - it: rejects externalSecret.extraData materialising _JAVA_OPTIONS
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: _JAVA_OPTIONS
+          remoteSecretName: staging/loan-lifecycle-service/jvm
+          property: opts
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise _JAVA_OPTIONS"
+  - it: rejects extraEnv _JAVA_OPTIONS from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _JAVA_OPTIONS
+          valueFrom:
+            secretKeyRef: {name: other, key: opts}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv _JAVA_OPTIONS must set a literal value"
+  - it: accepts common JVM options (control)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError -Djava.security.egd=file:/dev/./urandom -Dfile.encoding=UTF-8"
+      extraEnv:
+        - name: JDK_JAVA_OPTIONS
+          value: "-Xss512k -Dmail.from=ops@example.invalid"
+    asserts:
+      - notFailedTemplate: {}
