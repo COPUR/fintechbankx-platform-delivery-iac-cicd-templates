@@ -74,12 +74,17 @@ failure stops the whole render). It reads only .Values, so a service chart
 with other value names vendors this file unchanged and passes an adapter dict
 (README "Vendoring the guard"):
   include "fbx.guard" (dict "Values" (dict "config" <map> "extraEnv" <list>
+    "envFrom" <list> "extraEnvFrom" <list>
     "javaToolOptions" <string> "databaseCa" <dict enabled/mountPath/key>
     "kafka" (dict "runtime" <""|msk|strimzi>)
-    "externalSecret" (dict "enabled" <bool> "data" <list> "extraData" <list>)))
+    "externalSecret" (dict "enabled" <bool> "data" <list> "extraData" <list>
+      "dataFrom" <list>)))
 Every key is optional except that a databaseCa with enabled: true needs
-mountPath and key. It runs fbx.validateEnvSources, fbx.validateDatabaseTls
-and fbx.validateKafkaTls.
+mountPath and key. A key left out is never checked, so every value of the
+chart that feeds one of these routes must be mapped, including any
+envFrom-like list and an ExternalSecret dataFrom (the guard refuses them
+when non-empty). It runs fbx.validateEnvSources, fbx.validateDatabaseTls,
+fbx.validateKafkaTls and fbx.validateKeyNames.
 */}}
 {{- define "fbx.guard" -}}
 {{- include "fbx.validateEnvSources" . -}}

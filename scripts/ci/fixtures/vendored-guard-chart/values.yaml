@@ -3,6 +3,7 @@ env:
   DB_URL: jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
   KAFKA_SECURITY_PROTOCOL: SASL_SSL
 additionalEnv: []
+additionalEnvFrom: []
 jvmOptions: "-XX:MaxRAMPercentage=75"
 kafkaRuntime: msk
 databaseCaBundle:
@@ -14,3 +15,4 @@ secrets:
   keys:
     - secretKey: SPRING_DATASOURCE_PASSWORD
       property: password
+  dataFrom: []
