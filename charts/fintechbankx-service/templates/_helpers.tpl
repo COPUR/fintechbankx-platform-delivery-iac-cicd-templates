@@ -76,26 +76,30 @@ substring:
   - exactly one sslmode, equal to verify-full;
   - with databaseCa.enabled, exactly one sslrootcert, equal to
     <databaseCa.mountPath>/<databaseCa.key> (at most one otherwise);
-  - no sslfactory / sslfactoryarg (NonValidatingFactory), sslhostnameverifier
-    or service (pg_service.conf can override the TLS settings);
+  - no sslfactory / sslfactoryarg (NonValidatingFactory), sslhostnameverifier,
+    sslpasswordcallback or service (pg_service.conf can override the TLS settings);
   - parameter names are plain [A-Za-z0-9_.-] (no percent-encoding), no
     percent-encoded '=' or '&' anywhere in the query, TLS keys in lower case
     (the driver ignores SSLMODE and would fall back to sslmode=prefer), and no
     TLS key before the '?'.
 Checked values: every config value and every extraEnv value that starts with
 jdbc:[<wrapper>:]postgresql: (case-insensitive). extraEnv must not set DB_URL or
-SPRING_DATASOURCE_URL at all (a valueFrom would bypass the check), and neither
-may externalSecret.data / extraData (secretKey is the env name the Secret
+SPRING_DATASOURCE_*URL, SPRING_FLYWAY_URL or SPRING_APPLICATION_JSON (any case;
+a valueFrom would bypass the check), config may not carry the latter three, and
+neither may externalSecret.data / extraData (secretKey is the env name the Secret
 materialises; a URL from Secrets Manager is never seen here); set them in config.
 */}}
 {{- define "fbx.validateDatabaseTls" -}}
 {{- $root := . -}}
 {{- range $name, $value := .Values.config -}}
+{{- if regexMatch "(?i)^(SPRING_DATASOURCE_.*URL|SPRING_FLYWAY_URL|SPRING_APPLICATION_JSON)$" (toString $name) -}}
+{{- fail (printf "config.%s is not allowed: it can redirect or override the datasource past the sslmode=verify-full check; set the JDBC URL in config.DB_URL" $name) -}}
+{{- end -}}
 {{- include "fbx.validateJdbcUrl" (dict "root" $root "where" (printf "config.%s" $name) "url" (toString $value)) -}}
 {{- end -}}
 {{- range $env := .Values.extraEnv -}}
 {{- $envName := toString (default "" $env.name) -}}
-{{- if has (upper $envName) (list "DB_URL" "SPRING_DATASOURCE_URL") -}}
+{{- if or (eq (upper $envName) "DB_URL") (regexMatch "(?i)^(SPRING_DATASOURCE_.*URL|SPRING_FLYWAY_URL|SPRING_APPLICATION_JSON)$" $envName) -}}
 {{- fail (printf "extraEnv must not set %s; set the JDBC URL in config.%s, where sslmode=verify-full is enforced" $envName (upper $envName)) -}}
 {{- end -}}
 {{- if hasKey $env "value" -}}
@@ -106,7 +110,7 @@ materialises; a URL from Secrets Manager is never seen here); set them in config
 {{- range $field := list "data" "extraData" -}}
 {{- range $entry := (index $root.Values.externalSecret $field | default list) -}}
 {{- $key := toString (default "" $entry.secretKey) -}}
-{{- if has (upper $key) (list "DB_URL" "SPRING_DATASOURCE_URL") -}}
+{{- if or (eq (upper $key) "DB_URL") (regexMatch "(?i)^(SPRING_DATASOURCE_.*URL|SPRING_FLYWAY_URL|SPRING_APPLICATION_JSON)$" $key) -}}
 {{- fail (printf "externalSecret.%s must not materialise %s; set the JDBC URL in config.%s, where sslmode=verify-full is enforced (keep only the credentials in the secret)" $field $key (upper $key)) -}}
 {{- end -}}
 {{- end -}}
@@ -142,7 +146,7 @@ materialises; a URL from Secrets Manager is never seen here); set them in config
 {{- fail (printf "%s has a query parameter name that is not plain [A-Za-z0-9_.-] (percent-encoding is not allowed): %q" $where $key) -}}
 {{- end -}}
 {{- $lk := lower $key -}}
-{{- if has $lk (list "sslfactory" "sslfactoryarg" "sslhostnameverifier" "service") -}}
+{{- if has $lk (list "sslfactory" "sslfactoryarg" "sslhostnameverifier" "sslpasswordcallback" "service") -}}
 {{- fail (printf "%s must not set %s (it can bypass certificate or host name verification)" $where $lk) -}}
 {{- end -}}
 {{- if and (has $lk (list "sslmode" "sslrootcert")) (ne $key $lk) -}}

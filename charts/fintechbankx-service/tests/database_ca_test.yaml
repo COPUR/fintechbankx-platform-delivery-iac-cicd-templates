@@ -135,13 +135,13 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "config.DB_URL must carry TLS parameters only in the query string"
-  - it: rejects a config SPRING_DATASOURCE_URL that does not verify the certificate
+  - it: rejects a config SPRING_DATASOURCE_URL (DB_URL is the one allowed place)
     template: templates/deployment.yaml
     set:
       config.SPRING_DATASOURCE_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=require
     asserts:
       - failedTemplate:
-          errorPattern: "config.SPRING_DATASOURCE_URL must use sslmode=verify-full"
+          errorPattern: "config.SPRING_DATASOURCE_URL is not allowed"
   - it: rejects extraEnv DB_URL (the URL belongs in config, where it is checked)
     template: templates/deployment.yaml
     set:
@@ -160,15 +160,15 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv must not set SPRING_DATASOURCE_URL"
-  - it: checks every extraEnv jdbc:postgresql value (SPRING_DATASOURCE_HIKARI_JDBC_URL)
+  - it: checks every extraEnv jdbc:postgresql value under another name
     template: templates/deployment.yaml
     set:
       extraEnv:
-        - name: SPRING_DATASOURCE_HIKARI_JDBC_URL
+        - name: REPORTING_DB_JDBC
           value: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=require
     asserts:
       - failedTemplate:
-          errorPattern: "extraEnv.SPRING_DATASOURCE_HIKARI_JDBC_URL must use sslmode=verify-full"
+          errorPattern: "extraEnv.REPORTING_DB_JDBC must use sslmode=verify-full"
   - it: checks wrapped drivers too (jdbc:aws-wrapper:postgresql)
     template: templates/deployment.yaml
     set:
@@ -228,3 +228,86 @@ tests:
           property: password
     asserts:
       - notFailedTemplate: {}
+  - it: rejects sslpasswordcallback (loads an arbitrary class in the driver)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslpasswordcallback=com.example.Callback
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must not set sslpasswordcallback"
+  - it: rejects extraEnv SPRING_DATASOURCE_HIKARI_JDBC_URL by name (SPRING_DATASOURCE_*URL)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: Spring_Datasource_Hikari_Jdbc_Url
+          value: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set Spring_Datasource_Hikari_Jdbc_Url"
+  - it: rejects extraEnv SPRING_FLYWAY_URL
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_FLYWAY_URL
+          value: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_FLYWAY_URL"
+  - it: rejects extraEnv SPRING_APPLICATION_JSON
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring_application_json
+          value: '{"spring.datasource.url":"x"}'
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring_application_json"
+  - it: rejects config SPRING_FLYWAY_URL
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_FLYWAY_URL: jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_FLYWAY_URL is not allowed"
+  - it: rejects config SPRING_APPLICATION_JSON
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_APPLICATION_JSON: '{"spring.datasource.url":"x"}'
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_APPLICATION_JSON is not allowed"
+  - it: rejects config SPRING_DATASOURCE_HIKARI_JDBC_URL
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_DATASOURCE_HIKARI_JDBC_URL: x
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_DATASOURCE_HIKARI_JDBC_URL is not allowed"
+  - it: rejects externalSecret SPRING_DATASOURCE_HIKARI_JDBC_URL (SPRING_DATASOURCE_*URL, any case)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: Spring_Datasource_Hikari_Jdbc_Url
+          remoteSecretName: staging/loan-lifecycle-service/db-url
+          property: url
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise Spring_Datasource_Hikari_Jdbc_Url"
+  - it: rejects externalSecret SPRING_FLYWAY_URL
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_FLYWAY_URL
+          property: url
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_FLYWAY_URL"
+  - it: rejects externalSecret SPRING_APPLICATION_JSON
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_APPLICATION_JSON
+          property: json
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_APPLICATION_JSON"
