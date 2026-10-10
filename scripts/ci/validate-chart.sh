@@ -111,6 +111,12 @@ must_fail "javaToolOptions reading an argument file" \
   --set-string 'javaToolOptions=@/tmp/jvm.args'
 must_fail "javaToolOptions with -Dspring..config.import (empty element binds like spring.config.import)" \
   --set-string 'javaToolOptions=-Dspring..config.import=optional:file:/tmp/override.yml'
+must_fail "extraEnv JDK_JAVA_OPTIONS reading another variable through \$(VAR)" \
+  --set 'extraEnv[0].name=FBX_Y' --set-string 'extraEnv[0].valueFrom.secretKeyRef.name=other' \
+  --set-string 'extraEnv[0].valueFrom.secretKeyRef.key=flags' \
+  --set 'extraEnv[1].name=JDK_JAVA_OPTIONS' --set-string 'extraEnv[1].value=$(FBX_Y)'
+must_fail "config.DB_URL with a Spring placeholder (\${...} can append sslmode=disable)" \
+  --set-string 'config.DB_URL=jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&x=${FBX_TAIL}'
 must_fail "javaToolOptions with -Djava.security.properties (security properties file)" \
   --set-string 'javaToolOptions=-Djava.security.properties==/tmp/override.security'
 must_fail "config FINTECHBANKX_TLS_ENFORCE (service TLS assertion off switch)" \
@@ -167,6 +173,7 @@ secrets:
       property: url
 VALUES
 vendored_must_fail "secret key with a newline (injects SPRING_DATASOURCE_URL)" -f "$work/vg-secret-key-newline.yaml"
+vendored_must_fail "jvmOptions reading a variable through \$(VAR)" --set-string 'jvmOptions=-XX:MaxRAMPercentage=75 $(FBX_X)'
 vendored_must_fail "jvmOptions with -Dspring.profiles.active" --set-string 'jvmOptions=-Dspring.profiles.active=local'
 vendored_must_fail "KAFKA_SECURITY_PROTOCOL PLAINTEXT" --set-string 'env.KAFKA_SECURITY_PROTOCOL=PLAINTEXT'
 

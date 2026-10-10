@@ -167,9 +167,15 @@ substring:
   - parameter names are plain [A-Za-z0-9_.-] (no percent-encoding), no
     percent-encoded '=' or '&' anywhere in the query, TLS keys in lower case
     (the driver ignores SSLMODE and would fall back to sslmode=prefer), and no
-    TLS key before the '?'.
+    TLS key before the '?';
+  - no '${' or '$(' anywhere (Spring resolves a ${...} placeholder and
+    Kubernetes a $(VAR) reference after this check; either could append
+    &sslmode=disable).
 Checked values: every config value and every extraEnv value that starts with
-jdbc:[<wrapper>:]postgresql: (case-insensitive).
+jdbc:[<wrapper>:]postgresql: (case-insensitive). Every extraEnv value is also
+refused when it contains '$(': Kubernetes expands $(VAR) in env[].value from
+earlier env entries and envFrom keys, so the pod would get text the guard
+never saw (valueFrom.fieldRef replaces the usual $(POD_IP)-style use).
 
 Names (fbx.datasourceOverrideName; config keys, extraEnv names whether they use
 value or valueFrom, and externalSecret.data / extraData secretKeys, which are
@@ -240,8 +246,10 @@ dropping white space: -Dspring..config.import, -Dspring.[profiles].active,
 -Dspring.pro_files.active, a quoted "-Dspring.pro files.active" and JSON
 nested in -Dspring.application..json bind like the plain names), that
 contains a character outside printable ASCII (Character.toLowerCase reads
-U+0130 as 'i'), an option that starts with '@' (argument file; also after a
-quote), -XX:VMOptionsFile or -XX:Flags (case-insensitive) is rejected, and these names need a literal extraEnv
+U+0130 as 'i'), that contains '$(' or '${' (the options would be assembled
+from a config key, a secret or other literals after this check), an option
+that starts with '@' (argument file; also after a quote), -XX:VMOptionsFile
+or -XX:Flags (case-insensitive) is rejected, and these names need a literal extraEnv
 value (no valueFrom, not even next to an empty value) and may not come from
 the ExternalSecret.
 This closes the chart-side routes only; a profile or config file baked into
@@ -326,6 +334,9 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- if not (regexMatch "^[\\t\\n\\r\\x20-\\x7e]*$" $v) -}}
 {{- fail (printf "%s must contain only printable ASCII (Spring Boot lower-cases a property name with Character.toLowerCase, so a non-ASCII letter such as U+0130 can spell a refused name)" .where) -}}
 {{- end -}}
+{{- if regexMatch "\\$[({]" $v -}}
+{{- fail (printf "%s must not contain '$(' or '${' (Kubernetes expands $(VAR) from earlier env entries and envFrom keys, and the JVM options would then be read from a value the guard never sees)" .where) -}}
+{{- end -}}
 {{- $alt := regexReplaceAll "[^a-z0-9\\s]+" (lower $v) "" -}}
 {{- $flat := regexReplaceAll "[^a-z0-9]+" (lower $v) "" -}}
 {{- $rule := "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|security[._-]?protocol|endpoint[._-]?identification|java[._-]?security[._-]?properties|jdk[._-]?tls|hostname[._-]?verification|(^|[\\s\"'])@|-XX:(VMOptionsFile|Flags)" -}}
@@ -359,6 +370,9 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- end -}}
 {{- with include "fbx.datasourceOverrideName" $envName -}}
 {{- fail (printf "extraEnv must not set %s (value or valueFrom): %s" $envName .) -}}
+{{- end -}}
+{{- if and (hasKey $env "value") (contains "$(" (toString $env.value)) -}}
+{{- fail (printf "extraEnv.%s must not contain '$(': Kubernetes expands $(VAR) from earlier env entries and envFrom keys after the guard has checked the text; use valueFrom or a literal" $envName) -}}
 {{- end -}}
 {{- if include "fbx.isJvmOptionsName" $envName -}}
 {{- if or (not (hasKey $env "value")) (hasKey $env "valueFrom") -}}
@@ -470,6 +484,9 @@ check covers clients built in code; README "Service-side TLS assertion"):
 {{- if regexMatch "(?i)^jdbc:(?:[a-z0-9-]+:)*postgresql:" $url -}}
 {{- $ca := .root.Values.databaseCa | default dict -}}
 {{- $want := printf "%s/%s" (trimSuffix "/" (toString $ca.mountPath)) (toString $ca.key) -}}
+{{- if regexMatch "\\$[({]" $url -}}
+{{- fail (printf "%s must not contain '${' or '$(' (a Spring placeholder or a Kubernetes variable reference is resolved after this check and can add sslmode=disable)" $where) -}}
+{{- end -}}
 {{- $parts := regexSplit "\\?" $url 2 -}}
 {{- $base := index $parts 0 -}}
 {{- $query := "" -}}
