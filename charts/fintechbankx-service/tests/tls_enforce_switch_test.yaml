@@ -8,10 +8,10 @@ release:
   name: ci
   namespace: lending
 tests:
-  # Services are to ship a startup TLS assertion that is on by default
-  # (README: Proposed, not implemented yet); only the property
-  # fintechbankx.tls.enforce (env FINTECHBANKX_TLS_ENFORCE) is to turn it off,
-  # set by the local profile and test resources only. The chart
+  # Guardrail 4a: services assert their TLS at startup, on by default (README
+  # "Service-side TLS assertion" lists which services ship it). The property
+  # fintechbankx.tls.enforce (env FINTECHBANKX_TLS_ENFORCE) turns it off, set
+  # only by the local profile (application-local.yml) and test resources. The chart
   # rejects every name matching (?i)^fintechbankx[._-]?tls([._-]|$) in config
   # keys, extraEnv names (value or valueFrom) and externalSecret data/extraData
   # secretKeys, and JVM options that mention fintechbankx[._-]?tls.

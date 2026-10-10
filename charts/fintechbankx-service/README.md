@@ -31,40 +31,61 @@ purpose; see the fixtures in `ci/` for complete examples.
 The chart checks only what it renders: `config`, `extraEnv`, the ExternalSecret
 keys and the JVM options. It cannot see a datasource or Kafka client built in
 code, a profile or `application-*.yml` baked into the image, or a value read at
-runtime. Each service therefore needs a startup assertion that is on by
-default (a failed assertion stops the application context, so the pod never
-becomes ready).
+runtime. Guardrail 4a therefore requires every service to assert its own
+connections at startup, on by default: a failed assertion stops the
+application context, so the pod never becomes ready.
 
-**Status: Proposed, not implemented.** No service repository ships this
-assertion yet, nor the `fintechbankx.tls.enforce` property or the
-`application-kafka-msk.yml` / `application-kafka-strimzi.yml` profiles. Until a
-service does, `kafka.runtime` activates a profile its image does not contain
-(Spring ignores an unknown profile), the Kafka authentication has to come from
-the service's own configuration, and TLS on the routes the chart cannot see is
-not enforced. The assertion each service is to add:
+What guardrail 4a asks the assertion to cover:
 
-- JDBC: every `DataSource` the context creates (application, Flyway, Liquibase,
-  reporting) uses a PostgreSQL URL with exactly one `sslmode=verify-full` and
-  no `sslfactory`, `sslhostnameverifier`, `sslpasswordcallback` or `service`
-  (read the effective URL from the bean, not from the environment).
-- Kafka: every producer, consumer, admin and Streams client uses
-  `security.protocol` `SASL_SSL` (Amazon MSK IAM, profile `kafka-msk`) or
-  `SSL` (Strimzi mutual TLS, profile `kafka-strimzi`); `PLAINTEXT`,
-  `SASL_PLAINTEXT` and an unset protocol are refused, and
-  `ssl.endpoint.identification.algorithm` stays `https` (not empty).
-- Add a test that starts the context with a non-verifying value
-  (`sslmode=require`, `security.protocol=PLAINTEXT`) and expects startup to
-  fail, so the assertion itself is proven red first.
+- JDBC: every PostgreSQL URL the context uses (application datasource, Flyway,
+  Liquibase, reporting) carries exactly one `sslmode=verify-full` and no
+  `sslfactory`, `sslhostnameverifier`, `sslpasswordcallback` or `service`.
+- Kafka: the clients use `security.protocol` `SASL_SSL` (Amazon MSK IAM,
+  profile `kafka-msk`) or `SSL` (Strimzi mutual TLS, profile `kafka-strimzi`);
+  `PLAINTEXT`, `SASL_PLAINTEXT` and an unset protocol stop startup, and
+  `ssl.endpoint.identification.algorithm` stays `https` (the Kafka client
+  default; no service turns it off, none checks it explicitly yet).
+- A test starts the context, or runs the check, with a non-verifying value
+  (`sslmode=require`, `security.protocol=PLAINTEXT`) and expects the failure,
+  so the assertion itself is proven red first.
 
-The assertion's only off switch is to be the property `fintechbankx.tls.enforce`
-(env `FINTECHBANKX_TLS_ENFORCE`), set by the `local` profile and test
-resources only. The chart already refuses it, and every other `fintechbankx.tls.*` name
+**Status**, as checked against the services' open pull request branches in
+October 2026 (what each one checks in detail is in its own repository):
+
+| Service repositories | Assertion | Off switch | Kafka profiles |
+|---|---|---|---|
+| `fintechbankx-lendingpayments-loan-lifecycle-core`, `fintechbankx-lendingpayments-payment-orchestration-initiation-settlement`, `-bulk-orchestration`, `-recurring-mandates`, `-request-to-pay` | startup check before any datasource or Kafka bean, on by default (`fintechbankx.tls.enforce: true` in `application.yml`): datasource `sslmode=verify-full` and, with Kafka configured, `SASL_SSL` or `SSL` | `fintechbankx.tls.enforce: false`, set only by `application-local.yml` (profile `local`) and the test resources | `application-kafka-msk.yml`, `application-kafka-strimzi.yml` |
+| `fintechbankx-customer-profile-kyc-core`, `fintechbankx-riskcompliance-risk-decisioning-core`, `fintechbankx-riskcompliance-compliance-evidence-core` | `DatabaseTlsGuard` and `KafkaTlsGuard`, active whenever `DB_SSL_ROOT_CERT` is set (this chart always sets it while `databaseCa.enabled`); the Kafka guard only while the outbox relay is on. Risk and compliance accept only `SASL_SSL` (`kafka.runtime: msk`), customer `SASL_SSL` or `SSL` | none: the guards skip when `DB_SSL_ROOT_CERT` is unset (local runs, tests); no `fintechbankx.tls.enforce`, no `local` profile file | `kafka-msk`, `kafka-strimzi` (profile files in customer, profile documents in `application.yml` in risk and compliance) |
+| `fintechbankx-openfinance-*` (consent-auth-service, corporate-data-business-financial, open-data-atm-directory, open-data-products-catalog, payee-metadata-banking-metadata, payee-metadata-payee-verification, retail-data-personal-financial) | `AwsTransportSecurityConfiguration` (products-catalog: `DatabaseTlsEnvironmentPostProcessor`), active under the `aws` profile that the services' own charts render (corporate-data, banking-metadata and retail-data also under `kafka-msk` / `kafka-strimzi`); `SASL_SSL` or `SSL` | none: not activating `aws` (local runs, tests) | `application-kafka-msk.yml`, `application-kafka-strimzi.yml` where the service uses Kafka |
+
+Every other service, and every new one, is to add the assertion in the first
+shape (`fintechbankx.tls.enforce`, `application-local.yml`,
+`application-kafka-msk.yml`, `application-kafka-strimzi.yml`); the services in
+the second and third rows are aligning with it. Until they do, note on this
+chart: this chart renders only the `kafka-*` profile, never `aws`, so an
+open-finance assertion gated on `aws` alone does not run here; and
+`kafka.runtime: strimzi` stops risk and compliance at startup while their
+outbox relay is on.
+
+The assertion's off switch is the property `fintechbankx.tls.enforce` (env
+`FINTECHBANKX_TLS_ENFORCE`), set by the `local` profile and test resources
+only. The chart refuses it, and every other `fintechbankx.tls.*` name
 in any spelling, as a `config` key, an `extraEnv` name (`value` or
 `valueFrom`), an ExternalSecret key or inside JVM options; `SPRING_APPLICATION_JSON`
 is refused by name, whatever it carries. The chart also refuses every
 `spring.profiles.*` name it does not render itself, so `local` (or a
 `spring.profiles.default` / `spring.profiles.group.*` that leads to it) cannot
 be switched on through the chart.
+
+JVM options: the chart checks `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and
+`_JAVA_OPTIONS`, the variables the JVM reads itself (`fbx.isJvmOptionsName`).
+`JAVA_OPTS` and similar launcher variables reach the JVM only through a shell
+launcher that expands them; the template image
+(`templates/microservice/Dockerfile`) and the service images start the JVM in
+exec form (`ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]`),
+and the chart sets no `command` or `args` on the application container, so no
+such variable reaches the command line. An image that adds a launcher script
+must have its variable added to `fbx.isJvmOptionsName`.
 
 ### Selecting the Kafka profile
 
