@@ -1,0 +1,101 @@
+suite: values interpolated into the pod spec cannot add fields (preStop, probes, priority class)
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+  - templates/servicemonitor.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # A value written unquoted into deployment.yaml can close its string and add
+  # container fields the guard never sees, e.g. preStopSleepSeconds adding
+  # args: ["--spring.config.import=..."] (a Spring Boot command-line argument).
+  # values.schema.json types these values and the templates render them with
+  # int or quote.
+  - it: rejects preStopSleepSeconds that adds container args
+    template: templates/deployment.yaml
+    set:
+      preStopSleepSeconds: "10\"]\n          args: [\"--spring.config.import=optional:file:/tmp/x.yml"
+    asserts:
+      - failedTemplate:
+          errorPattern: "preStopSleepSeconds: Invalid type"
+  - it: rejects a probe path that adds container args
+    template: templates/deployment.yaml
+    set:
+      probes.readiness.path: "/x\n              port: management\n          args: [\"--spring.profiles.active=local\"]\n          readinessProbe2:\n            httpGet:\n              path: /y"
+    asserts:
+      - failedTemplate:
+          errorPattern: "probes.readiness.path: Does not match pattern"
+  - it: rejects a priorityClassName that adds pod fields
+    template: templates/deployment.yaml
+    set:
+      priorityClassName: "high\n      hostNetwork: true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "priorityClassName: Does not match pattern"
+  - it: rejects terminationGracePeriodSeconds that is not an integer
+    template: templates/deployment.yaml
+    set:
+      terminationGracePeriodSeconds: "45\n      hostNetwork: true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "terminationGracePeriodSeconds: Invalid type"
+  - it: rejects revisionHistoryLimit that is not an integer
+    template: templates/deployment.yaml
+    set:
+      revisionHistoryLimit: "5\n  paused: true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "revisionHistoryLimit: Invalid type"
+  - it: rejects a serviceAccount.name that adds pod fields
+    template: templates/deployment.yaml
+    set:
+      serviceAccount.name: "sa\n      hostNetwork: true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "serviceAccount.name: Does not match pattern"
+  - it: rejects a probe periodSeconds that is not an integer
+    template: templates/deployment.yaml
+    set:
+      probes.liveness.periodSeconds: "10\n          args: [\"x\"]"
+    asserts:
+      - failedTemplate:
+          errorPattern: "probes.liveness.periodSeconds: Invalid type"
+  - it: rejects a ServiceMonitor interval that is not a duration
+    template: templates/servicemonitor.yaml
+    set:
+      observability.serviceMonitor.enabled: true
+      observability.serviceMonitor.interval: "30s\n      honorLabels: true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "observability.serviceMonitor.interval: Does not match pattern"
+  - it: renders the defaults (control)
+    template: templates/deployment.yaml
+    set:
+      priorityClassName: fintechbankx-high
+    asserts:
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: fintechbankx-high
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 45
+      - equal:
+          path: spec.revisionHistoryLimit
+          value: 5
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: loan-lifecycle-service
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["sh", "-c", "sleep 10"]
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /actuator/health/readiness
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.periodSeconds
+          value: 10
+      - notExists:
+          path: spec.template.spec.containers[0].args

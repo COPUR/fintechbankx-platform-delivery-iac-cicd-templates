@@ -11,10 +11,10 @@ spec:
   ports:
     # Port names carry the protocol prefix Istio uses for protocol selection.
     - name: http
-      port: {{ .Values.service.port }}
+      port: {{ int .Values.service.port }}
       targetPort: http
       appProtocol: http
     - name: http-management
-      port: {{ .Values.service.managementPort }}
+      port: {{ int .Values.service.managementPort }}
       targetPort: management
       appProtocol: http

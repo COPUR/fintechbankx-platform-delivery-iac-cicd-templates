@@ -22,7 +22,7 @@ spec:
         {{- end }}
       ports:
         - protocol: TCP
-          port: {{ .Values.service.port }}
+          port: {{ int .Values.service.port }}
     # Actuator metrics and Envoy merged stats (15020) for Prometheus.
     {{- with .Values.networkPolicy.monitoringNamespaces }}
     - from:
@@ -33,7 +33,7 @@ spec:
         {{- end }}
       ports:
         - protocol: TCP
-          port: {{ $.Values.service.managementPort }}
+          port: {{ int $.Values.service.managementPort }}
         - protocol: TCP
           port: 15020
     {{- end }}
@@ -57,7 +57,7 @@ spec:
       ports:
         {{- range .ports }}
         - protocol: TCP
-          port: {{ . }}
+          port: {{ int . }}
         {{- end }}
     {{- end }}
     {{- range .Values.networkPolicy.egressCidrs }}
@@ -67,7 +67,7 @@ spec:
       ports:
         {{- range .ports }}
         - protocol: TCP
-          port: {{ . }}
+          port: {{ int . }}
         {{- end }}
     {{- end }}
 {{- end }}

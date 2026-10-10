@@ -10,21 +10,21 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: {{ include "fbx.name" . }}
-  minReplicas: {{ .Values.autoscaling.minReplicas }}
-  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  minReplicas: {{ int .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ int .Values.autoscaling.maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ int .Values.autoscaling.targetCPUUtilizationPercentage }}
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
-          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+          averageUtilization: {{ int .Values.autoscaling.targetMemoryUtilizationPercentage }}
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 30

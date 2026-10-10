@@ -18,6 +18,6 @@ spec:
   endpoints:
     - port: http-management
       path: /actuator/prometheus
-      interval: {{ .Values.observability.serviceMonitor.interval }}
-      scrapeTimeout: {{ .Values.observability.serviceMonitor.scrapeTimeout }}
+      interval: {{ .Values.observability.serviceMonitor.interval | quote }}
+      scrapeTimeout: {{ .Values.observability.serviceMonitor.scrapeTimeout | quote }}
 {{- end }}

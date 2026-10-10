@@ -8,9 +8,9 @@ metadata:
     {{- include "fbx.labels" . | nindent 4 }}
 spec:
   {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ int .Values.replicaCount }}
   {{- end }}
-  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  revisionHistoryLimit: {{ int .Values.revisionHistoryLimit }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -37,11 +37,11 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      serviceAccountName: {{ include "fbx.serviceAccountName" . }}
+      serviceAccountName: {{ include "fbx.serviceAccountName" . | quote }}
       automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
-      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ int .Values.terminationGracePeriodSeconds }}
       {{- with .Values.priorityClassName }}
-      priorityClassName: {{ . }}
+      priorityClassName: {{ . | quote }}
       {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -55,15 +55,15 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       topologySpreadConstraints:
-        - maxSkew: {{ .Values.topologySpread.maxSkew }}
+        - maxSkew: {{ int .Values.topologySpread.maxSkew }}
           topologyKey: topology.kubernetes.io/zone
-          whenUnsatisfiable: {{ .Values.topologySpread.zoneWhenUnsatisfiable }}
+          whenUnsatisfiable: {{ .Values.topologySpread.zoneWhenUnsatisfiable | quote }}
           labelSelector:
             matchLabels:
               {{- include "fbx.selectorLabels" . | nindent 14 }}
-        - maxSkew: {{ .Values.topologySpread.maxSkew }}
+        - maxSkew: {{ int .Values.topologySpread.maxSkew }}
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: {{ .Values.topologySpread.hostWhenUnsatisfiable }}
+          whenUnsatisfiable: {{ .Values.topologySpread.hostWhenUnsatisfiable | quote }}
           labelSelector:
             matchLabels:
               {{- include "fbx.selectorLabels" . | nindent 14 }}
@@ -82,13 +82,13 @@ spec:
       containers:
         - name: {{ include "fbx.name" . }}
           image: {{ include "fbx.image" . | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | quote }}
           ports:
             - name: http
-              containerPort: {{ .Values.service.port }}
+              containerPort: {{ int .Values.service.port }}
               protocol: TCP
             - name: management
-              containerPort: {{ .Values.service.managementPort }}
+              containerPort: {{ int .Values.service.managementPort }}
               protocol: TCP
           env:
             - name: JAVA_TOOL_OPTIONS
@@ -125,26 +125,26 @@ spec:
             {{- end }}
           startupProbe:
             httpGet:
-              path: {{ .Values.probes.startup.path }}
+              path: {{ .Values.probes.startup.path | quote }}
               port: management
-            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
-            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ int .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ int .Values.probes.startup.failureThreshold }}
           livenessProbe:
             httpGet:
-              path: {{ .Values.probes.liveness.path }}
+              path: {{ .Values.probes.liveness.path | quote }}
               port: management
-            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
-            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+            periodSeconds: {{ int .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ int .Values.probes.liveness.failureThreshold }}
           readinessProbe:
             httpGet:
-              path: {{ .Values.probes.readiness.path }}
+              path: {{ .Values.probes.readiness.path | quote }}
               port: management
-            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
-            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+            periodSeconds: {{ int .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ int .Values.probes.readiness.failureThreshold }}
           lifecycle:
             preStop:
               exec:
-                command: ["sh", "-c", "sleep {{ .Values.preStopSleepSeconds }}"]
+                command: ["sh", "-c", "sleep {{ int .Values.preStopSleepSeconds }}"]
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
@@ -158,7 +158,7 @@ spec:
               mountPath: /tmp
             {{- if .Values.databaseCa.enabled }}
             - name: database-ca
-              mountPath: {{ .Values.databaseCa.mountPath }}
+              mountPath: {{ .Values.databaseCa.mountPath | quote }}
               readOnly: true
             {{- end }}
       volumes:
@@ -168,8 +168,8 @@ spec:
         {{- if .Values.databaseCa.enabled }}
         - name: database-ca
           configMap:
-            name: {{ .Values.databaseCa.configMapName }}
+            name: {{ .Values.databaseCa.configMapName | quote }}
             items:
-              - key: {{ .Values.databaseCa.key }}
-                path: {{ .Values.databaseCa.key }}
+              - key: {{ .Values.databaseCa.key | quote }}
+                path: {{ .Values.databaseCa.key | quote }}
         {{- end }}
