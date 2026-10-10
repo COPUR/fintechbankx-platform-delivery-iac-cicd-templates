@@ -304,18 +304,18 @@
           "boolean"
         ]
       },
-      "description": "Non-secret settings rendered into the ConfigMap. Keys and values are checked by fbx.guard (README \"Datasource and TLS guard\"): keys must be ConfigMap keys ([-._a-zA-Z0-9]+; the schema stops white space, control and non-ASCII characters), no spring.config.*, spring.profiles.*, spring.ssl.*, *ssl.bundle, fintechbankx.tls.*, spring.application.json or datasource/Flyway/Liquibase/R2DBC override names (relaxed-binding spellings included), DB_URL only under exactly that key and as a jdbc:[<wrapper>:]postgresql: URL with one sslmode=verify-full and no ${ or $(, Kafka security.protocol SASL_SSL/SSL.",
+      "description": "Non-secret settings rendered into the ConfigMap. Keys and values are checked by fbx.guard (README \"Datasource and TLS guard\"): keys must be ConfigMap keys ([-._a-zA-Z0-9]+; the schema stops white space, control and non-ASCII characters), no spring.config.*, spring.profiles.*, spring.ssl.*, *ssl.bundle, fintechbankx.tls.*, spring.application.json or datasource/Flyway/Liquibase/R2DBC override names (relaxed-binding spellings included), DB_URL only under exactly that key and as a jdbc:[<wrapper>:]postgresql: URL with one sslmode=verify-full and no ${ or $(, Kafka security.protocol SASL_SSL/SSL and ssl.endpoint.identification.algorithm https, no other spring.kafka[.<client>].ssl.* or spring.kafka[.<client>].properties.ssl.* name, no KAFKA_TLS_* name (Secret only).",
       "propertyNames": {
         "pattern": "^[\\x21-\\x7e]+$"
       }
     },
     "javaToolOptions": {
       "type": "string",
-      "description": "Rendered as JAVA_TOOL_OPTIONS. fbx.guard refuses a value that mentions a refused property (datasource, flyway, liquibase, r2dbc, jdbc, ssl, spring.config, spring.profiles, fintechbankx.tls, application.json, security.protocol, endpoint.identification, java.security.properties, jdk.tls, hostname verification; also with every character other than [a-z0-9] removed), contains a character outside printable ASCII, '$(' or '${', or reads options from a file ('@', -XX:VMOptionsFile, -XX:Flags)."
+      "description": "Rendered as JAVA_TOOL_OPTIONS. fbx.guard refuses a value that mentions a refused property (datasource, flyway, liquibase, r2dbc, jdbc, ssl, spring.config, spring.profiles, fintechbankx.tls, application.json, security.protocol, endpoint.identification, kafka.tls, java.security.properties, jdk.tls, hostname verification; also with every character other than [a-z0-9] removed), contains a character outside printable ASCII, '$(' or '${', or reads options from a file ('@', -XX:VMOptionsFile, -XX:Flags)."
     },
     "extraEnv": {
       "type": "array",
-      "description": "Extra Kubernetes EnvVar entries, rendered after the chart's own. fbx.guard checks every name (value or valueFrom) and literal value with the config rules; names must be printable ASCII other than '=' and white space, no value may contain '$(' (Kubernetes expands it after the check), and JVM option and Kafka TLS names need a literal value.",
+      "description": "Extra Kubernetes EnvVar entries, rendered after the chart's own. fbx.guard checks every name (value or valueFrom) and literal value with the config rules; names must be printable ASCII other than '=' and white space, no value may contain '$(' (Kubernetes expands it after the check), JVM option and Kafka security.protocol / endpoint identification names need a literal value, and KAFKA_TLS_CERT, KAFKA_TLS_KEY and KAFKA_TLS_CA need valueFrom.secretKeyRef alone.",
       "items": {
         "type": "object",
         "required": [
@@ -404,7 +404,7 @@
               }
             }
           },
-          "description": "Env var name (secretKey) to JSON property of remoteSecretName. fbx.guard refuses secretKeys that are not Secret keys ([-._a-zA-Z0-9]+) or that name DB_URL, JVM options, Kafka TLS settings or any refused override name, and a property with a control character; keep only credentials here. dataFrom is not supported."
+          "description": "Env var name (secretKey) to JSON property of remoteSecretName. fbx.guard refuses secretKeys that are not Secret keys ([-._a-zA-Z0-9]+) or that name DB_URL, JVM options, Kafka security.protocol / endpoint identification or client TLS settings, another spelling of KAFKA_TLS_CERT/KEY/CA, or any refused override name, and a property with a control character; keep only credentials here. dataFrom is not supported."
         },
         "extraData": {
           "type": "array",

@@ -142,6 +142,15 @@ must_fail "config KAFKA_SECURITY_PROTOCOL=PLAINTEXT (kafka.runtime msk)" --expec
   --set-string 'kafka.runtime=msk' --set-string 'config.KAFKA_SECURITY_PROTOCOL=PLAINTEXT'
 must_fail "kafka.runtime strimzi with KAFKA_SECURITY_PROTOCOL=SASL_SSL" --expect 'must be SSL with kafka.runtime strimzi' \
   --set-string 'kafka.runtime=strimzi' --set-string 'config.KAFKA_SECURITY_PROTOCOL=SASL_SSL'
+must_fail "config SPRING_KAFKA_SSL_TRUST_STORE_LOCATION (Kafka trust store)" --expect 'config.SPRING_KAFKA_SSL_TRUST_STORE_LOCATION is not allowed: a Kafka client TLS setting' \
+  --set-string 'kafka.runtime=msk' --set-string 'config.SPRING_KAFKA_SSL_TRUST_STORE_LOCATION=file:/etc/other/any.jks'
+must_fail "extraEnv SPRING_KAFKA_PRODUCER_PROPERTIES_SSL_TRUSTSTORE_CERTIFICATES from valueFrom" --expect 'extraEnv must not set SPRING_KAFKA_PRODUCER_PROPERTIES_SSL_TRUSTSTORE_CERTIFICATES' \
+  --set 'extraEnv[0].name=SPRING_KAFKA_PRODUCER_PROPERTIES_SSL_TRUSTSTORE_CERTIFICATES' \
+  --set-string 'extraEnv[0].valueFrom.configMapKeyRef.name=other' --set-string 'extraEnv[0].valueFrom.configMapKeyRef.key=ca'
+must_fail "extraEnv KAFKA_TLS_CA as a literal (kafka.runtime strimzi)" --expect 'extraEnv KAFKA_TLS_CA must come from valueFrom.secretKeyRef' \
+  --set-string 'kafka.runtime=strimzi' --set 'extraEnv[0].name=KAFKA_TLS_CA' --set-string 'extraEnv[0].value=-----BEGIN CERTIFICATE-----'
+must_fail "config KAFKA_TLS_CERT (kafka.runtime strimzi)" --expect 'config.KAFKA_TLS_CERT is not allowed' \
+  --set-string 'kafka.runtime=strimzi' --set-string 'config.KAFKA_TLS_CERT=-----BEGIN CERTIFICATE-----'
 must_fail "KAFKA_SECURITY_PROTOCOL=SSL without kafka.runtime (no auth profile)" --expect 'is set but kafka.runtime is empty' \
   --set-string 'config.KAFKA_SECURITY_PROTOCOL=SSL'
 must_fail "public IPv6 egress CIDR broader than /48 (2001:db8::/32)" --set networkPolicy.enabled=true \
@@ -198,6 +207,11 @@ vendored_must_fail "additionalEnvFrom ConfigMap" --expect 'extraEnvFrom is not s
   --set-string 'additionalEnvFrom[0].configMapRef.name=other'
 vendored_must_fail "jvmOptions with -Dspring.profiles.active" --expect 'javaToolOptions must not mention' --set-string 'jvmOptions=-Dspring.profiles.active=local'
 vendored_must_fail "KAFKA_SECURITY_PROTOCOL PLAINTEXT" --expect 'config.KAFKA_SECURITY_PROTOCOL must be SASL_SSL or SSL' --set-string 'env.KAFKA_SECURITY_PROTOCOL=PLAINTEXT'
+vendored_must_fail "env spring.kafka.properties.ssl.truststore.location" --expect 'config.spring.kafka.properties.ssl.truststore.location is not allowed: a Kafka client TLS setting' \
+  --set-string 'env.spring\.kafka\.properties\.ssl\.truststore\.location=/etc/other/any.jks'
+vendored_must_fail "additionalEnv KAFKA_TLS_KEY from configMapKeyRef (strimzi)" --expect 'extraEnv KAFKA_TLS_KEY must come from valueFrom.secretKeyRef' \
+  --set-string kafkaRuntime=strimzi --set-string env.KAFKA_SECURITY_PROTOCOL=SSL --set 'additionalEnv[0].name=KAFKA_TLS_KEY' \
+  --set-string 'additionalEnv[0].valueFrom.configMapKeyRef.name=other' --set-string 'additionalEnv[0].valueFrom.configMapKeyRef.key=user.key'
 
 echo "[helm-unittest] $chart/tests"
 "$helm" unittest "$chart"

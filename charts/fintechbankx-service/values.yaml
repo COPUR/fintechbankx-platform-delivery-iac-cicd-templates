@@ -117,6 +117,12 @@ config: {}
 #     SPRING_DATASOURCE_USERNAME/PASSWORD, and no name containing jdbc url,
 #     ssl factory, ssl host name verifier, ssl password callback, ssl root cert
 #     (DB_SSL_ROOT_CERT is the chart's own) or ssl mode, separators optional;
+#     no Kafka client TLS name, spring.kafka[.<client>].ssl.* or
+#     spring.kafka[.<client>].properties.ssl.*, other than the value-checked
+#     ssl.endpoint.identification.algorithm (see kafka below);
+#   - KAFKA_TLS_CERT, KAFKA_TLS_KEY and KAFKA_TLS_CA only from a Secret
+#     (extraEnv valueFrom.secretKeyRef or externalSecret data/extraData), in
+#     exactly that spelling, never under config;
 #   - DB_URL only as the config key DB_URL (db.url, db-url, dbUrl are
 #     refused); a non-empty value must be a jdbc:[<wrapper>:]postgresql: URL
 #     with exactly one sslmode=verify-full and, while databaseCa is enabled,
@@ -126,7 +132,7 @@ config: {}
 #   - JVM options (javaToolOptions, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS,
 #     _JAVA_OPTIONS) must not mention datasource, flyway, liquibase, r2dbc,
 #     jdbc, ssl, application.json, spring.config, spring.profiles,
-#     fintechbankx.tls, security.protocol, endpoint.identification,
+#     fintechbankx.tls, security.protocol, endpoint.identification, kafka.tls,
 #     java.security.properties, jdk.tls or hostname verification (also with
 #     every character other than [a-z0-9] removed, e.g. -Dspring..config.import),
 #     must be printable ASCII, must not contain '$(' or '${', nor read an
@@ -161,7 +167,12 @@ databaseCa:
 # foo[bar] read as foo.bar), e.g.
 # spring.kafka.secu-rity.protocol, spring.kafka.properties[security.protocol].
 # Both need a literal extraEnv value (no valueFrom) and may not come from the
-# ExternalSecret.
+# ExternalSecret. Whatever the runtime, every other spring.kafka[.<client>].ssl.*
+# and spring.kafka[.<client>].properties.ssl.* name is refused (the profile in
+# the image sets the client's TLS material), and the kafka-strimzi profile's
+# KAFKA_TLS_CERT, KAFKA_TLS_KEY and KAFKA_TLS_CA come only from a Secret: an
+# extraEnv entry with valueFrom.secretKeyRef (the Kafka repo's client guide
+# maps them from Secret kafka-client-tls) or an externalSecret key.
 kafka:
   runtime: ""
 

@@ -1,0 +1,384 @@
+suite: Kafka client TLS names (spring.kafka ssl, spring.kafka properties ssl; KAFKA_TLS_* only from a Secret)
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # spring.kafka.ssl.*, spring.kafka.<client>.ssl.* (producer, consumer,
+  # admin, streams) and spring.kafka[.<client>].properties.ssl.* set the Kafka
+  # client's trust store, key store, PEM certificates, key password and TLS
+  # protocol. They come from the image's kafka-msk / kafka-strimzi profile, so
+  # fbx.overrideNameReason refuses them on every route (config, extraEnv value
+  # and valueFrom, externalSecret data/extraData; JVM options by the ssl
+  # mention) in every relaxed-binding spelling, whatever kafka.runtime is. The
+  # one name under these prefixes that stays allowed is the value-checked
+  # ssl.endpoint.identification.algorithm (https). Non-ssl
+  # spring.kafka.properties.* names (sasl.* for MSK IAM) are not refused.
+  - it: rejects config SPRING_KAFKA_SSL_TRUSTSTORE_LOCATION (kafka.runtime msk)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_SSL_TRUSTSTORE_LOCATION: file:/etc/other/any.jks
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_SSL_TRUSTSTORE_LOCATION is not allowed: a Kafka client TLS setting"
+  - it: rejects config SPRING_KAFKA_SSL_TRUST_STORE_LOCATION (binds spring.kafka.ssl.trust-store-location)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_SSL_TRUST_STORE_LOCATION: file:/etc/other/any.jks
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_SSL_TRUST_STORE_LOCATION is not allowed: a Kafka client TLS setting"
+  - it: rejects config spring.kafka.ssl.trust-store-certificates (dotted)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.ssl.trust-store-certificates: "-----BEGIN CERTIFICATE-----"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.ssl.trust-store-certificates is not allowed: a Kafka client TLS setting"
+  - it: rejects config spring.kafka.s-sl.trust-store-location (relaxed binding reads s-sl as ssl)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.s-sl.trust-store-location: file:/etc/other/any.jks
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.s-sl.trust-store-location is not allowed: a Kafka client TLS setting"
+  - it: rejects config SPRING_KAFKA_SSL_PROTOCOL (TLS protocol version)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_SSL_PROTOCOL: TLSv1
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_SSL_PROTOCOL is not allowed: a Kafka client TLS setting"
+  - it: rejects extraEnv SPRING_KAFKA_PRODUCER_SSL_KEY_STORE_LOCATION (per-client ssl)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_KAFKA_PRODUCER_SSL_KEY_STORE_LOCATION
+          value: file:/etc/other/any.p12
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_KAFKA_PRODUCER_SSL_KEY_STORE_LOCATION \\(value or valueFrom\\): a Kafka client TLS setting"
+  - it: rejects extraEnv spring.kafka.consumer.ssl.trust-store-type from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.consumer.ssl.trust-store-type
+          valueFrom:
+            configMapKeyRef: {name: other, key: type}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.kafka.consumer.ssl.trust-store-type \\(value or valueFrom\\): a Kafka client TLS setting"
+  - it: rejects config SPRING_KAFKA_ADMIN_SSL_TRUST_STORE_CERTIFICATES
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_ADMIN_SSL_TRUST_STORE_CERTIFICATES: "-----BEGIN CERTIFICATE-----"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_ADMIN_SSL_TRUST_STORE_CERTIFICATES is not allowed: a Kafka client TLS setting"
+  - it: rejects config spring.kafka.streams.ssl.key-password
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.streams.ssl.key-password: x
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.streams.ssl.key-password is not allowed: a Kafka client TLS setting"
+  - it: rejects config spring.kafka.properties.ssl.truststore.location
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.properties.ssl.truststore.location: /etc/other/any.jks
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.properties.ssl.truststore.location is not allowed: a Kafka client TLS setting"
+  - it: rejects config SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION: /etc/other/any.jks
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION is not allowed: a Kafka client TLS setting"
+  - it: rejects config spring.kafka.properties[ssl.truststore.type] (bracket form)
+    template: templates/deployment.yaml
+    set:
+      config:
+        "spring.kafka.properties[ssl.truststore.type]": PEM
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.properties\\[ssl.truststore.type\\] is not allowed: a Kafka client TLS setting"
+  - it: rejects extraEnv spring.kafka.properties[ssl.truststore.type] (bracket form)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "spring.kafka.properties[ssl.truststore.type]"
+          value: PEM
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.kafka.properties\\[ssl.truststore.type\\] \\(value or valueFrom\\): a Kafka client TLS setting"
+  - it: rejects config spring.kafka.pro-perties.ssl.truststore.location (relaxed binding)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.pro-perties.ssl.truststore.location: /etc/other/any.jks
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.pro-perties.ssl.truststore.location is not allowed: a Kafka client TLS setting"
+  - it: rejects config spring.kafka.streams.properties.ssl.keystore.location (per-client properties)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.streams.properties.ssl.keystore.location: /etc/other/any.p12
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.streams.properties.ssl.keystore.location is not allowed: a Kafka client TLS setting"
+  - it: rejects extraEnv SPRING_KAFKA_CONSUMER_PROPERTIES_SSL_TRUSTSTORE_TYPE from secretKeyRef
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_KAFKA_CONSUMER_PROPERTIES_SSL_TRUSTSTORE_TYPE
+          valueFrom:
+            secretKeyRef: {name: other, key: type}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_KAFKA_CONSUMER_PROPERTIES_SSL_TRUSTSTORE_TYPE \\(value or valueFrom\\): a Kafka client TLS setting"
+  - it: rejects externalSecret.data materialising SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_DATASOURCE_PASSWORD
+          property: password
+        - secretKey: SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD
+          property: truststore_password
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD .*: a Kafka client TLS setting"
+  - it: rejects externalSecret.extraData materialising spring.kafka.ssl.key-store-key
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring.kafka.ssl.key-store-key
+          remoteSecretName: staging/loan-lifecycle-service/kafka
+          property: key
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring.kafka.ssl.key-store-key .*: a Kafka client TLS setting"
+  - it: rejects javaToolOptions with -Dspring.kafka.ssl.trust-store-location (ssl mention)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.kafka.ssl.trust-store-location=file:/etc/other/any.jks"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects extraEnv JDK_JAVA_OPTIONS with -Dspring.kafka.properties.ssl.truststore.location (ssl mention)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JDK_JAVA_OPTIONS
+          value: "-Dspring.kafka.properties.ssl.truststore.location=/etc/other/any.jks"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not mention"
+  - it: rejects config SPRING_KAFKA_SSL_TRUST_STORE_CERTIFICATES with kafka.runtime strimzi
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+      config.SPRING_KAFKA_SSL_TRUST_STORE_CERTIFICATES: "-----BEGIN CERTIFICATE-----"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_SSL_TRUST_STORE_CERTIFICATES is not allowed: a Kafka client TLS setting"
+  - it: rejects extraEnv SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_LOCATION with kafka.runtime strimzi
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+      extraEnv:
+        - name: SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_LOCATION
+          value: /etc/other/any.p12
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_LOCATION \\(value or valueFrom\\): a Kafka client TLS setting"
+  # Without kafka.runtime: kafka_runtime_required_test.yaml.
+  # ssl.endpoint.identification.algorithm stays allowed and value-checked
+  # (fbx.validateKafkaTls); non-ssl Kafka names are not refused.
+  - it: accepts config SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM https (value-checked)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: https
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts extraEnv spring.kafka.producer.properties.ssl.endpoint.identification.algorithm https (value-checked)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.producer.properties.ssl.endpoint.identification.algorithm
+          value: https
+    asserts:
+      - notFailedTemplate: {}
+  - it: still rejects SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM empty (value check)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM must be https"
+  - it: accepts non-ssl spring.kafka.properties names (MSK IAM sasl.*) and other Kafka names
+    template: templates/deployment.yaml
+    set:
+      config:
+        SPRING_KAFKA_PROPERTIES_SASL_MECHANISM: AWS_MSK_IAM
+        spring.kafka.properties.sasl.client.callback.handler.class: software.amazon.msk.auth.iam.IAMClientCallbackHandler
+        KAFKA_BOOTSTRAP_SERVERS: b-1.msk.example.internal:9098
+        SPRING_KAFKA_CONSUMER_GROUP_ID: loan-lifecycle
+        KAFKA_LISTENER_CONCURRENCY: "2"
+    asserts:
+      - notFailedTemplate: {}
+  # KAFKA_TLS_CERT, KAFKA_TLS_KEY and KAFKA_TLS_CA are the PEM client
+  # certificate, key and cluster CA the kafka-strimzi profile reads as
+  # ${KAFKA_TLS_*}; the Kafka repo's client guide maps them from the Secret
+  # kafka-client-tls with secretKeyRef. fbx.validateSecretNames allows them
+  # only as extraEnv valueFrom.secretKeyRef or as externalSecret keys, under
+  # every kafka.runtime: never under config, as a literal value, from a
+  # ConfigMap or a field reference, and no other spelling (only the exact name
+  # resolves the placeholder); -DKAFKA_TLS_* in JVM options would win over the
+  # environment, so the JVM option rule refuses kafka.tls.
+  - it: renders KAFKA_TLS_CERT, KAFKA_TLS_KEY and KAFKA_TLS_CA from secretKeyRef with kafka.runtime strimzi
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+      extraEnv:
+        - name: KAFKA_TLS_CERT
+          valueFrom:
+            secretKeyRef: {name: kafka-client-tls, key: user.crt}
+        - name: KAFKA_TLS_KEY
+          valueFrom:
+            secretKeyRef: {name: kafka-client-tls, key: user.key}
+        - name: KAFKA_TLS_CA
+          valueFrom:
+            secretKeyRef: {name: kafka-client-tls, key: ca.crt}
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KAFKA_TLS_CA
+            valueFrom:
+              secretKeyRef: {name: kafka-client-tls, key: ca.crt}
+  - it: accepts KAFKA_TLS_CA as an externalSecret extraData key with kafka.runtime strimzi
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+      externalSecret.extraData:
+        - secretKey: KAFKA_TLS_CA
+          remoteSecretName: staging/loan-lifecycle-service/kafka-client-tls
+          property: ca_crt
+    asserts:
+      - notFailedTemplate: {}
+  - it: rejects extraEnv KAFKA_TLS_CA with a literal value (kafka.runtime strimzi)
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+      extraEnv:
+        - name: KAFKA_TLS_CA
+          value: "-----BEGIN CERTIFICATE-----"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv KAFKA_TLS_CA must come from valueFrom.secretKeyRef"
+  - it: rejects extraEnv KAFKA_TLS_CERT from configMapKeyRef (kafka.runtime strimzi)
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+      extraEnv:
+        - name: KAFKA_TLS_CERT
+          valueFrom:
+            configMapKeyRef: {name: other, key: user.crt}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv KAFKA_TLS_CERT must come from valueFrom.secretKeyRef"
+  - it: rejects extraEnv KAFKA_TLS_KEY from fieldRef (kafka.runtime strimzi)
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+      extraEnv:
+        - name: KAFKA_TLS_KEY
+          valueFrom:
+            fieldRef: {fieldPath: metadata.name}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv KAFKA_TLS_KEY must come from valueFrom.secretKeyRef"
+  - it: rejects extraEnv KAFKA_TLS_CA with an empty value next to secretKeyRef
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+      extraEnv:
+        - name: KAFKA_TLS_CA
+          value: ""
+          valueFrom:
+            secretKeyRef: {name: kafka-client-tls, key: ca.crt}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv KAFKA_TLS_CA must come from valueFrom.secretKeyRef"
+  - it: rejects config KAFKA_TLS_CA (kafka.runtime strimzi)
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+      config.KAFKA_TLS_CA: "-----BEGIN CERTIFICATE-----"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.KAFKA_TLS_CA is not allowed: .*Secret"
+  - it: rejects config KAFKA_TLS_KEY (kafka.runtime msk)
+    template: templates/deployment.yaml
+    set:
+      config.KAFKA_TLS_KEY: x
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.KAFKA_TLS_KEY is not allowed: .*Secret"
+  - it: rejects extraEnv kafka.tls.ca (another spelling) even from secretKeyRef
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+      extraEnv:
+        - name: kafka.tls.ca
+          valueFrom:
+            secretKeyRef: {name: kafka-client-tls, key: ca.crt}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv kafka.tls.ca is not allowed: .*KAFKA_TLS_CA"
+  - it: rejects externalSecret.data key kafka-tls-cert (another spelling)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_DATASOURCE_PASSWORD
+          property: password
+        - secretKey: kafka-tls-cert
+          property: user_crt
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data kafka-tls-cert is not allowed: .*KAFKA_TLS_CERT"
+  - it: rejects config Kafka_Tls_Cert (another spelling)
+    template: templates/deployment.yaml
+    set:
+      config.Kafka_Tls_Cert: x
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.Kafka_Tls_Cert is not allowed"
+  - it: rejects javaToolOptions with -DKAFKA_TLS_CA (a system property wins over the environment)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-DKAFKA_TLS_CA=/etc/other/any.pem"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
