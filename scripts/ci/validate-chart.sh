@@ -183,6 +183,8 @@ must_fail "databaseCa.key other than global-bundle.pem" \
   --expect 'databaseCa.key must be global-bundle.pem' --set-string 'databaseCa.key=other-bundle.pem'
 must_fail "databaseCa.configMapName other than rds-ca-bundle (replaces the trust anchor)" \
   --expect 'databaseCa.configMapName must be rds-ca-bundle' --set-string 'databaseCa.configMapName=any-config'
+must_fail "databaseCa.configMapName null (Helm deletes the key; the volume would name no ConfigMap)" \
+  --expect 'databaseCa.configMapName is required while databaseCa.enabled' --set 'databaseCa.configMapName=null'
 must_fail "public IPv6 egress CIDR broader than /48 (2001:db8::/32)" --set networkPolicy.enabled=true \
   --set-string 'networkPolicy.egressCidrs[0].cidr=2001:db8::/32' --set 'networkPolicy.egressCidrs[0].ports[0]=443'
 if "$helm" lint "$chart" >/dev/null 2>&1; then
@@ -269,6 +271,8 @@ vendored_must_fail "databaseCaBundle.key application.yml" --expect 'databaseCa.k
   --set-string 'env.DB_URL=jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/application.yml'
 vendored_must_fail "databaseCaBundle.configMapName other than rds-ca-bundle" --expect 'databaseCa.configMapName must be rds-ca-bundle' \
   --set-string 'databaseCaBundle.configMapName=any-config'
+vendored_must_fail "databaseCaBundle.configMapName null (the adapter passes the key, so the guard sees it)" \
+  --expect 'databaseCa.configMapName must be rds-ca-bundle \(got ""\)' --set 'databaseCaBundle.configMapName=null'
 
 echo "[helm-unittest] $chart/tests"
 "$helm" unittest "$chart"

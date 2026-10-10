@@ -168,8 +168,8 @@ are refused (the chart renders only its own configMapRef and secretRef).
 {{/*
 Database CA mount. While databaseCa.enabled the chart mounts the ConfigMap
 <configMapName> (item <key>) at <mountPath> in every pod that reads the
-database, and sslrootcert and DB_SSL_ROOT_CERT are <mountPath>/<key>; all
-three are pinned to the trust-manager Bundle the mesh repo publishes in every
+database, and sslrootcert and DB_SSL_ROOT_CERT are <mountPath>/<key>; they
+are pinned to the trust-manager Bundle the mesh repo publishes in every
 service namespace:
   - mountPath must be /etc/fintechbankx/rds-ca: another path can put a
     values-chosen ConfigMap item where the service reads files (/app is the
@@ -179,7 +179,12 @@ service namespace:
   - key must be global-bundle.pem;
   - configMapName, when given (a service adapter should pass the one its
     templates mount), must be rds-ca-bundle: another ConfigMap replaces the
-    database trust anchor.
+    database trust anchor. A key a values file sets to null is not given:
+    Helm deletes it before any template runs. An adapter that passes
+    configMapName as its own dict entry hands the guard an empty value,
+    which is refused; a chart that passes its values map through (the
+    reference chart passes .) must require configMapName in the template
+    that mounts it.
 With databaseCa.enabled false nothing is mounted and nothing is checked here.
 */}}
 {{- define "fbx.validateDatabaseCa" -}}
