@@ -395,7 +395,8 @@ into the CI step, and the consent migration Job and the products history guard
 CronJob and Job do not call the guard yet (check (c)). When this chart's guard
 changes, as it has since `a4f0072` (Kafka client TLS names, `KAFKA_TLS_*` and
 `MONGODB_URI` only from a Secret, `spring.data.mongodb.*`, `kafka` and
-`mongodb` in JVM options), every service re-vendors the file and re-pins its
+`mongodb` in JVM options, the property reading of names with `_` inside an
+element), every service re-vendors the file and re-pins its
 digest and commit; until then it runs the `a4f0072` rules.
 
 JVM options: the chart checks `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and
