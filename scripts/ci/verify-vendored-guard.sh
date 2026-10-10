@@ -14,7 +14,11 @@
 #       ({{define, {{- define, extra white space or line breaks, "..." or `...`
 #       names, Go string escapes, block): a later definition would replace the
 #       vendored one. Subchart directories and .tgz archives (nested ones too)
-#       are read as well.
+#       are read as well, an archive the way Helm loads it: every entry that
+#       is not a directory, whatever its typeflag, named by its pax or GNU
+#       long name, split on '\' when its name holds one and cleaned. An
+#       archive Helm would refuse, or a sparse entry, fails this check. Every
+#       file is read without a leading UTF-8 BOM, as Helm reads it.
 #   (c) every workload template calls fbx.guard before it writes anything:
 #       directly ({{- include "fbx.guard" ... -}}) or through an adapter define
 #       of the chart that calls fbx.guard unconditionally before any output of
@@ -105,11 +109,14 @@ const fail = (msg) => { failures.push(msg); lines.push(`FAIL ${msg}`); };
 
 // ---------------------------------------------------------------- files
 // Every file of the chart, with archives expanded. Each entry: display (path
-// shown in messages; "!" separates an archive from a member), chartKey (which
-// chart of the tree the file belongs to), chartPath (path inside that chart),
-// text (latin1, byte for byte), bytes.
+// shown in messages; "!" separates an archive from a member, named as the
+// archive names it), chartKey (which chart of the tree the file belongs to,
+// "" for the chart itself), chartPath (path inside that chart, as Helm reads
+// it), archive (a .tgz or .tar.gz), bytes (as stored), text (latin1, byte for
+// byte, without the leading UTF-8 BOM Helm's loader drops from every file).
 const files = [];
 const unreadable = [];
+const isArchiveName = (name) => /\.(tgz|tar\.gz)$/i.test(name);
 
 function chartPosition(segments, chartKey) {
   let key = chartKey;
@@ -123,19 +130,20 @@ function chartPosition(segments, chartKey) {
 
 function addFile(display, segments, chartKey, bytes) {
   const pos = chartPosition(segments, chartKey);
-  files.push({ display, ...pos, bytes, text: bytes.toString("latin1") });
-  if (/\.(tgz|tar\.gz)$/i.test(display)) {
-    try {
-      for (const member of untar(zlib.gunzipSync(bytes))) {
-        const memberSegments = member.name.replace(/^(\.\/)+/, "").split("/").filter(Boolean);
-        if (memberSegments.length < 2) continue;
-        // An archived chart's root is its top directory.
-        addFile(`${display}!${memberSegments.join("/")}`, memberSegments.slice(1), `${display}!${memberSegments[0]}`, member.data);
-      }
-    } catch (err) {
-      unreadable.push(`${display} (archive): ${err.message}`);
-    }
+  const bom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+  const body = bom ? bytes.subarray(3) : bytes;
+  const archive = isArchiveName(segments[segments.length - 1]);
+  files.push({ display, ...pos, archive, bytes, text: body.toString("latin1") });
+  if (!archive) return;
+  let members;
+  try {
+    members = chartArchiveFiles(body);
+  } catch (err) {
+    unreadable.push(`${display} (archive): ${err.message}`);
+    return;
   }
+  // An archived chart's root is its top directory, whatever its name.
+  for (const m of members) addFile(`${display}!${m.member}`, m.name.split("/"), `${display}!`, m.data);
 }
 
 function walk(abs, relSegments, seen) {
@@ -156,43 +164,242 @@ function walk(abs, relSegments, seen) {
   }
 }
 
-function cstr(buf, start, len) {
-  const slice = buf.subarray(start, start + len);
-  const zero = slice.indexOf(0);
-  return slice.subarray(0, zero < 0 ? slice.length : zero).toString("utf8");
+// ---------------------------------------------------------------- archives
+// A .tgz is read the way Helm 3 loads a chart archive (pkg/chart/loader
+// LoadArchiveFiles over Go's archive/tar reader), so the script reads the
+// files Helm reads, under the paths Helm gives them:
+//   - every entry that is not a directory (typeflag 5, or the mode bits of a
+//     directory), whatever its typeflag; link, device and FIFO entries carry
+//     no data, whatever their size field says;
+//   - the name: the path and size records of the pax header right before the
+//     entry (a later pax header replaces an earlier one; a global header
+//     applies to no entry), then a GNU long name, else the header's name with
+//     the USTAR or STAR prefix (a GNU header uses the prefix field only when
+//     its time fields do not parse);
+//   - the path: the name after its top directory, split on '\' when it holds
+//     one, else on '/', and cleaned (path.Clean);
+//   - a leading UTF-8 BOM dropped (addFile).
+// What Helm refuses (a bad header checksum, a truncated archive, an entry
+// outside a top directory, an absolute path, '..') and sparse entries, which
+// the script does not expand, make the archive unreadable, so check (b)
+// fails closed.
+const TAR_MAX_SPECIAL = 1 << 20;
+const TAR_HEADER_ONLY = new Set(["1", "2", "3", "4", "5", "6"]);
+const tarError = (what) => new Error(`invalid tar archive (${what})`);
+
+function tarString(b) {
+  const z = b.indexOf(0);
+  return (z < 0 ? b : b.subarray(0, z)).toString("latin1");
 }
 
-function* untar(buf) {
+function tarOctal(b) {
+  let s = b.toString("latin1").replace(/^[ \0]+|[ \0]+$/g, "");
+  const z = s.indexOf("\0");
+  if (z >= 0) s = s.slice(0, z);
+  if (s === "") return 0n;
+  if (!/^[0-7]+$/.test(s) || BigInt(`0o${s}`) >= 1n << 64n) throw tarError("numeric field");
+  return BigInt.asIntN(64, BigInt(`0o${s}`));
+}
+
+// Octal, or base-256 when the first byte has its high bit set.
+function tarNumeric(b) {
+  if (b.length === 0 || (b[0] & 0x80) === 0) return tarOctal(b);
+  const inv = b[0] & 0x40 ? 0xff : 0;
+  let x = 0n;
+  for (let i = 0; i < b.length; i++) {
+    if (x >> 56n) throw tarError("numeric field");
+    x = (x << 8n) | BigInt((b[i] ^ inv) & (i === 0 ? 0x7f : 0xff));
+  }
+  if (x >> 63n) throw tarError("numeric field");
+  return inv ? -x - 1n : x;
+}
+
+function tarHeader(h) {
+  let unsigned = 0;
+  let signed = 0;
+  for (let i = 0; i < 512; i++) {
+    const c = i >= 148 && i < 156 ? 0x20 : h[i];
+    unsigned += c;
+    signed += c > 127 ? c - 256 : c;
+  }
+  let sum;
+  try { sum = tarOctal(h.subarray(148, 156)); } catch { sum = null; }
+  if (sum !== BigInt(unsigned) && sum !== BigInt(signed)) throw tarError("header checksum");
+  const magic = h.toString("latin1", 257, 263);
+  const format = magic === "ustar\0" ? (h.toString("latin1", 508, 512) === "tar\0" ? "star" : "ustar")
+    : magic === "ustar " && h.toString("latin1", 263, 265) === " \0" ? "gnu" : "v7";
+  const hdr = {
+    type: String.fromCharCode(h[156]),
+    name: tarString(h.subarray(0, 100)),
+    mode: tarNumeric(h.subarray(100, 108)),
+    size: tarNumeric(h.subarray(124, 136))
+  };
+  for (const [from, to] of [[108, 116], [116, 124], [136, 148]]) tarNumeric(h.subarray(from, to));
+  if (format === "v7") return hdr;
+  tarNumeric(h.subarray(329, 337));
+  tarNumeric(h.subarray(337, 345));
+  let prefix = "";
+  if (format === "ustar") prefix = tarString(h.subarray(345, 500));
+  else if (format === "star") {
+    prefix = tarString(h.subarray(345, 476));
+    tarNumeric(h.subarray(476, 488));
+    tarNumeric(h.subarray(488, 500));
+  } else {
+    try {
+      if (h[345] !== 0) tarNumeric(h.subarray(345, 357));
+      if (h[357] !== 0) tarNumeric(h.subarray(357, 369));
+    } catch {
+      const s = tarString(h.subarray(345, 500));
+      if (!/[^\x01-\x7f]/.test(s)) prefix = s;
+    }
+  }
+  if (prefix !== "") hdr.name = `${prefix}/${hdr.name}`;
+  return hdr;
+}
+
+function paxRecords(d) {
+  let s = d.toString("latin1");
+  const records = new Map();
+  while (s.length > 0) {
+    const sp = s.indexOf(" ");
+    const n = sp > 0 && /^[+-]?[0-9]+$/.test(s.slice(0, sp)) ? Number(s.slice(0, sp)) : NaN;
+    if (!(n >= 5 && n <= s.length && n > sp + 1 && s[n - 1] === "\n")) throw tarError("pax record");
+    const rec = s.slice(sp + 1, n - 1);
+    const eq = rec.indexOf("=");
+    if (eq <= 0) throw tarError("pax record");
+    const k = rec.slice(0, eq);
+    const v = rec.slice(eq + 1);
+    if (["path", "linkpath", "uname", "gname"].includes(k) ? v.includes("\0") : k.includes("\0")) throw tarError("pax record");
+    records.set(k, v);
+    s = s.slice(n);
+  }
+  return records;
+}
+
+function paxInt(v) {
+  if (!/^[+-]?[0-9]+$/.test(v)) throw tarError("pax record");
+  const x = BigInt(v);
+  if (x < -(1n << 63n) || x >= 1n << 63n) throw tarError("pax record");
+  return x;
+}
+
+function mergePax(hdr, records) {
+  for (const [k, v] of records) {
+    if (v === "") continue;
+    if (k === "path") hdr.name = v;
+    else if (k === "size") hdr.size = paxInt(v);
+    else if (k === "uid" || k === "gid") paxInt(v);
+    else if (k === "atime" || k === "mtime" || k === "ctime") {
+      const dot = v.indexOf(".");
+      paxInt(dot < 0 ? v : v.slice(0, dot));
+      if (dot >= 0 && !/^[0-9]*$/.test(v.slice(dot + 1))) throw tarError("pax record");
+    }
+  }
+}
+
+// Whether Go reads the entry as a GNU sparse file in pax form (0.0, 0.1, 1.0).
+function paxSparse(records) {
+  const major = records.get("GNU.sparse.major") ?? "";
+  const minor = records.get("GNU.sparse.minor") ?? "";
+  if (major === "0" && (minor === "0" || minor === "1")) return true;
+  if (major === "1" && minor === "0") return true;
+  if (major !== "" || minor !== "") return false;
+  return (records.get("GNU.sparse.map") ?? "") !== "" || records.has("GNU.sparse.offset") || records.has("GNU.sparse.numbytes");
+}
+
+// The entries Go's tar reader returns, pax, GNU long name and global headers
+// consumed. Each: type, name (latin1), mode, data.
+function* tarEntries(buf) {
   let off = 0;
-  let longName = null;
-  let paxPath = null;
-  while (off + 512 <= buf.length) {
-    const h = buf.subarray(off, off + 512);
-    if (h.every((b) => b === 0)) break;
-    const sizeField = cstr(h, 124, 12).trim();
-    if (!/^[0-7]*$/.test(sizeField)) throw new Error("unsupported tar size field");
-    const size = sizeField ? parseInt(sizeField, 8) : 0;
-    const type = h[156] === 0 ? "0" : String.fromCharCode(h[156]);
-    const magic = cstr(h, 257, 6);
-    const prefix = magic.startsWith("ustar") ? cstr(h, 345, 155) : "";
-    const start = off + 512;
-    if (start + size > buf.length) throw new Error("truncated tar archive");
-    const data = buf.subarray(start, start + size);
-    off = start + Math.ceil(size / 512) * 512;
-    if (type === "L") { longName = cstr(data, 0, data.length); continue; }
-    if (type === "x") {
-      for (const rec of data.toString("utf8").split("\n")) {
-        const m = /^\d+ path=(.*)$/.exec(rec);
-        if (m) paxPath = m[1];
+  let pad = 0;
+  let pax = null;
+  let longName = "";
+  const block = () => {
+    if (off === buf.length) return null;
+    if (buf.length - off < 512) throw tarError("truncated");
+    off += 512;
+    return buf.subarray(off - 512, off);
+  };
+  const zero = (b) => b.every((x) => x === 0);
+  const dataSize = (hdr) => (TAR_HEADER_ONLY.has(hdr.type) ? 0n : hdr.size);
+  const data = (n) => {
+    if (n < 0n) throw tarError("negative size");
+    if (BigInt(buf.length - off) < n) throw tarError("truncated");
+    const d = buf.subarray(off, off + Number(n));
+    off += d.length;
+    pad = (512 - (d.length % 512)) % 512;
+    return d;
+  };
+  for (;;) {
+    if (pad > 0) {
+      if (buf.length - off < pad) return;
+      off += pad;
+      pad = 0;
+    }
+    let h = block();
+    if (h === null) return;
+    if (zero(h)) {
+      h = block();
+      if (h === null || zero(h)) return;
+      throw tarError("a header after a zero block");
+    }
+    const hdr = tarHeader(h);
+    if (dataSize(hdr) < 0n) throw tarError("negative size");
+    if (["x", "g", "L", "K"].includes(hdr.type)) {
+      if (dataSize(hdr) > BigInt(TAR_MAX_SPECIAL)) throw tarError("extended header too long");
+      const d = data(dataSize(hdr));
+      if (hdr.type === "x") pax = paxRecords(d);
+      else if (hdr.type === "L") longName = tarString(d);
+      else if (hdr.type === "g") {
+        // Go returns a global header as an entry of its own; Helm skips it.
+        paxRecords(d);
+        pax = null;
+        longName = "";
       }
       continue;
     }
-    if (type === "g") continue;
-    const name = longName ?? paxPath ?? (prefix ? `${prefix}/${cstr(h, 0, 100)}` : cstr(h, 0, 100));
-    longName = null;
-    paxPath = null;
-    if (type === "0" || type === "7") yield { name, data };
+    if (pax) mergePax(hdr, pax);
+    if (longName !== "") hdr.name = longName;
+    if (hdr.type === "\0") hdr.type = hdr.name.endsWith("/") ? "5" : "0";
+    if (hdr.type === "S" || (pax && paxSparse(pax))) {
+      throw new Error(`sparse entry ${Buffer.from(hdr.name, "latin1").toString("utf8")} (not expanded)`);
+    }
+    pax = null;
+    longName = "";
+    yield { ...hdr, data: data(dataSize(hdr)) };
   }
+}
+
+// Go's path.Clean for a relative path.
+function cleanPath(p) {
+  const out = [];
+  for (const seg of p.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === ".." && out.length > 0 && out[out.length - 1] !== "..") out.pop();
+    else out.push(seg);
+  }
+  return out.length === 0 ? "." : out.join("/");
+}
+
+// The files of a chart archive as Helm's LoadArchiveFiles returns them:
+// member (the entry's name), name (its path in the chart), data.
+function chartArchiveFiles(bytes) {
+  const out = [];
+  const utf8 = (s) => Buffer.from(s, "latin1").toString("utf8");
+  for (const e of tarEntries(zlib.gunzipSync(bytes))) {
+    if (e.type === "5" || (BigInt.asUintN(32, e.mode) & ~0o7777n) === 0o40000n) continue;
+    const parts = e.name.split(e.name.includes("\\") ? "\\" : "/");
+    const joined = parts.slice(1).join("/");
+    if (joined.startsWith("/")) throw new Error(`${utf8(e.name)}: absolute path`);
+    const name = cleanPath(joined);
+    if (name === ".") throw new Error(`${utf8(e.name)}: content outside the base directory`);
+    if (name.startsWith("..")) throw new Error(`${utf8(e.name)}: references the parent directory`);
+    if (/^[a-zA-Z]:\//.test(name)) throw new Error(`${utf8(e.name)}: a drive path`);
+    if (parts[0] === "Chart.yaml") throw new Error("Chart.yaml is not in a top directory");
+    out.push({ member: utf8(e.name), name: utf8(name), data: e.data });
+  }
+  if (out.length === 0) throw new Error("no files in the archive");
+  return out;
 }
 
 // ---------------------------------------------------------------- lexer
@@ -417,7 +624,7 @@ if (guardFiles.length === 0) {
 const vendored = guardFiles.length === 1 ? guardFiles[0] : null;
 let bFailures = 0;
 for (const f of files) {
-  if (f === vendored || /\.(tgz|tar\.gz)$/i.test(f.display)) continue;
+  if (f === vendored || f.archive) continue;
   for (const d of definesIn(f)) {
     if (typeof d.name === "string" && d.name.startsWith("fbx.")) {
       bFailures++;

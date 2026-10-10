@@ -216,7 +216,11 @@ editing it:
    other file of the chart, subchart directories and `.tgz` archives
    included, defines an `fbx.*` template in any spelling (`{{define`,
    `{{- define`, extra white space, a `"..."` or `` `...` `` name, `block`),
-   since a later definition replaces the vendored one, and (c) that every
+   since a later definition replaces the vendored one (an archive is read
+   the way Helm loads it: every entry that is not a directory, whatever its
+   typeflag, by its pax or GNU long name, `\` separators and cleaned paths;
+   an archive Helm would refuse, or a sparse entry, fails the check; every
+   file is read without a leading UTF-8 BOM, as Helm reads it), and (c) that every
    workload template runs the guard before it writes anything (step 2). A
    workload template is one that writes, itself or through an included
    define, at the top level of a YAML document in any spelling (block or

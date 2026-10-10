@@ -4,7 +4,8 @@
 //   (a) exactly one file under templates/ defines fbx.guard, and its whole-file
 //       sha256 is the pinned digest (a provenance header changes the digest);
 //   (b) no other file of the chart, subchart directories and .tgz archives
-//       included, defines an fbx.* template in any spelling;
+//       included (an archive read the way Helm loads it), defines an fbx.*
+//       template in any spelling;
 //   (c) every workload template (one whose document's top-level kind, in any
 //       spelling, is outside the pod-free list or unreadable, or that writes
 //       unread text there) runs the guard, directly or through an adapter
@@ -18,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "..", "..", "..");
@@ -388,6 +390,167 @@ test("(c) fails for a workload template inside a subchart .tgz without the guard
     "templates/daemonset.yaml": workload("DaemonSet")
   });
   assertFail(verify(dir), /FAIL \(c\) charts\/sub-0\.1\.0\.tgz!sub\/templates\/daemonset\.yaml \(DaemonSet\): no fbx\.guard call/);
+});
+
+// A subchart archive is read the way Helm 3 loads one (pkg/chart/loader
+// archive.go over Go's archive/tar reader): every member that is not a
+// directory whatever its typeflag, the path after the top directory with '\'
+// as the separator when the name holds one and path.Clean applied, the pax
+// size and path records of the one pax header before the member, GNU long
+// names, no data for link and device entries, the GNU prefix rule, a leading
+// UTF-8 BOM dropped. The archives below are written member by member;
+// helm template (3.16) renders the Job each one hides.
+function tarHeader({ name, type = "0", size = 0, mode = 0o644, magic = "ustar\0", version = "00", prefix = "", linkname = "" }) {
+  const h = Buffer.alloc(512);
+  h.write(name, 0, 100, "latin1");
+  h.write(`${mode.toString(8).padStart(7, "0")}\0`, 100, 8, "latin1");
+  h.write("0000000\0", 108, 8, "latin1");
+  h.write("0000000\0", 116, 8, "latin1");
+  h.write(`${size.toString(8).padStart(11, "0")}\0`, 124, 12, "latin1");
+  h.write("00000000000\0", 136, 12, "latin1");
+  h[156] = type.charCodeAt(0);
+  h.write(linkname, 157, 100, "latin1");
+  h.write(magic, 257, 6, "latin1");
+  h.write(version, 263, 2, "latin1");
+  h.write(prefix, 345, 155, "latin1");
+  return tarChecksum(h);
+}
+function tarChecksum(h) {
+  h.fill(0x20, 148, 156);
+  let sum = 0;
+  for (const b of h) sum += b;
+  h.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148, 8, "latin1");
+  return h;
+}
+const tarPad = (data) => Buffer.concat([data, Buffer.alloc((512 - (data.length % 512)) % 512)]);
+function tarMember(name, content, opts = {}) {
+  const data = Buffer.from(content, "latin1");
+  return Buffer.concat([tarHeader({ name, size: data.length, ...opts }), tarPad(data)]);
+}
+function paxMember(records, type = "x") {
+  let text = "";
+  for (const [k, v] of records) {
+    const body = ` ${k}=${v}\n`;
+    let n = body.length + 1;
+    while (`${n}${body}`.length !== n) n++;
+    text += `${n}${body}`;
+  }
+  return tarMember("PaxHeaders/0", text, { type });
+}
+function writeArchive(dir, rel, ...members) {
+  fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+  fs.writeFileSync(path.join(dir, rel), zlib.gzipSync(Buffer.concat([...members, Buffer.alloc(1024)])));
+}
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const HIDDEN_JOB = workload("Job");
+const SUB_CHART_YAML = () => tarMember("sub/Chart.yaml", "apiVersion: v2\nname: sub\nversion: 0.1.0\n");
+// The pax size (1 block more than the header's 0) makes the next 512 bytes
+// part of the template, a Go template comment for Helm; a reader that takes
+// the header's size reads them as a header of a file outside templates/.
+function paxSizeMembers() {
+  const tail = `*/}}\n${HIDDEN_JOB}`;
+  return [
+    paxMember([["size", String(512 + tail.length)]]),
+    tarHeader({ name: "sub/templates/job.yaml", size: 0 }),
+    tarPad(Buffer.concat([tarHeader({ name: "{{/* sub/files/note.txt", size: tail.length }), Buffer.from(tail, "latin1")]))
+  ];
+}
+const helmMembers = {
+  "an unknown typeflag ('A')": [[tarMember("sub/templates/job.yaml", HIDDEN_JOB, { type: "A" })], "sub/templates/job.yaml"],
+  "'\\' as the separator": [[tarMember("sub\\templates\\job.yaml", HIDDEN_JOB)], "sub\\templates\\job.yaml"],
+  "a pax size larger than the header's": [paxSizeMembers(), "sub/templates/job.yaml"],
+  "a GNU long name followed by a long link name": [
+    [tarMember("././@LongLink", "sub/templates/job.yaml", { type: "L" }), tarMember("././@LongLink", "x", { type: "K" }), tarMember("sub/README.md", HIDDEN_JOB)],
+    "sub/templates/job.yaml"
+  ],
+  "a GNU long name consumed by a pax global header": [
+    [tarMember("././@LongLink", "sub/README.md", { type: "L" }), paxMember([["comment", "x"]], "g"), tarMember("sub/templates/job.yaml", HIDDEN_JOB)],
+    "sub/templates/job.yaml"
+  ],
+  "a symbolic link entry with a size (no data follows)": [
+    [tarHeader({ name: "sub/link", type: "2", size: 1024, linkname: "Chart.yaml" }), tarMember("sub/templates/job.yaml", HIDDEN_JOB)],
+    "sub/templates/job.yaml"
+  ],
+  "a '..' segment": [[tarMember("sub/x/../templates/job.yaml", HIDDEN_JOB)], "sub/x/../templates/job.yaml"],
+  "a '.' segment": [[tarMember("sub/./templates/job.yaml", HIDDEN_JOB)], "sub/./templates/job.yaml"],
+  "a pax path (a long name)": [
+    [paxMember([["path", `sub/templates/${"j".repeat(120)}.yaml`]]), tarMember("sub/README.md", HIDDEN_JOB)],
+    `sub/templates/${"j".repeat(120)}.yaml`
+  ],
+  "an empty pax path (the header's name stands)": [[paxMember([["path", ""]]), tarMember("sub/templates/job.yaml", HIDDEN_JOB)], "sub/templates/job.yaml"],
+  "a later pax header without a path": [
+    [paxMember([["path", "sub/README.md"]]), paxMember([["mtime", "1"]]), tarMember("sub/templates/job.yaml", HIDDEN_JOB)],
+    "sub/templates/job.yaml"
+  ],
+  "GNU magic with octal digits where USTAR keeps its prefix": [
+    [tarMember("sub/templates/job.yaml", HIDDEN_JOB, { magic: "ustar ", version: " \0", prefix: "1" })],
+    "sub/templates/job.yaml"
+  ],
+  "a leading UTF-8 BOM before a JSON document": [
+    [tarMember("sub/templates/job.yaml", `\xef\xbb\xbf${JSON.stringify({ apiVersion: "batch/v1", kind: "Job", metadata: { name: "x" } })}\n`)],
+    "sub/templates/job.yaml"
+  ]
+};
+for (const [label, [members, shown]] of Object.entries(helmMembers)) {
+  test(`(c) reads a subchart archive member as Helm loads it: ${label}`, (t) => {
+    const dir = makeChart(t, baseFiles());
+    writeArchive(dir, "charts/sub-0.1.0.tgz", SUB_CHART_YAML(), ...members);
+    assertFail(verify(dir), new RegExp(`FAIL \\(c\\) charts/sub-0\\.1\\.0\\.tgz!${escapeRe(shown)} \\(Job\\): no fbx\\.guard call`));
+  });
+}
+
+test("(b) reads a define in a subchart archive member with an unknown typeflag", (t) => {
+  const dir = makeChart(t, baseFiles());
+  writeArchive(dir, "charts/sub-0.1.0.tgz", SUB_CHART_YAML(),
+    tarMember("sub/templates/_x.tpl", '{{- define "fbx.guard" }}{{ end }}\n', { type: "A" }));
+  assertFail(verify(dir), /FAIL \(b\) charts\/sub-0\.1\.0\.tgz!sub\/templates\/_x\.tpl defines fbx\.guard/);
+});
+
+test("(c) reads a template with a leading UTF-8 BOM as Helm does (BOM dropped)", (t) => {
+  const files = baseFiles();
+  files["templates/job.yaml"] = `﻿${HIDDEN_JOB.replace("apiVersion: batch/v1\nkind: Job", "kind: Job\napiVersion: batch/v1")}`;
+  assertFail(verify(makeChart(t, files)), /FAIL \(c\) templates\/job\.yaml \(Job\): no fbx\.guard call/);
+});
+
+test("(b) fails closed on archive members it cannot read as Helm does (sparse) and on archives Helm refuses", (t) => {
+  const sparse = tarHeader({ name: "sub/templates/job.yaml", type: "S", size: HIDDEN_JOB.length, magic: "ustar ", version: " \0" });
+  sparse.write("00000000000\0", 386, 12, "latin1");
+  sparse.write(`${HIDDEN_JOB.length.toString(8).padStart(11, "0")}\0`, 398, 12, "latin1");
+  sparse.write(`${HIDDEN_JOB.length.toString(8).padStart(11, "0")}\0`, 483, 12, "latin1");
+  tarChecksum(sparse);
+  const cases = {
+    "a GNU sparse member": [Buffer.concat([sparse, tarPad(Buffer.from(HIDDEN_JOB))])],
+    "a member outside the top directory": [tarMember("README.md", "x")],
+    "a header with a bad checksum": [Buffer.concat([tarHeader({ name: "sub/templates/job.yaml", size: 0 }).fill(0x31, 0, 1)])]
+  };
+  for (const [label, members] of Object.entries(cases)) {
+    const dir = makeChart(t, baseFiles());
+    writeArchive(dir, "charts/sub-0.1.0.tgz", SUB_CHART_YAML(), ...members);
+    const r = verify(dir);
+    assert.equal(r.status, 1, `${label}: ${r.out}`);
+    assert.match(r.out, /FAIL \(b\) cannot read charts\/sub-0\.1\.0\.tgz \(archive\): /, label);
+  }
+});
+
+test("(b)/(c) pass for members Helm skips or reads as written: directories, pax and GNU long names", (t) => {
+  const dir = makeChart(t, baseFiles());
+  const longDir = `sub/templates/${"d".repeat(60)}/${"e".repeat(60)}`;
+  writeArchive(dir, "charts/sub-0.1.0.tgz",
+    tarHeader({ name: "sub/", type: "5", mode: 0o755 }),
+    SUB_CHART_YAML(),
+    paxMember([["comment", "made by a test"]], "g"),
+    paxMember([["path", `${longDir}/cm.yaml`], ["mtime", "1.5"]]),
+    tarMember("sub/templates/cm-short-name.yaml", "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n"),
+    tarMember("././@LongLink", `${longDir}/cm2.yaml`, { type: "L" }),
+    tarMember("sub/templates/cm2-short-name.yaml", "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\n"),
+    // A directory by its mode bits: Helm skips it, data and all.
+    tarMember("sub/templates/_dir.tpl", '{{- define "fbx.guard" }}{{ end }}\n', { mode: 0o40755 }));
+  const r = verify(dir);
+  assertPass(r);
+  // 4 files of the chart, the archive, and sub/Chart.yaml with the two
+  // long-named ConfigMaps: the directory entries are not files.
+  assert.match(r.out, /\(b\) no other file defines an fbx\.\* template \(8 files read/);
 });
 
 test("(c) fails when the chart renders no workload at all", (t) => {
