@@ -151,6 +151,12 @@ must_fail "extraEnv KAFKA_TLS_CA as a literal (kafka.runtime strimzi)" --expect 
   --set-string 'kafka.runtime=strimzi' --set 'extraEnv[0].name=KAFKA_TLS_CA' --set-string 'extraEnv[0].value=-----BEGIN CERTIFICATE-----'
 must_fail "config KAFKA_TLS_CERT (kafka.runtime strimzi)" --expect 'config.KAFKA_TLS_CERT is not allowed' \
   --set-string 'kafka.runtime=strimzi' --set-string 'config.KAFKA_TLS_CERT=-----BEGIN CERTIFICATE-----'
+must_fail "config SPRING_DATA_MONGODB_URI (DocumentDB URI override)" --expect 'config.SPRING_DATA_MONGODB_URI is not allowed: a spring.data.mongodb.\* property' \
+  --set-string 'config.SPRING_DATA_MONGODB_URI=mongodb://docdb.example.internal:27017/db?tls=false'
+must_fail "extraEnv MONGODB_URI as a literal" --expect 'extraEnv MONGODB_URI must come from valueFrom.secretKeyRef' \
+  --set 'extraEnv[0].name=MONGODB_URI' --set-string 'extraEnv[0].value=mongodb://docdb.example.internal:27017/db?tls=false'
+must_fail "javaToolOptions with -Dspring.kafka.bootstrap-servers (kafka mention)" --expect 'javaToolOptions must not mention .*kafka' \
+  --set-string 'javaToolOptions=-Dspring.kafka.bootstrap-servers=other.example.internal:9092'
 must_fail "KAFKA_SECURITY_PROTOCOL=SSL without kafka.runtime (no auth profile)" --expect 'is set but kafka.runtime is empty' \
   --set-string 'config.KAFKA_SECURITY_PROTOCOL=SSL'
 must_fail "public IPv6 egress CIDR broader than /48 (2001:db8::/32)" --set networkPolicy.enabled=true \
@@ -212,6 +218,13 @@ vendored_must_fail "env spring.kafka.properties.ssl.truststore.location" --expec
 vendored_must_fail "additionalEnv KAFKA_TLS_KEY from configMapKeyRef (strimzi)" --expect 'extraEnv KAFKA_TLS_KEY must come from valueFrom.secretKeyRef' \
   --set-string kafkaRuntime=strimzi --set-string env.KAFKA_SECURITY_PROTOCOL=SSL --set 'additionalEnv[0].name=KAFKA_TLS_KEY' \
   --set-string 'additionalEnv[0].valueFrom.configMapKeyRef.name=other' --set-string 'additionalEnv[0].valueFrom.configMapKeyRef.key=user.key'
+vendored_must_fail "env spring.data.mongodb.uri" --expect 'config.spring.data.mongodb.uri is not allowed: a spring.data.mongodb.\* property' \
+  --set-string 'env.spring\.data\.mongodb\.uri=mongodb://docdb.example.internal:27017/db?tls=false'
+vendored_must_fail "secret key mongodb.uri (MONGODB_URI in another spelling)" --expect 'externalSecret.data mongodb.uri is not allowed' \
+  --set 'secrets.keys[0].secretKey=SPRING_DATASOURCE_PASSWORD' --set-string 'secrets.keys[0].property=password' \
+  --set 'secrets.keys[1].secretKey=mongodb.uri' --set-string 'secrets.keys[1].property=uri'
+vendored_must_fail "jvmOptions with -DMONGODB_URI (mongodb mention)" --expect 'javaToolOptions must not mention .*mongodb' \
+  --set-string 'jvmOptions=-DMONGODB_URI=mongodb://other.example.internal:27017/db'
 
 echo "[helm-unittest] $chart/tests"
 "$helm" unittest "$chart"

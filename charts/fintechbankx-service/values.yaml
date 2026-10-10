@@ -119,10 +119,12 @@ config: {}
 #     (DB_SSL_ROOT_CERT is the chart's own) or ssl mode, separators optional;
 #     no Kafka client TLS name, spring.kafka[.<client>].ssl.* or
 #     spring.kafka[.<client>].properties.ssl.*, other than the value-checked
-#     ssl.endpoint.identification.algorithm (see kafka below);
-#   - KAFKA_TLS_CERT, KAFKA_TLS_KEY and KAFKA_TLS_CA only from a Secret
-#     (extraEnv valueFrom.secretKeyRef or externalSecret data/extraData), in
-#     exactly that spelling, never under config;
+#     ssl.endpoint.identification.algorithm (see kafka below); no
+#     spring.data.mongodb.* name except SPRING_DATA_MONGODB_USERNAME/PASSWORD;
+#   - KAFKA_TLS_CERT, KAFKA_TLS_KEY, KAFKA_TLS_CA and MONGODB_URI (the
+#     DocumentDB connection string) only from a Secret (extraEnv
+#     valueFrom.secretKeyRef or externalSecret data/extraData), in exactly
+#     that spelling, never under config;
 #   - DB_URL only as the config key DB_URL (db.url, db-url, dbUrl are
 #     refused); a non-empty value must be a jdbc:[<wrapper>:]postgresql: URL
 #     with exactly one sslmode=verify-full and, while databaseCa is enabled,
@@ -132,8 +134,8 @@ config: {}
 #   - JVM options (javaToolOptions, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS,
 #     _JAVA_OPTIONS) must not mention datasource, flyway, liquibase, r2dbc,
 #     jdbc, ssl, application.json, spring.config, spring.profiles,
-#     fintechbankx.tls, security.protocol, endpoint.identification, kafka.tls,
-#     java.security.properties, jdk.tls or hostname verification (also with
+#     fintechbankx.tls, security.protocol, endpoint.identification, kafka,
+#     mongodb, java.security.properties, jdk.tls or hostname verification (also with
 #     every character other than [a-z0-9] removed, e.g. -Dspring..config.import),
 #     must be printable ASCII, must not contain '$(' or '${', nor read an
 #     options file ('@' argument file, also quoted, -XX:VMOptionsFile,

@@ -32,10 +32,10 @@ key and value they interpolate (ConfigMap keys, ExternalSecret `secretKey`,
 
 | Input route | What the guard checks |
 | --- | --- |
-| `config` keys (rendered into the ConfigMap, loaded with `envFrom`) | name rules below; the key must be a ConfigMap key (`[-._a-zA-Z0-9]+`); values of `security.protocol` / `endpoint.identification.algorithm` names; every `jdbc:[<wrapper>:]postgresql:` value is parsed; JVM option names have their value checked; Secret-only names (`KAFKA_TLS_*`, rule 7) are refused |
+| `config` keys (rendered into the ConfigMap, loaded with `envFrom`) | name rules below; the key must be a ConfigMap key (`[-._a-zA-Z0-9]+`); values of `security.protocol` / `endpoint.identification.algorithm` names; every `jdbc:[<wrapper>:]postgresql:` value is parsed; JVM option names have their value checked; Secret-only names (`KAFKA_TLS_*`, rule 7; `MONGODB_URI`, rule 8) are refused |
 | `extraEnv` with `value` | the same as `config`, except that `DB_URL` is refused in every spelling, the name must be printable ASCII other than `=` and white space, and no value may contain `$(` (Kubernetes expands `$(VAR)` from earlier env entries and `envFrom` keys after the guard has read the text; use `valueFrom`, e.g. `fieldRef`, instead) |
-| `extraEnv` with `valueFrom` | name rules below; JVM option, `security.protocol` and `endpoint.identification.algorithm` names are refused (the value cannot be seen), also next to an empty `value`; Secret-only names (`KAFKA_TLS_*`, rule 7) only with `valueFrom.secretKeyRef` alone, never with a literal `value`, `configMapKeyRef`, `fieldRef` or `resourceFieldRef` |
-| `externalSecret.data` / `extraData` `secretKey` | name rules below; `DB_URL`, JVM option and Kafka `security.protocol` / `endpoint.identification.algorithm` names are refused (the secret keeps only credentials and Secret-only names such as `KAFKA_TLS_CA`, in their exact spelling); the key must be a Secret key (`[-._a-zA-Z0-9]+`), and `property` / `remoteSecretName` must not contain a control character |
+| `extraEnv` with `valueFrom` | name rules below; JVM option, `security.protocol` and `endpoint.identification.algorithm` names are refused (the value cannot be seen), also next to an empty `value`; Secret-only names (`KAFKA_TLS_*`, rule 7; `MONGODB_URI`, rule 8) only with `valueFrom.secretKeyRef` alone, never with a literal `value`, `configMapKeyRef`, `fieldRef` or `resourceFieldRef` |
+| `externalSecret.data` / `extraData` `secretKey` | name rules below; `DB_URL`, JVM option and Kafka `security.protocol` / `endpoint.identification.algorithm` names are refused (the secret keeps only credentials and Secret-only names such as `KAFKA_TLS_CA` and `MONGODB_URI`, in their exact spelling); the key must be a Secret key (`[-._a-zA-Z0-9]+`), and `property` / `remoteSecretName` must not contain a control character |
 | `javaToolOptions` (rendered as `JAVA_TOOL_OPTIONS`) | JVM option rules below |
 | `envFrom`, `extraEnvFrom`, `externalSecret.dataFrom` values | refused (`fbx.validateEnvSources`): they load names the guard never sees; the chart renders only its own `configMapRef` and `secretRef` |
 | Other values written into the pod spec (`preStopSleepSeconds`, `probes.*`, `priorityClassName`, `terminationGracePeriodSeconds`, `revisionHistoryLimit`, `serviceAccount.name`, ...) | not part of the guard: `values.schema.json` types them and the templates render every number with `int` and every string with `quote`, so no value can close its line and add fields such as `args: ["--spring.config.import=..."]` |
@@ -60,8 +60,11 @@ inside a name element, so `spring.pro-files.active`, `spring.pro:files.active`
    the value must not mention `datasource`, `flyway`, `liquibase`, `r2dbc`,
    `jdbc`, `ssl`, `application.json`, `spring.config`, `spring.profiles`,
    `fintechbankx.tls`, `security.protocol`, `endpoint.identification`,
-   `kafka.tls` (`-DKAFKA_TLS_CA` would resolve the `kafka-strimzi` profile's
-   `${KAFKA_TLS_CA}` before the environment does),
+   `kafka` (`-Dspring.kafka.*` sets any Kafka client property, and
+   `-DKAFKA_TLS_CA` would resolve the `kafka-strimzi` profile's
+   `${KAFKA_TLS_CA}` before the environment does), `mongodb`
+   (`-Dspring.data.mongodb.*`, and `-DMONGODB_URI` would resolve the
+   DocumentDB services' `${MONGODB_URI}` before the Secret does),
    `java.security.properties`, `jdk.tls` or `hostname verification`, also
    once every character other than `[a-z0-9]` is removed (with and without
    white space), so `-Dspring..config.import`, `-Dspring.[profiles].active`,
@@ -145,6 +148,28 @@ inside a name element, so `spring.pro-files.active`, `spring.pro:files.active`
    resolves `${KAFKA_TLS_CA}` from the env name `KAFKA_TLS_CA`, not from
    `kafka.tls.ca` or `Kafka_Tls_Ca`, so every other spelling of
    `(?i)^kafka[._-]?tls([._-]|$)` is refused on every route.
+8. DocumentDB. `(?i)^spring[._-]?data[._-]?mongodb([._-]|$)`
+   (`fbx.overrideNameReason`) on every route: `spring.data.mongodb.uri`,
+   `host`, `port`, `database`, `replica-set-name`, `ssl.enabled`,
+   `ssl.bundle` and the rest can point the DocumentDB client at another
+   server or switch its TLS off. The exceptions are the credentials
+   `SPRING_DATA_MONGODB_USERNAME` and `SPRING_DATA_MONGODB_PASSWORD`, in this
+   env spelling (any case), allowed on the same routes as
+   `SPRING_DATASOURCE_USERNAME` and `_PASSWORD`; `spring.data.mongodb.password`
+   is refused like `spring.datasource.password`. With Spring Boot 3.3.6,
+   `SPRING_DATA_MONGODB_URI`, `spring.data.mongo-db.uri` and
+   `spring.data[mongodb].uri` all bind `spring.data.mongodb.uri`
+   (`SPRING_DATA_MONGO_DB_URI` binds nothing). Secret-only name
+   (`fbx.validateSecretNames`, `fbx.secretOnlyName`, `fbx.secretOnlyReason`):
+   `MONGODB_URI` is the connection string, credentials and TLS options
+   included, that the open-finance DocumentDB services read as
+   `${MONGODB_URI}`; it is allowed only as an `extraEnv` entry with
+   `valueFrom.secretKeyRef` alone or as an ExternalSecret `secretKey`, and
+   refused under `config`, as a literal `value`, from a `configMapKeyRef`,
+   `fieldRef` or `resourceFieldRef`. Spring Boot 3.3.6 resolves
+   `${MONGODB_URI}` from the env name `MONGODB_URI` only (not from
+   `mongodb.uri`, `mongodb_uri` or `Mongodb_Uri`), so every other spelling of
+   `(?i)^mongodb[._-]?uri$` is refused on every route.
 
 ## Vendoring the guard
 
@@ -157,7 +182,7 @@ editing it:
    with `_`). The guard is `fbx.guard` with the helpers it calls:
    `fbx.validateEnvSources`, `fbx.validateDatabaseTls`, `fbx.validateKafkaTls`,
    `fbx.validateKafkaTlsValue`, `fbx.validateSecretNames`, `fbx.secretOnlyName`,
-   `fbx.validateKeyNames`, `fbx.validateJdbcUrl`,
+   `fbx.secretOnlyReason`, `fbx.validateKeyNames`, `fbx.validateJdbcUrl`,
    `fbx.validateJvmOptions`,
    `fbx.datasourceOverrideName`, `fbx.overrideNameReason`, `fbx.canonicalName`,
    `fbx.isDbUrlName`, `fbx.isJvmOptionsName`, `fbx.kafkaTlsName`, plus
@@ -217,8 +242,8 @@ editing it:
    `tls_enforce_switch_test.yaml`, `jvm_options_test.yaml`,
    `env_sources_test.yaml`, `key_injection_test.yaml`,
    `variable_references_test.yaml`, `kafka_protocol_test.yaml`,
-   `kafka_client_tls_names_test.yaml`, `kafka_runtime_profiles_test.yaml`
-   and `kafka_runtime_required_test.yaml`
+   `kafka_client_tls_names_test.yaml`, `kafka_runtime_profiles_test.yaml`,
+   `kafka_runtime_required_test.yaml` and `documentdb_names_test.yaml`
    (`template_interpolation_test.yaml` covers this chart's own templates; a
    service chart writes the same cases for its templates); and the
    `must_fail` cases of `scripts/ci/validate-chart.sh` from "DB_URL
@@ -226,7 +251,7 @@ editing it:
    without kafka.runtime" (DB_URL, datasource, config and profile names, SSL
    bundle, `DB_SSL_ROOT_CERT`, JVM options, `$(VAR)` and `${...}`,
    `extraEnvFrom`, the off switch, Kafka protocol and Kafka client TLS
-   names), keeping each case's `--expect`
+   names, DocumentDB names), keeping each case's `--expect`
    pattern so that a case cannot pass because the render failed for another
    reason. `scripts/ci/fixtures/vendored-guard-chart` is a worked example:
    `validate-chart.sh` copies `_helpers.tpl` into it unchanged and checks that
