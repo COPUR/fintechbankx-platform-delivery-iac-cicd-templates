@@ -84,9 +84,8 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "databaseCa.configMapName must be rds-ca-bundle \\(got \"any-config\"\\)"
-  # Helm deletes a key a values file sets to null, so the guard (which pins
-  # configMapName when the key is present) does not see it; the Deployment
-  # requires it instead of rendering a volume with an empty ConfigMap name.
+  # Helm deletes a key a values file sets to null; the guard requires
+  # configMapName while databaseCa.enabled, so a deleted key is refused too.
   - it: rejects a null configMapName (Helm deletes the key; the volume would name no ConfigMap)
     template: templates/deployment.yaml
     set:

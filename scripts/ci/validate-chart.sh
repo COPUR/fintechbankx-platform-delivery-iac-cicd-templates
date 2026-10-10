@@ -272,7 +272,21 @@ vendored_must_fail "databaseCaBundle.key application.yml" --expect 'databaseCa.k
 vendored_must_fail "databaseCaBundle.configMapName other than rds-ca-bundle" --expect 'databaseCa.configMapName must be rds-ca-bundle' \
   --set-string 'databaseCaBundle.configMapName=any-config'
 vendored_must_fail "databaseCaBundle.configMapName null (the adapter passes the key, so the guard sees it)" \
-  --expect 'databaseCa.configMapName must be rds-ca-bundle \(got ""\)' --set 'databaseCaBundle.configMapName=null'
+  --expect 'databaseCa.configMapName is required while databaseCa.enabled' --set 'databaseCaBundle.configMapName=null'
+# An adapter that leaves configMapName out would let values choose the
+# ConfigMap its templates mount as the database trust anchor.
+no_cm="$work/vg-adapter-without-configmapname"
+cp -R "$vendored" "$no_cm"
+sed -i -e 's|"key" .Values.databaseCaBundle.key$|"key" .Values.databaseCaBundle.key)|' \
+  -e '/"configMapName" .Values.databaseCaBundle.configMapName)/d' "$no_cm/templates/_adapter.tpl"
+if grep -q configMapName "$no_cm/templates/_adapter.tpl"; then
+  echo "fixture edit failed: the adapter still passes configMapName"; exit 1
+fi
+if err="$("$helm" template vg "$no_cm" 2>&1 >/dev/null)"; then
+  echo "expected failure did not happen (vendored guard): adapter without databaseCa.configMapName"; exit 1
+fi
+expect_reason "adapter without databaseCa.configMapName" 'databaseCa.configMapName is required while databaseCa.enabled' "$err"
+echo "[vendored guard] rejected as expected: adapter without databaseCa.configMapName"
 
 echo "[helm-unittest] $chart/tests"
 "$helm" unittest "$chart"

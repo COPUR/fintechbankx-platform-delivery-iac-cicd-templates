@@ -81,10 +81,9 @@ with other value names vendors this file unchanged and passes an adapter dict
     "externalSecret" (dict "enabled" <bool> "data" <list> "extraData" <list>
       "dataFrom" <list>)))
 Every key is optional except that a databaseCa with enabled: true needs
-mountPath and key, which must be /etc/fintechbankx/rds-ca and
-global-bundle.pem; its configMapName is optional, must be rds-ca-bundle when
-given, and a service adapter should pass the one its templates mount
-(fbx.validateDatabaseCa). A key left out is never checked, so every value of
+mountPath, key and configMapName, which must be /etc/fintechbankx/rds-ca,
+global-bundle.pem and rds-ca-bundle; the adapter passes the configMapName
+its templates mount (fbx.validateDatabaseCa). A key left out is never checked, so every value of
 the chart that feeds one of these routes must be mapped, including any
 envFrom-like list and an ExternalSecret dataFrom (the guard refuses them
 when non-empty). It runs fbx.validateEnvSources, fbx.validateDatabaseCa,
@@ -177,14 +176,11 @@ service namespace:
     mountPath /app/config with key application.yml can activate the local
     profile or set fintechbankx.tls.enforce=false);
   - key must be global-bundle.pem;
-  - configMapName, when given (a service adapter should pass the one its
-    templates mount), must be rds-ca-bundle: another ConfigMap replaces the
-    database trust anchor. A key a values file sets to null is not given:
-    Helm deletes it before any template runs. An adapter that passes
-    configMapName as its own dict entry hands the guard an empty value,
-    which is refused; a chart that passes its values map through (the
-    reference chart passes .) must require configMapName in the template
-    that mounts it.
+  - configMapName is required and must be rds-ca-bundle: another
+    ConfigMap replaces the database trust anchor, and an adapter that left
+    the name out would let values choose it. A key a values file sets to
+    null is deleted by Helm before any template runs, so it is refused as
+    missing.
 With databaseCa.enabled false nothing is mounted and nothing is checked here.
 */}}
 {{- define "fbx.validateDatabaseCa" -}}
@@ -198,11 +194,12 @@ With databaseCa.enabled false nothing is mounted and nothing is checked here.
 {{- if ne $key "global-bundle.pem" -}}
 {{- fail (printf "databaseCa.key must be global-bundle.pem (got %q), the key of the rds-ca-bundle ConfigMap the mesh repo's trust-manager Bundle publishes" $key) -}}
 {{- end -}}
-{{- if hasKey $ca "configMapName" -}}
 {{- $name := toString ($ca.configMapName | default "") -}}
+{{- if eq $name "" -}}
+{{- fail "databaseCa.configMapName is required while databaseCa.enabled and must be rds-ca-bundle: pass the ConfigMap name the chart mounts (an adapter that leaves it out lets values choose the database trust anchor; Helm deletes a key set to null)" -}}
+{{- end -}}
 {{- if ne $name "rds-ca-bundle" -}}
 {{- fail (printf "databaseCa.configMapName must be rds-ca-bundle (got %q), the ConfigMap the mesh repo's trust-manager Bundle publishes in every service namespace; another ConfigMap replaces the database trust anchor" $name) -}}
-{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

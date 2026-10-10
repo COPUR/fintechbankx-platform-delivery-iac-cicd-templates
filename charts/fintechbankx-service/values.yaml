@@ -104,10 +104,9 @@ config: {}
 # also exported as DB_SSL_ROOT_CERT. While enabled, the guard
 # (fbx.validateDatabaseCa) pins key global-bundle.pem, mountPath
 # /etc/fintechbankx/rds-ca (another path could put a ConfigMap where the
-# service reads files, e.g. Spring Boot's ./config/ under the /app WORKDIR) and,
-# when the key is present, configMapName rds-ca-bundle; the Deployment
-# requires configMapName (Helm deletes a key set to null before the guard runs,
-# so null fails there instead of rendering a volume with no ConfigMap name).
+# service reads files, e.g. Spring Boot's ./config/ under the /app WORKDIR) and
+# configMapName rds-ca-bundle; each is required (a key set to null is deleted by
+# Helm and refused as missing).
 #
 # Datasource and TLS guard (fbx.guard; README "Datasource and TLS guard"),
 # over config keys, extraEnv (value or valueFrom), externalSecret data/extraData

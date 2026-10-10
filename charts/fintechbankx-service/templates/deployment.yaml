@@ -168,7 +168,7 @@ spec:
         {{- if .Values.databaseCa.enabled }}
         - name: database-ca
           configMap:
-            name: {{ required "databaseCa.configMapName is required while databaseCa.enabled (rds-ca-bundle): Helm deletes a key set to null, which fbx.validateDatabaseCa then does not see, and the volume would name no ConfigMap" .Values.databaseCa.configMapName | quote }}
+            name: {{ .Values.databaseCa.configMapName | quote }}
             items:
               - key: {{ .Values.databaseCa.key | quote }}
                 path: {{ .Values.databaseCa.key | quote }}
