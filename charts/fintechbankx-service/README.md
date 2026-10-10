@@ -364,15 +364,25 @@ guards run while `DB_SSL_ROOT_CERT` is set, the chart refuses that name (and
 every `ssl[._-]?root[._-]?cert` name) on every route, so an `extraEnv` entry
 cannot replace the chart's own value with an empty one.
 
-That covers this chart only. A service deployed with its own chart (`deploy/helm`
-in the lending and payment repositories) depends on that chart's own name check
-until it vendors this guard (see [Vendoring the guard](#vendoring-the-guard)),
-and in October 2026 none matches every spelling: the loan-lifecycle-core chart
-compares the upper-cased `config` key with `FINTECHBANKX_TLS_ENFORCE`, so a
-`config` key `fintechbankx.tls.enforce` renders into the ConfigMap the pod loads
-through `envFrom`; the four payment charts also read `.` and `-` as `_`, but not
-the bracket form `fintechbankx.tls[enforce]`. The customer, risk, compliance and
-open-finance charts do not check the name, which their code does not read.
+That covers this chart and every service chart that vendors its guard. As
+checked in October 2026, all 15 service charts (customer, risk, compliance,
+the seven open-finance services, loan-lifecycle and the four payment services)
+vendor `fbx.guard` from commit `a4f0072` of this repository byte for byte
+(sha256 `1fd684735383301baf3052c5d8978dd86edee1ac1c66ebfb944a8a6a166f4c92`; in
+the customer, risk, compliance and open-finance charts below a provenance
+header) and run it through an adapter, an inline dict or a define of the chart,
+before their Deployment renders. A service chart that does not vendor the guard
+depends on its own chart's checks. Each service's CI is to run
+[`scripts/ci/verify-vendored-guard.sh`](../../scripts/ci/verify-vendored-guard.sh)
+with its pinned digest ([Vendoring the guard](#vendoring-the-guard), step 1):
+with the `a4f0072` digest the loan-lifecycle and payment charts pass every
+check; the ten others fail check (a) until the header moves out of the file
+into the CI step, and the consent migration Job and the products history guard
+CronJob and Job do not call the guard yet (check (c)). When this chart's guard
+changes, as it has since `a4f0072` (Kafka client TLS names, `KAFKA_TLS_*` and
+`MONGODB_URI` only from a Secret, `spring.data.mongodb.*`, `kafka` and
+`mongodb` in JVM options), every service re-vendors the file and re-pins its
+digest and commit; until then it runs the `a4f0072` rules.
 
 JVM options: the chart checks `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and
 `_JAVA_OPTIONS`, the variables the JVM reads itself (`fbx.isJvmOptionsName`).
