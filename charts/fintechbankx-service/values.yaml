@@ -103,8 +103,9 @@ config: {}
 # are rejected. config keys, extraEnv names (value or valueFrom) and
 # externalSecret secretKeys may not name a spring.datasource/flyway/liquibase/
 # r2dbc property (SPRING_DATASOURCE_USERNAME/PASSWORD excepted),
-# spring.application.json, or anything containing JDBC_URL, SSLFACTORY or
-# SSLHOSTNAMEVERIFIER, any spring.config.* name (import, import[0], location,
+# spring.application.json, anything containing JDBC_URL, SSL_FACTORY,
+# SSL_HOSTNAME_VERIFIER, SSL_PASSWORD_CALLBACK, SSL_ROOT_CERT (DB_SSL_ROOT_CERT
+# is the chart's own) or SSL_MODE (separators optional), any spring.config.* name (import, import[0], location,
 # activate.on-profile, ...), any spring.ssl.* name or name containing
 # ssl.bundle (SPRING_SSL_BUNDLE_*, spring.data.mongodb.ssl.bundle),
 # any spring.profiles.* name (active, include, default, group.*; the chart

@@ -11,9 +11,11 @@ tests:
   # One name rule for config keys, extraEnv names (value or valueFrom) and
   # externalSecret data/extraData secretKeys (fbx.validateDatabaseTls):
   # (?i)^spring[._-]?(datasource|flyway|liquibase|r2dbc)[._-], spring.application.json
-  # in any spelling, and any name containing jdbc[._-]?url, sslfactory or
-  # sslhostnameverifier, except SPRING_DATASOURCE_USERNAME / _PASSWORD
-  # (config.DB_URL stays the one place for the JDBC URL).
+  # in any spelling, and any name containing jdbc[._-]?url, ssl[._-]?factory,
+  # ssl[._-]?host[._-]?name[._-]?verifier or ssl[._-]?password[._-]?callback,
+  # except SPRING_DATASOURCE_USERNAME / _PASSWORD (config.DB_URL stays the one
+  # place for the JDBC URL). TLS parameter names (sslrootcert, sslmode,
+  # DB_SSL_ROOT_CERT) are in datasource_tls_names_test.yaml.
   - it: rejects config SPRING_LIQUIBASE_URL (spring.liquibase.*)
     template: templates/deployment.yaml
     set:

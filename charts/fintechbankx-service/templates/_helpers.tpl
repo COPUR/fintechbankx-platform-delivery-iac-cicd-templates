@@ -92,7 +92,15 @@ the env names the Secret materialises and whose values are never seen here):
     datasource, Flyway, Liquibase or R2DBC property, not only *URL), except
     SPRING_DATASOURCE_USERNAME and SPRING_DATASOURCE_PASSWORD;
   - spring.application.json in any spelling ([._-] or none, any case);
-  - any name containing jdbc[._-]?url, sslfactory or sslhostnameverifier;
+  - any name containing jdbc[._-]?url, ssl[._-]?factory (also sslfactoryarg),
+    ssl[._-]?host[._-]?name[._-]?verifier or ssl[._-]?password[._-]?callback
+    (spring.datasource.hikari.jdbc-url, REPORTING_JDBCURL, PGJDBC_SSL_FACTORY);
+  - any name containing ssl[._-]?root[._-]?cert or ssl[._-]?mode
+    (DB_SSL_ROOT_CERT, PGSSLROOTCERT, OPF_DB_SSL_MODE): DB_SSL_ROOT_CERT is
+    rendered by the chart from databaseCa, and an extraEnv entry of the same
+    name comes later in the env list and replaces it (the customer, risk and
+    compliance guards are active only while it is set); sslmode and
+    sslrootcert belong in config.DB_URL;
   - DB_URL outside config (config.DB_URL is the one allowed place);
   - (?i)^spring[._-]?config([._-]|$): every spring.config.* name by prefix
     (import, location, additional-location, name, activate.on-profile,
@@ -168,8 +176,10 @@ against the name as given and against this form.
 
 {{- define "fbx.overrideNameReason" -}}
 {{- $n := toString . -}}
-{{- if regexMatch "(?i)^spring[._-]?(datasource|flyway|liquibase|r2dbc)[._-]|^spring[._-]?application[._-]?json$|jdbc[._-]?url|sslfactory|sslhostnameverifier" $n -}}
+{{- if regexMatch "(?i)^spring[._-]?(datasource|flyway|liquibase|r2dbc)[._-]|^spring[._-]?application[._-]?json$|jdbc[._-]?url|ssl[._-]?factory|ssl[._-]?host[._-]?name[._-]?verifier|ssl[._-]?password[._-]?callback" $n -}}
 it can redirect or override the datasource past the sslmode=verify-full check; set the JDBC URL in config.DB_URL
+{{- else if regexMatch "(?i)ssl[._-]?root[._-]?cert|ssl[._-]?mode" $n -}}
+a TLS parameter name can replace the mounted CA or the verify-full mode, and DB_SSL_ROOT_CERT is rendered by the chart from databaseCa (an empty or other value would turn the services' startup TLS guard off); set sslmode and sslrootcert in config.DB_URL
 {{- else if regexMatch "(?i)^spring[._-]?config([._-]|$)" $n -}}
 a spring.config.* property (import, location, additional-location, name, activate.*, indexed forms) can load or activate a file or config tree that overrides the datasource past the sslmode=verify-full check; the chart renders no config import
 {{- else if regexMatch "(?i)^spring[._-]?profiles([._-]|$)" $n -}}
