@@ -9,7 +9,10 @@ template that renders a workload calls it as its first action
       "extraEnv" .Values.additionalEnv
       "extraEnvFrom" .Values.additionalEnvFrom
       "javaToolOptions" .Values.jvmOptions
-      "databaseCa" .Values.databaseCaBundle
+      "databaseCa" (dict "enabled" .Values.databaseCaBundle.enabled
+        "mountPath" .Values.databaseCaBundle.mountPath
+        "key" .Values.databaseCaBundle.key
+        "configMapName" .Values.databaseCaBundle.configMapName)
       "kafka" (dict "runtime" .Values.kafkaRuntime)
       "externalSecret" (dict "enabled" .Values.secrets.enabled "data" .Values.secrets.keys
         "dataFrom" .Values.secrets.dataFrom))) -}}

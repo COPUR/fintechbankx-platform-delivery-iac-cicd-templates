@@ -25,3 +25,18 @@ spec:
             {{- with .Values.additionalEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- if .Values.databaseCaBundle.enabled }}
+          volumeMounts:
+            - name: database-ca
+              mountPath: {{ .Values.databaseCaBundle.mountPath | quote }}
+              readOnly: true
+          {{- end }}
+      {{- if .Values.databaseCaBundle.enabled }}
+      volumes:
+        - name: database-ca
+          configMap:
+            name: {{ .Values.databaseCaBundle.configMapName | quote }}
+            items:
+              - key: {{ .Values.databaseCaBundle.key | quote }}
+                path: {{ .Values.databaseCaBundle.key | quote }}
+      {{- end }}

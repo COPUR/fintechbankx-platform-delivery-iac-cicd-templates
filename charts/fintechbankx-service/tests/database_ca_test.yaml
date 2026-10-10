@@ -49,6 +49,54 @@ tests:
           path: spec.template.spec.containers[0].env
           content: {name: DB_SSL_ROOT_CERT}
           any: true
+  # The mount is pinned (fbx.validateDatabaseCa): a values-chosen mountPath
+  # can put a ConfigMap where the service reads files (/app is the image
+  # WORKDIR and Spring Boot loads optional:file:./config/application.yml, which
+  # can activate the local profile or set fintechbankx.tls.enforce=false), and
+  # a values-chosen ConfigMap or key replaces the database trust anchor.
+  - it: rejects a mountPath other than /etc/fintechbankx/rds-ca (e.g. /app/config, where Spring Boot reads config files)
+    template: templates/deployment.yaml
+    set:
+      databaseCa.mountPath: /app/config
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/app/config/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "databaseCa.mountPath must be /etc/fintechbankx/rds-ca \\(got \"/app/config\"\\)"
+  - it: rejects a mountPath with a trailing slash (the pinned path is written once)
+    template: templates/deployment.yaml
+    set:
+      databaseCa.mountPath: /etc/fintechbankx/rds-ca/
+    asserts:
+      - failedTemplate:
+          errorPattern: "databaseCa.mountPath must be /etc/fintechbankx/rds-ca"
+  - it: rejects a key other than global-bundle.pem
+    template: templates/deployment.yaml
+    set:
+      databaseCa.key: other-bundle.pem
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/other-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "databaseCa.key must be global-bundle.pem \\(got \"other-bundle.pem\"\\)"
+  - it: rejects a ConfigMap other than rds-ca-bundle (replaces the database trust anchor)
+    template: templates/deployment.yaml
+    set:
+      databaseCa.configMapName: any-config
+    asserts:
+      - failedTemplate:
+          errorPattern: "databaseCa.configMapName must be rds-ca-bundle \\(got \"any-config\"\\)"
+  - it: does not check the mount while databaseCa is disabled (nothing is mounted)
+    template: templates/deployment.yaml
+    set:
+      databaseCa.enabled: false
+      databaseCa.mountPath: /app/config
+      databaseCa.configMapName: any-config
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full
+    asserts:
+      - notFailedTemplate: {}
+      - notContains:
+          path: spec.template.spec.volumes
+          content: {name: database-ca}
+          any: true
   - it: rejects a DB_URL that does not verify the server certificate
     template: templates/deployment.yaml
     set:

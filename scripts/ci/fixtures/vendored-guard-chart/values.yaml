@@ -6,8 +6,12 @@ additionalEnv: []
 additionalEnvFrom: []
 jvmOptions: "-XX:MaxRAMPercentage=75"
 kafkaRuntime: msk
+# While enabled the guard pins configMapName, key and mountPath to
+# rds-ca-bundle, global-bundle.pem and /etc/fintechbankx/rds-ca; the adapter
+# passes all of them.
 databaseCaBundle:
   enabled: true
+  configMapName: rds-ca-bundle
   mountPath: /etc/fintechbankx/rds-ca
   key: global-bundle.pem
 secrets:

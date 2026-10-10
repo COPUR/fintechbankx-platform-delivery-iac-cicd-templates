@@ -75,19 +75,25 @@ with other value names vendors this file unchanged and passes an adapter dict
 (README "Vendoring the guard"):
   include "fbx.guard" (dict "Values" (dict "config" <map> "extraEnv" <list>
     "envFrom" <list> "extraEnvFrom" <list>
-    "javaToolOptions" <string> "databaseCa" <dict enabled/mountPath/key>
+    "javaToolOptions" <string>
+    "databaseCa" <dict enabled/mountPath/key/configMapName>
     "kafka" (dict "runtime" <""|msk|strimzi>)
     "externalSecret" (dict "enabled" <bool> "data" <list> "extraData" <list>
       "dataFrom" <list>)))
 Every key is optional except that a databaseCa with enabled: true needs
-mountPath and key. A key left out is never checked, so every value of the
-chart that feeds one of these routes must be mapped, including any
+mountPath and key, which must be /etc/fintechbankx/rds-ca and
+global-bundle.pem; its configMapName is optional, must be rds-ca-bundle when
+given, and a service adapter should pass the one its templates mount
+(fbx.validateDatabaseCa). A key left out is never checked, so every value of
+the chart that feeds one of these routes must be mapped, including any
 envFrom-like list and an ExternalSecret dataFrom (the guard refuses them
-when non-empty). It runs fbx.validateEnvSources, fbx.validateDatabaseTls,
-fbx.validateKafkaTls, fbx.validateSecretNames and fbx.validateKeyNames.
+when non-empty). It runs fbx.validateEnvSources, fbx.validateDatabaseCa,
+fbx.validateDatabaseTls, fbx.validateKafkaTls, fbx.validateSecretNames and
+fbx.validateKeyNames.
 */}}
 {{- define "fbx.guard" -}}
 {{- include "fbx.validateEnvSources" . -}}
+{{- include "fbx.validateDatabaseCa" . -}}
 {{- include "fbx.validateDatabaseTls" . -}}
 {{- include "fbx.validateKafkaTls" . -}}
 {{- include "fbx.validateSecretNames" . -}}
@@ -160,6 +166,43 @@ are refused (the chart renders only its own configMapRef and secretRef).
 {{- end -}}
 
 {{/*
+Database CA mount. While databaseCa.enabled the chart mounts the ConfigMap
+<configMapName> (item <key>) at <mountPath> in every pod that reads the
+database, and sslrootcert and DB_SSL_ROOT_CERT are <mountPath>/<key>; all
+three are pinned to the trust-manager Bundle the mesh repo publishes in every
+service namespace:
+  - mountPath must be /etc/fintechbankx/rds-ca: another path can put a
+    values-chosen ConfigMap item where the service reads files (/app is the
+    image WORKDIR and Spring Boot loads optional:file:./config/, so
+    mountPath /app/config with key application.yml can activate the local
+    profile or set fintechbankx.tls.enforce=false);
+  - key must be global-bundle.pem;
+  - configMapName, when given (a service adapter should pass the one its
+    templates mount), must be rds-ca-bundle: another ConfigMap replaces the
+    database trust anchor.
+With databaseCa.enabled false nothing is mounted and nothing is checked here.
+*/}}
+{{- define "fbx.validateDatabaseCa" -}}
+{{- $ca := .Values.databaseCa | default dict -}}
+{{- if $ca.enabled -}}
+{{- $mountPath := toString ($ca.mountPath | default "") -}}
+{{- if ne $mountPath "/etc/fintechbankx/rds-ca" -}}
+{{- fail (printf "databaseCa.mountPath must be /etc/fintechbankx/rds-ca (got %q): the CA bundle is mounted only there; another path can put a ConfigMap where the service reads files (/app is the image WORKDIR and Spring Boot loads ./config/application.yml)" $mountPath) -}}
+{{- end -}}
+{{- $key := toString ($ca.key | default "") -}}
+{{- if ne $key "global-bundle.pem" -}}
+{{- fail (printf "databaseCa.key must be global-bundle.pem (got %q), the key of the rds-ca-bundle ConfigMap the mesh repo's trust-manager Bundle publishes" $key) -}}
+{{- end -}}
+{{- if hasKey $ca "configMapName" -}}
+{{- $name := toString ($ca.configMapName | default "") -}}
+{{- if ne $name "rds-ca-bundle" -}}
+{{- fail (printf "databaseCa.configMapName must be rds-ca-bundle (got %q), the ConfigMap the mesh repo's trust-manager Bundle publishes in every service namespace; another ConfigMap replaces the database trust anchor" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Every PostgreSQL JDBC URL the chart passes to the workload must verify the
 server certificate and host name (sslmode=require encrypts but trusts any
 certificate). The query string is parsed the way PgJDBC reads it (split after
@@ -167,7 +210,9 @@ the first '?', then on '&', key=value on the first '='), not searched for a
 substring:
   - exactly one sslmode, equal to verify-full;
   - with databaseCa.enabled, exactly one sslrootcert, equal to
-    <databaseCa.mountPath>/<databaseCa.key> (at most one otherwise);
+    <databaseCa.mountPath>/<databaseCa.key>, which fbx.validateDatabaseCa
+    pins to /etc/fintechbankx/rds-ca/global-bundle.pem (at most one
+    otherwise);
   - no sslfactory / sslfactoryarg (NonValidatingFactory), sslhostnameverifier,
     sslpasswordcallback or service (pg_service.conf can override the TLS settings);
   - parameter names are plain [A-Za-z0-9_.-] (no percent-encoding), no

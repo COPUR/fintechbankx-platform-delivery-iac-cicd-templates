@@ -174,6 +174,15 @@ must_fail "externalSecret.extraData spring.data.mongo_db.host ('_' inside an ele
   --set-string 'externalSecret.extraData[0].property=host'
 must_fail "config spring.pro_files.active ('_' inside an element binds as profiles)" \
   --expect 'config.spring.pro_files.active is not allowed' --set-string 'config.spring\.pro_files\.active=local'
+# The database CA mount is pinned (fbx.validateDatabaseCa): /app is the image
+# WORKDIR and Spring Boot loads optional:file:./config/application.yml, and
+# another ConfigMap or key replaces the database trust anchor.
+must_fail "databaseCa.mountPath /app/config (a ConfigMap where Spring Boot reads config files)" \
+  --expect 'databaseCa.mountPath must be /etc/fintechbankx/rds-ca' --set-string 'databaseCa.mountPath=/app/config'
+must_fail "databaseCa.key other than global-bundle.pem" \
+  --expect 'databaseCa.key must be global-bundle.pem' --set-string 'databaseCa.key=other-bundle.pem'
+must_fail "databaseCa.configMapName other than rds-ca-bundle (replaces the trust anchor)" \
+  --expect 'databaseCa.configMapName must be rds-ca-bundle' --set-string 'databaseCa.configMapName=any-config'
 must_fail "public IPv6 egress CIDR broader than /48 (2001:db8::/32)" --set networkPolicy.enabled=true \
   --set-string 'networkPolicy.egressCidrs[0].cidr=2001:db8::/32' --set 'networkPolicy.egressCidrs[0].ports[0]=443'
 if "$helm" lint "$chart" >/dev/null 2>&1; then
@@ -251,6 +260,15 @@ vendored_must_fail "additionalEnv spring.kafka.consumer.s_sl.trust-store-type fr
   --expect 'extraEnv must not set spring.kafka.consumer.s_sl.trust-store-type' \
   --set 'additionalEnv[0].name=spring.kafka.consumer.s_sl.trust-store-type' \
   --set-string 'additionalEnv[0].valueFrom.secretKeyRef.name=other' --set-string 'additionalEnv[0].valueFrom.secretKeyRef.key=type'
+vendored_must_fail "databaseCaBundle.mountPath /app/config with key application.yml (a Spring Boot config file)" \
+  --expect 'databaseCa.mountPath must be /etc/fintechbankx/rds-ca' \
+  --set-string 'databaseCaBundle.mountPath=/app/config' --set-string 'databaseCaBundle.key=application.yml' \
+  --set-string 'env.DB_URL=jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/app/config/application.yml'
+vendored_must_fail "databaseCaBundle.key application.yml" --expect 'databaseCa.key must be global-bundle.pem' \
+  --set-string 'databaseCaBundle.key=application.yml' \
+  --set-string 'env.DB_URL=jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/application.yml'
+vendored_must_fail "databaseCaBundle.configMapName other than rds-ca-bundle" --expect 'databaseCa.configMapName must be rds-ca-bundle' \
+  --set-string 'databaseCaBundle.configMapName=any-config'
 
 echo "[helm-unittest] $chart/tests"
 "$helm" unittest "$chart"
