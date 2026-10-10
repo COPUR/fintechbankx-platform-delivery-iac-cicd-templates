@@ -256,8 +256,9 @@ check covers clients built in code; README "Service-side TLS assertion"):
     SASL_PLAINTEXT and empty are rejected;
   - a name matching (?i)endpoint[._-]?identification[._-]?algorithm must hold
     https (empty turns off broker host name verification);
-  - with kafka.runtime msk every such protocol must be SASL_SSL (Amazon MSK
-    IAM), with strimzi SSL (Strimzi mutual TLS);
+  - such a protocol name needs kafka.runtime msk or strimzi (with "" no
+    auth profile is rendered); with msk every such protocol must be SASL_SSL
+    (Amazon MSK IAM), with strimzi SSL (Strimzi mutual TLS);
   - these names need a literal extraEnv value (no valueFrom, not even next to
     an empty value) and may not come from the ExternalSecret.
 */}}
@@ -272,6 +273,9 @@ check covers clients built in code; README "Service-side TLS assertion"):
 {{- define "fbx.validateKafkaTlsValue" -}}
 {{- $v := trim (toString .value) -}}
 {{- if eq .kind "protocol" -}}
+{{- if not .runtime -}}
+{{- fail (printf "%s is set but kafka.runtime is empty; set kafka.runtime to msk or strimzi so the chart renders the Kafka auth profile (kafka-msk or kafka-strimzi)" .where) -}}
+{{- end -}}
 {{- $p := upper $v -}}
 {{- if not (has $p (list "SASL_SSL" "SSL")) -}}
 {{- fail (printf "%s must be SASL_SSL or SSL (got %q); PLAINTEXT, SASL_PLAINTEXT and empty send Kafka traffic without TLS" .where $v) -}}

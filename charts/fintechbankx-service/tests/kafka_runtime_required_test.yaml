@@ -1,0 +1,77 @@
+suite: kafka.runtime "" - no auth profile, so no Kafka security.protocol name
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/dev-minimal-values.yaml
+release:
+  name: ci
+  namespace: customer
+tests:
+  # kafka.runtime "" (the default) renders no SPRING_PROFILES_ACTIVE, so the
+  # service would run without the kafka-msk / kafka-strimzi auth profile. A
+  # service that sets a security.protocol name is a Kafka client and must set
+  # kafka.runtime; a service without Kafka keeps the default.
+  - it: renders no profile for kafka.runtime "" (default)
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: ""
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: SPRING_PROFILES_ACTIVE}
+          any: true
+      - notExists:
+          path: data.SPRING_PROFILES_ACTIVE
+        template: templates/configmap.yaml
+  - it: renders no profile when the kafka block is absent
+    template: templates/deployment.yaml
+    set:
+      kafka: null
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: SPRING_PROFILES_ACTIVE}
+          any: true
+  - it: accepts https endpoint identification without kafka.runtime (no protocol name set)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: https
+    asserts:
+      - notFailedTemplate: {}
+  - it: rejects config KAFKA_SECURITY_PROTOCOL SASL_SSL without kafka.runtime
+    template: templates/deployment.yaml
+    set:
+      config.KAFKA_SECURITY_PROTOCOL: SASL_SSL
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.KAFKA_SECURITY_PROTOCOL is set but kafka.runtime is empty"
+  - it: rejects config spring.kafka.streams.security.protocol SSL without kafka.runtime
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.streams.security.protocol: SSL
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.streams.security.protocol is set but kafka.runtime is empty"
+  - it: rejects extraEnv spring.kafka.properties[security.protocol] SSL without kafka.runtime
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.properties[security.protocol]
+          value: SSL
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.spring.kafka.properties\\[security.protocol\\] is set but kafka.runtime is empty"
+  - it: accepts the same names with kafka.runtime strimzi (control)
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config:
+        KAFKA_SECURITY_PROTOCOL: SSL
+        spring.kafka.streams.security.protocol: SSL
+      extraEnv:
+        - name: spring.kafka.properties[security.protocol]
+          value: SSL
+    asserts:
+      - notFailedTemplate: {}

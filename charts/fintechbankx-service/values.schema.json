@@ -232,7 +232,7 @@
       "additionalProperties": false,
       "properties": {
         "runtime": {
-          "description": "Kafka auth profile the chart renders as the only SPRING_PROFILES_ACTIVE: msk -> kafka-msk (Amazon MSK IAM, security.protocol SASL_SSL), strimzi -> kafka-strimzi (Strimzi mutual TLS, SSL), empty -> no profile.",
+          "description": "Kafka auth profile the chart renders as the only SPRING_PROFILES_ACTIVE: msk -> kafka-msk (Amazon MSK IAM, security.protocol SASL_SSL), strimzi -> kafka-strimzi (Strimzi mutual TLS, SSL), empty -> no profile (services without Kafka; a security.protocol name in config or extraEnv then fails rendering).",
           "type": "string",
           "enum": [
             "",

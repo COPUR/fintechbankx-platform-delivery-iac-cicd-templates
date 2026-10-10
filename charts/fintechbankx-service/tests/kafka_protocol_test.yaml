@@ -190,6 +190,14 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv.SPRING_KAFKA_SECURITY_PROTOCOL must be SSL with kafka.runtime strimzi"
+  - it: rejects config KAFKA_SECURITY_PROTOCOL SSL without kafka.runtime (no auth profile)
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: ""
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.KAFKA_SECURITY_PROTOCOL is set but kafka.runtime is empty"
   # JVM system properties are a Spring property source.
   - it: rejects javaToolOptions with -Dspring.kafka.security.protocol=PLAINTEXT
     template: templates/deployment.yaml
@@ -208,11 +216,11 @@ tests:
       - failedTemplate:
           errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not mention"
   # Controls.
-  - it: accepts SSL or SASL_SSL in any case with spaces and https in any case without kafka.runtime
+  - it: accepts SSL or SASL_SSL in any case with spaces and https in any case
     template: templates/deployment.yaml
     set:
-      kafka.runtime: ""
-      config.KAFKA_SECURITY_PROTOCOL: " ssl "
+      kafka.runtime: msk
+      config.KAFKA_SECURITY_PROTOCOL: " sasl_ssl "
       config.SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: HTTPS
       extraEnv:
         - name: SPRING_KAFKA_SECURITY_PROTOCOL

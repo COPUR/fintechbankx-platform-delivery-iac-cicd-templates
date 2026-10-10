@@ -11,8 +11,9 @@ tests:
   # kafka.runtime (enum "", msk, strimzi) selects the Kafka auth profile the
   # Kafka repo's client guide names: msk -> SPRING_PROFILES_ACTIVE=kafka-msk
   # (Amazon MSK IAM, SASL_SSL), strimzi -> kafka-strimzi (Strimzi mutual TLS,
-  # SSL). "" renders no profile. Every user-set spring.profiles.* name is still
-  # rejected: (?i)^spring[._-]?profiles([._-]|$), which also covers
+  # SSL). "" renders no profile and is allowed only while no
+  # security.protocol name is set (kafka_runtime_required_test.yaml). Every
+  # user-set spring.profiles.* name is still rejected: (?i)^spring[._-]?profiles([._-]|$), which also covers
   # spring.profiles.default (activates e.g. local when no profile is active)
   # and spring.profiles.group.* (can expand kafka-msk into local).
   - it: renders SPRING_PROFILES_ACTIVE=kafka-msk for kafka.runtime msk
@@ -34,27 +35,6 @@ tests:
           path: spec.template.spec.containers[0].env
           content: {name: SPRING_PROFILES_ACTIVE, value: kafka-strimzi}
           count: 1
-  - it: renders no profile for kafka.runtime "" (default)
-    template: templates/deployment.yaml
-    set:
-      kafka.runtime: ""
-    asserts:
-      - notContains:
-          path: spec.template.spec.containers[0].env
-          content: {name: SPRING_PROFILES_ACTIVE}
-          any: true
-      - notExists:
-          path: data.SPRING_PROFILES_ACTIVE
-        template: templates/configmap.yaml
-  - it: renders no profile when the kafka block is absent
-    template: templates/deployment.yaml
-    set:
-      kafka: null
-    asserts:
-      - notContains:
-          path: spec.template.spec.containers[0].env
-          content: {name: SPRING_PROFILES_ACTIVE}
-          any: true
   - it: rejects kafka.runtime local (schema enum)
     template: templates/deployment.yaml
     set:
