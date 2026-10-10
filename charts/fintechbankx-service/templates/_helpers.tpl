@@ -114,17 +114,20 @@ the env names the Secret materialises and whose values are never seen here):
 The helper prints the reason (non-empty means rejected).
 JVM options (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS and the chart's
 javaToolOptions) can set -Dspring.datasource.url=..., -Djavax.net.ssl.*,
--Dspring.config.*, -Dspring.profiles.* or -Dfintechbankx.tls.*, or read more
-options from a file: a value that mentions datasource, flyway, liquibase,
-r2dbc, jdbc, ssl, application[._-]json, spring[._-]config, spring[._-]profiles
-or fintechbankx[._-]tls, an option that
+-Dspring.config.*, -Dspring.profiles.*, -Dfintechbankx.tls.* or
+-Dspring.kafka.security.protocol, or read more options from a file: a value
+that mentions datasource, flyway, liquibase, r2dbc, jdbc, ssl,
+application[._-]json, spring[._-]config, spring[._-]profiles,
+fintechbankx[._-]tls, security[._-]protocol or endpoint[._-]identification,
+an option that
 starts with '@' (argument file), -XX:VMOptionsFile or -XX:Flags
 (case-insensitive) is rejected, and these names may not come from extraEnv
 valueFrom or the ExternalSecret.
 This closes the chart-side routes only; a profile or config file baked into
-the image, and TLS on routes the chart does not see (the Kafka client, a
+the image, and TLS on routes the chart does not see (a Kafka client or a
 datasource built in code), are the service's own startup check (README,
-"Service-side TLS assertion").
+"Service-side TLS assertion"). Kafka settings the chart does see are checked
+by fbx.validateKafkaTls.
 */}}
 {{- define "fbx.datasourceOverrideName" -}}
 {{- $n := toString . -}}
@@ -161,8 +164,8 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- end -}}
 
 {{- define "fbx.validateJvmOptions" -}}
-{{- if regexMatch "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|(^|\\s)@|-XX:(VMOptionsFile|Flags)" (toString .value) -}}
-{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config, spring.profiles or fintechbankx.tls, nor read options from a file ('@' argument file, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check or switch off the service's TLS assertion)" .where) -}}
+{{- if regexMatch "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|security[._-]?protocol|endpoint[._-]?identification|(^|\\s)@|-XX:(VMOptionsFile|Flags)" (toString .value) -}}
+{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config, spring.profiles, fintechbankx.tls, security.protocol or endpoint.identification, nor read options from a file ('@' argument file, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check, the Kafka TLS settings or the service's TLS assertion)" .where) -}}
 {{- end -}}
 {{- end -}}
 
@@ -205,6 +208,79 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- end -}}
 {{- with include "fbx.datasourceOverrideName" $key -}}
 {{- fail (printf "externalSecret.%s must not materialise %s (keep only the credentials in the secret): %s" $field $key .) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Kafka client TLS on the routes the chart renders (the service's own startup
+check covers clients built in code; README "Service-side TLS assertion"):
+  - a config key or extraEnv name matching
+    (?i)(^|[._-])security[._-]?protocol$ (KAFKA_SECURITY_PROTOCOL,
+    SPRING_KAFKA_SECURITY_PROTOCOL, SPRING_KAFKA_PRODUCER_SECURITY_PROTOCOL,
+    SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL,
+    spring.kafka.streams.security.protocol, ...) must hold SASL_SSL or SSL
+    (case-insensitive, trimmed, as the Kafka client reads it); PLAINTEXT,
+    SASL_PLAINTEXT and empty are rejected;
+  - a name matching (?i)endpoint[._-]?identification[._-]?algorithm must hold
+    https (empty turns off broker host name verification);
+  - with kafka.runtime msk every such protocol must be SASL_SSL (Amazon MSK
+    IAM), with strimzi SSL (Strimzi mutual TLS);
+  - these names need a literal extraEnv value (no valueFrom, not even next to
+    an empty value) and may not come from the ExternalSecret.
+*/}}
+{{- define "fbx.kafkaTlsName" -}}
+{{- $n := toString . -}}
+{{- if regexMatch "(?i)(^|[._-])security[._-]?protocol$" $n -}}protocol
+{{- else if regexMatch "(?i)endpoint[._-]?identification[._-]?algorithm" $n -}}endpoint
+{{- end -}}
+{{- end -}}
+
+{{- define "fbx.validateKafkaTlsValue" -}}
+{{- $v := trim (toString .value) -}}
+{{- if eq .kind "protocol" -}}
+{{- $p := upper $v -}}
+{{- if not (has $p (list "SASL_SSL" "SSL")) -}}
+{{- fail (printf "%s must be SASL_SSL or SSL (got %q); PLAINTEXT, SASL_PLAINTEXT and empty send Kafka traffic without TLS" .where $v) -}}
+{{- end -}}
+{{- if and (eq .runtime "msk") (ne $p "SASL_SSL") -}}
+{{- fail (printf "%s must be SASL_SSL with kafka.runtime msk (Amazon MSK IAM; got %q)" .where $v) -}}
+{{- end -}}
+{{- if and (eq .runtime "strimzi") (ne $p "SSL") -}}
+{{- fail (printf "%s must be SSL with kafka.runtime strimzi (Strimzi mutual TLS; got %q)" .where $v) -}}
+{{- end -}}
+{{- else if eq .kind "endpoint" -}}
+{{- if ne (lower $v) "https" -}}
+{{- fail (printf "%s must be https (got %q); any other or an empty value turns off Kafka broker host name verification" .where $v) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "fbx.validateKafkaTls" -}}
+{{- $root := . -}}
+{{- $runtime := toString ((.Values.kafka | default dict).runtime | default "") -}}
+{{- range $name, $value := .Values.config -}}
+{{- with include "fbx.kafkaTlsName" $name -}}
+{{- include "fbx.validateKafkaTlsValue" (dict "kind" . "where" (printf "config.%s" $name) "value" $value "runtime" $runtime) -}}
+{{- end -}}
+{{- end -}}
+{{- range $env := .Values.extraEnv -}}
+{{- $envName := toString (default "" $env.name) -}}
+{{- with include "fbx.kafkaTlsName" $envName -}}
+{{- if or (not (hasKey $env "value")) (hasKey $env "valueFrom") -}}
+{{- fail (printf "extraEnv %s must set a literal value (valueFrom cannot be checked)" $envName) -}}
+{{- end -}}
+{{- include "fbx.validateKafkaTlsValue" (dict "kind" . "where" (printf "extraEnv.%s" $envName) "value" $env.value "runtime" $runtime) -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.externalSecret.enabled -}}
+{{- range $field := list "data" "extraData" -}}
+{{- range $entry := (index $root.Values.externalSecret $field | default list) -}}
+{{- $key := toString (default "" $entry.secretKey) -}}
+{{- if include "fbx.kafkaTlsName" $key -}}
+{{- fail (printf "externalSecret.%s must not materialise %s; set it as a literal in config or extraEnv, where SASL_SSL/SSL and https are enforced" $field $key) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

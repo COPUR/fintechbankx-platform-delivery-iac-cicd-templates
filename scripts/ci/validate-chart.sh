@@ -96,6 +96,10 @@ must_fail "config FINTECHBANKX_TLS_ENFORCE (service TLS assertion off switch)" \
 must_fail "config SPRING_PROFILES_DEFAULT=local (every spring.profiles.* name)" \
   --set-string 'config.SPRING_PROFILES_DEFAULT=local'
 must_fail "kafka.runtime outside the enum" --set-string 'kafka.runtime=local'
+must_fail "config KAFKA_SECURITY_PROTOCOL=PLAINTEXT" \
+  --set-string 'config.KAFKA_SECURITY_PROTOCOL=PLAINTEXT'
+must_fail "kafka.runtime strimzi with KAFKA_SECURITY_PROTOCOL=SASL_SSL" \
+  --set-string 'kafka.runtime=strimzi' --set-string 'config.KAFKA_SECURITY_PROTOCOL=SASL_SSL'
 must_fail "public IPv6 egress CIDR broader than /48 (2001:db8::/32)" --set networkPolicy.enabled=true \
   --set-string 'networkPolicy.egressCidrs[0].cidr=2001:db8::/32' --set 'networkPolicy.egressCidrs[0].ports[0]=443'
 if "$helm" lint "$chart" >/dev/null 2>&1; then
