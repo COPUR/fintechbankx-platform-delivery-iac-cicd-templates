@@ -217,9 +217,21 @@ editing it:
    included, defines an `fbx.*` template in any spelling (`{{define`,
    `{{- define`, extra white space, a `"..."` or `` `...` `` name, `block`),
    since a later definition replaces the vendored one, and (c) that every
-   workload template (Deployment, StatefulSet, DaemonSet, Job, CronJob,
-   also one rendered through an included define) runs the guard before it
-   writes anything (step 2). The guard is `fbx.guard` with the helpers it calls:
+   workload template runs the guard before it writes anything (step 2). A
+   workload template is one that writes, itself or through an included
+   define, at the top level of a YAML document in any spelling (block or
+   flow/JSON, a quoted key, `kind :`, tags, anchors, an indented document) a
+   kind outside the script's pod-free list (`POD_FREE_KINDS`: ConfigMap,
+   Secret, Service, ServiceAccount, HorizontalPodAutoscaler,
+   PodDisruptionBudget, NetworkPolicy, ExternalSecret, RBAC, monitoring and
+   mesh kinds, ...), so Pod, ReplicaSet, Deployment, StatefulSet, DaemonSet,
+   Job, CronJob, a List and a custom resource such as a Rollout all count,
+   or a templated or unreadable kind; or one that writes text the script
+   cannot read where a document's top-level keys go (`tpl`, `.Files.Get`,
+   `toYaml` of a value, an include of a template the chart does not define).
+   The script reads the template text: text an action writes inside a value
+   (a value holding a newline) is not followed, which step 3's quoting
+   rule covers. The guard is `fbx.guard` with the helpers it calls:
    `fbx.validateEnvSources`, `fbx.validateDatabaseTls`, `fbx.validateKafkaTls`,
    `fbx.validateKafkaTlsValue`, `fbx.validateSecretNames`, `fbx.secretOnlyName`,
    `fbx.secretOnlyReason`, `fbx.validateKeyNames`, `fbx.validateJdbcUrl`,
@@ -231,7 +243,8 @@ editing it:
    (`products.*`, ...), so nothing collides. Whenever this chart's guard
    changes, re-copy the file and re-pin its sha256 and commit in the CI step.
 2. Call it as the first action of every template that renders a workload
-   (the Deployment, a migration Job, a CronJob, ...), directly or through an
+   (the Deployment, a migration Job, a CronJob, a test Pod, a template that
+   renders a file or a value with `tpl`, ...), directly or through an
    adapter define of the chart (e.g. `<chart>.guard`, the simplest way to
    share one adapter dict between several workload templates) that calls it
    unconditionally before any output of its own. Only comments, variable

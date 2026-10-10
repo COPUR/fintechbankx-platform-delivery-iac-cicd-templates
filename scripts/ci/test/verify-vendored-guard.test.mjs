@@ -5,9 +5,10 @@
 //       sha256 is the pinned digest (a provenance header changes the digest);
 //   (b) no other file of the chart, subchart directories and .tgz archives
 //       included, defines an fbx.* template in any spelling;
-//   (c) every workload template (Deployment, StatefulSet, DaemonSet, Job,
-//       CronJob) runs the guard, directly or through an adapter define, before
-//       it writes any output.
+//   (c) every workload template (one whose document's top-level kind, in any
+//       spelling, is outside the pod-free list or unreadable, or that writes
+//       unread text there) runs the guard, directly or through an adapter
+//       define, before it writes any output.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -410,6 +411,147 @@ test("(c) a ConfigMap, a Service or an HPA naming a Deployment is not a workload
     ""
   ].join("\n");
   assertPass(verify(makeChart(t, files)));
+});
+
+// (c) a workload template is found from its document's top-level kind in any
+// YAML spelling Helm and Kubernetes accept, from any kind outside the
+// pod-free list, and from text the script cannot read written where a
+// document's top-level keys go (tpl, .Files, a value). Helm renders each
+// spelling below, and the Pod, ReplicaSet and List cases, as that kind
+// (kubeconform -strict: valid); the guard never sees the env they render.
+const JOB_SPEC = [
+  "metadata:",
+  "  name: {{ .Release.Name }}-migrate",
+  "spec:",
+  "  template:",
+  "    spec:",
+  "      restartPolicy: Never",
+  "      containers:",
+  "        - name: migrate",
+  "          image: example.invalid/migrate:0.1.0",
+  "          env: {{ toJson .Values.extraEnv }}",
+  ""
+].join("\n");
+const kindSpellings = {
+  "kind : Job (space before the colon)": ["Job", `apiVersion: batch/v1\nkind : Job\n${JOB_SPEC}`],
+  "kind: !!str Job (tag)": ["Job", `apiVersion: batch/v1\nkind: !!str Job\n${JOB_SPEC}`],
+  '"kind": Job (quoted key)': ["Job", `apiVersion: batch/v1\n"kind": Job\n${JOB_SPEC}`],
+  "'kind': Job (single-quoted key)": ["Job", `apiVersion: batch/v1\n'kind': Job\n${JOB_SPEC}`],
+  "kind: &k \"Job\" (anchor, quoted value)": ["Job", `apiVersion: batch/v1\nkind: &k "Job"\n${JOB_SPEC}`],
+  "an indented document after a comment line": [
+    "Job",
+    `# migration\n${`apiVersion: batch/v1\nkind: Job\n${JOB_SPEC}`.split("\n").map((l) => (l ? `  ${l}` : l)).join("\n")}`
+  ],
+  "a one-line JSON document": [
+    "Job",
+    '{"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "{{ .Release.Name }}-migrate"},\n' +
+      ' "spec": {"template": {"spec": {"restartPolicy": "Never", "containers": [{"name": "migrate", ' +
+      '"image": "example.invalid/migrate:0.1.0", "env": {{ toJson .Values.extraEnv }}}]}}}}\n'
+  ],
+  "a pretty-printed JSON document": [
+    "Job",
+    [
+      "{",
+      '  "apiVersion": "batch/v1",',
+      '  "metadata": {"name": "{{ .Release.Name }}-migrate"},',
+      '  "spec": {"template": {"spec": {"restartPolicy": "Never", "containers": [',
+      '    {"name": "migrate", "image": "example.invalid/migrate:0.1.0", "env": {{ toJson .Values.extraEnv }}}]}}},',
+      '  "kind": "Job"',
+      "}",
+      ""
+    ].join("\n")
+  ]
+};
+for (const [label, [kind, text]] of Object.entries(kindSpellings)) {
+  test(`(c) fails for a workload template without a guard call: ${label}`, (t) => {
+    const files = baseFiles();
+    files["templates/job.yaml"] = text;
+    assertFail(verify(makeChart(t, files)), new RegExp(`FAIL \\(c\\) templates/job\\.yaml \\(${kind}\\): no fbx\\.guard call`));
+  });
+}
+
+const POD = [
+  "apiVersion: v1",
+  "kind: Pod",
+  "metadata:",
+  "  name: {{ .Release.Name }}-smoke",
+  "  annotations:",
+  "    helm.sh/hook: test",
+  "spec:",
+  "  restartPolicy: Never",
+  "  containers:",
+  "    - name: smoke",
+  "      image: example.invalid/smoke:0.1.0",
+  "      env: {{ toJson .Values.extraEnv }}",
+  ""
+].join("\n");
+const otherKinds = {
+  Pod: POD,
+  ReplicaSet: workload("ReplicaSet"),
+  ReplicationController: workload("ReplicationController").replace("apps/v1", "v1"),
+  List: ["apiVersion: v1", "kind: List", "items:", ...POD.split("\n").map((l, i) => (l ? `${i === 0 ? "  - " : "    "}${l}` : l))].join("\n"),
+  Rollout: workload("Rollout").replace("apps/v1", "argoproj.io/v1alpha1")
+};
+for (const [kind, text] of Object.entries(otherKinds)) {
+  test(`(c) fails for a ${kind} template without a guard call`, (t) => {
+    const files = baseFiles();
+    files["templates/other.yaml"] = text;
+    assertFail(verify(makeChart(t, files)), new RegExp(`FAIL \\(c\\) templates/other\\.yaml \\(${kind}\\): no fbx\\.guard call`));
+  });
+  test(`(c) passes for a ${kind} template whose first action is the guard`, (t) => {
+    const files = baseFiles();
+    files["templates/other.yaml"] = '{{- include "fbx.guard" . -}}\n' + text;
+    assertPass(verify(makeChart(t, files)));
+  });
+}
+
+test("(c) fails for a template that renders a file through tpl and .Files.Get", (t) => {
+  const files = baseFiles();
+  files["files/job.yaml"] = `apiVersion: batch/v1\nkind: Job\n${JOB_SPEC}`;
+  files["templates/job.yaml"] = '{{ tpl (.Files.Get "files/job.yaml") . }}\n';
+  assertFail(
+    verify(makeChart(t, files)),
+    /FAIL \(c\) templates\/job\.yaml \(text from \{\{ tpl \(\.Files\.Get "files\/job\.yaml"\) \. \}\} at line 1\): no fbx\.guard call/
+  );
+});
+
+test("(c) fails for a template that renders manifests from a value (extraObjects)", (t) => {
+  const files = baseFiles();
+  files["templates/extra.yaml"] = "{{- range .Values.extraObjects }}\n---\n{{ toYaml . }}\n{{- end }}\n";
+  assertFail(verify(makeChart(t, files)), /FAIL \(c\) templates\/extra\.yaml \(text from \{\{ toYaml \. \}\} at line 3\): no fbx\.guard call/);
+});
+
+test("(c) fails for an unguarded Pod while the Deployment template is conditional", (t) => {
+  const files = baseFiles();
+  files["templates/deployment.yaml"] = '{{- if .Values.deploymentEnabled }}\n{{- include "fbx.guard" . -}}\n' + DEPLOYMENT_BODY + "{{- end }}\n";
+  files["templates/smoke-pod.yaml"] = POD;
+  const r = verify(makeChart(t, files));
+  assertFail(r, /FAIL \(c\) templates\/smoke-pod\.yaml \(Pod\): no fbx\.guard call/);
+  assert.match(r.out, /ok \(c\) templates\/deployment\.yaml \(Deployment\)/);
+});
+
+test("(c) pod-free kinds in any spelling, nested kinds and unread text inside a value are not workloads", (t) => {
+  const files = baseFiles();
+  files["templates/configmap.yaml"] = [
+    "apiVersion: v1",
+    "kind : ConfigMap",
+    "metadata:",
+    "  name: x",
+    "data:",
+    "  application.yml: |",
+    "    kind: Pod",
+    "    spec: {}",
+    "{{ (.Files.Glob \"config/*\").AsConfig | indent 2 }}",
+    ""
+  ].join("\n");
+  files["templates/hpa.json"] =
+    '{"apiVersion": "autoscaling/v2", "kind": "HorizontalPodAutoscaler", "metadata": {"name": "x"},\n' +
+    ' "spec": {"scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "x"}, "maxReplicas": 2}}\n';
+  files["templates/service.yaml"] = '"kind": Service\napiVersion: v1\nmetadata:\n  name: {{ .Release.Name | quote }}\nspec:\n  ports: [{"port": 80}]\n';
+  files["templates/NOTES.txt"] = "{{ .Release.Name }} is installed.\n{{ .Values.notes }}\n";
+  const r = verify(makeChart(t, files));
+  assertPass(r);
+  assert.doesNotMatch(r.out, /\(c\) templates\/(configmap\.yaml|hpa\.json|service\.yaml|NOTES\.txt)/);
 });
 
 test("reports every failing check, not only the first", (t) => {
