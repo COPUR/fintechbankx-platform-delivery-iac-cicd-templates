@@ -102,13 +102,18 @@ the env names the Secret materialises and whose values are never seen here):
     never taken from a user-supplied value;
   - (?i)^spring[._-]?profiles[._-]?(active|include)$: a profile switches on an
     application-<profile>.yml inside the image. The chart renders no
-    SPRING_PROFILES_ACTIVE, so no user-set profile name is allowed.
+    SPRING_PROFILES_ACTIVE, so no user-set profile name is allowed;
+  - (?i)^fintechbankx[._-]?tls([._-]|$): fintechbankx.tls.enforce
+    (FINTECHBANKX_TLS_ENFORCE) is the only switch that turns the service's
+    startup TLS assertion off, and only the local profile and test resources
+    set it; any other fintechbankx.tls.* key is refused with it.
 The helper prints the reason (non-empty means rejected).
 JVM options (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS and the chart's
 javaToolOptions) can set -Dspring.datasource.url=..., -Djavax.net.ssl.*,
--Dspring.config.* or -Dspring.profiles.*, or read more options from a file:
-a value that mentions datasource, flyway, liquibase, r2dbc, jdbc, ssl,
-application[._-]json, spring[._-]config or spring[._-]profiles, an option that
+-Dspring.config.*, -Dspring.profiles.* or -Dfintechbankx.tls.*, or read more
+options from a file: a value that mentions datasource, flyway, liquibase,
+r2dbc, jdbc, ssl, application[._-]json, spring[._-]config, spring[._-]profiles
+or fintechbankx[._-]tls, an option that
 starts with '@' (argument file), -XX:VMOptionsFile or -XX:Flags
 (case-insensitive) is rejected, and these names may not come from extraEnv
 valueFrom or the ExternalSecret.
@@ -126,6 +131,8 @@ it can redirect or override the datasource past the sslmode=verify-full check; s
 a config import, location or name can load a file or config tree that overrides the datasource past the sslmode=verify-full check; the chart renders no config import
 {{- else if regexMatch "(?i)^spring[._-]?profiles[._-]?(active|include)$" $n -}}
 a profile can activate an application-<profile> config in the image whose datasource the chart cannot check; the chart sets no profile
+{{- else if regexMatch "(?i)^fintechbankx[._-]?tls([._-]|$)" $n -}}
+it can switch off the service's startup TLS assertion (fintechbankx.tls.enforce is for the local profile and tests only)
 {{- end -}}
 {{- end -}}
 
@@ -134,8 +141,8 @@ a profile can activate an application-<profile> config in the image whose dataso
 {{- end -}}
 
 {{- define "fbx.validateJvmOptions" -}}
-{{- if regexMatch "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|(^|\\s)@|-XX:(VMOptionsFile|Flags)" (toString .value) -}}
-{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config or spring.profiles, nor read options from a file ('@' argument file, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check)" .where) -}}
+{{- if regexMatch "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|(^|\\s)@|-XX:(VMOptionsFile|Flags)" (toString .value) -}}
+{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config, spring.profiles or fintechbankx.tls, nor read options from a file ('@' argument file, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check or switch off the service's TLS assertion)" .where) -}}
 {{- end -}}
 {{- end -}}
 

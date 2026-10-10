@@ -1,0 +1,163 @@
+suite: service TLS assertion - fintechbankx.tls.* off switch
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # Services ship a startup TLS assertion that is on by default; only the
+  # property fintechbankx.tls.enforce (env FINTECHBANKX_TLS_ENFORCE) turns it
+  # off, and only the local profile and test resources set it. The chart
+  # rejects every name matching (?i)^fintechbankx[._-]?tls([._-]|$) in config
+  # keys, extraEnv names (value or valueFrom) and externalSecret data/extraData
+  # secretKeys, and JVM options that mention fintechbankx[._-]?tls.
+  - it: rejects config FINTECHBANKX_TLS_ENFORCE
+    template: templates/deployment.yaml
+    set:
+      config.FINTECHBANKX_TLS_ENFORCE: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.FINTECHBANKX_TLS_ENFORCE is not allowed: .*startup TLS assertion"
+  - it: rejects config fintechbankx.tls.enforce (dotted, YAML boolean)
+    template: templates/deployment.yaml
+    set:
+      config:
+        fintechbankx.tls.enforce: false
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.fintechbankx.tls.enforce is not allowed"
+  - it: rejects config fintechbankx-tls-enforce (kebab)
+    template: templates/deployment.yaml
+    set:
+      config:
+        fintechbankx-tls-enforce: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.fintechbankx-tls-enforce is not allowed"
+  - it: rejects config fintechbankxtls.enforce (no separator before tls)
+    template: templates/deployment.yaml
+    set:
+      config:
+        fintechbankxtls.enforce: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.fintechbankxtls.enforce is not allowed"
+  - it: rejects extraEnv FINTECHBANKX_TLS_ENFORCE (value)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: FINTECHBANKX_TLS_ENFORCE
+          value: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set FINTECHBANKX_TLS_ENFORCE"
+  - it: rejects extraEnv Fintechbankx_Tls_Enforce from valueFrom (mixed case)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: Fintechbankx_Tls_Enforce
+          valueFrom:
+            configMapKeyRef: {name: other, key: enforce}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set Fintechbankx_Tls_Enforce"
+  - it: rejects extraEnv FINTECHBANKX_TLS (the bare prefix)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: FINTECHBANKX_TLS
+          value: "{}"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set FINTECHBANKX_TLS"
+  - it: rejects extraEnv fintechbankx.tls.kafka.allow-plaintext (any future fintechbankx.tls.* key)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: fintechbankx.tls.kafka.allow-plaintext
+          value: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set fintechbankx.tls.kafka.allow-plaintext"
+  - it: rejects externalSecret.data materialising FINTECHBANKX_TLS_ENFORCE
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: FINTECHBANKX_TLS_ENFORCE
+          property: enforce
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise FINTECHBANKX_TLS_ENFORCE"
+  - it: rejects externalSecret.extraData materialising fintechbankx.tls.enforce
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: fintechbankx.tls.enforce
+          remoteSecretName: staging/loan-lifecycle-service/tls
+          property: enforce
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise fintechbankx.tls.enforce"
+  # JVM system properties are a Spring property source too.
+  - it: rejects javaToolOptions with -Dfintechbankx.tls.enforce=false
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:MaxRAMPercentage=75 -Dfintechbankx.tls.enforce=false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention .*fintechbankx.tls"
+  - it: rejects config JDK_JAVA_OPTIONS with -Dfintechbankx-tls-enforce=false
+    template: templates/deployment.yaml
+    set:
+      config.JDK_JAVA_OPTIONS: "-Dfintechbankx-tls-enforce=false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.JDK_JAVA_OPTIONS must not mention"
+  - it: rejects extraEnv JAVA_TOOL_OPTIONS with -DFINTECHBANKX_TLS_ENFORCE=false
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JAVA_TOOL_OPTIONS
+          value: "-DFINTECHBANKX_TLS_ENFORCE=false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JAVA_TOOL_OPTIONS must not mention"
+  - it: rejects extraEnv _JAVA_OPTIONS with -Dfintechbankxtls.enforce=false
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _JAVA_OPTIONS
+          value: "-Dfintechbankxtls.enforce=false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv._JAVA_OPTIONS must not mention"
+  # SPRING_APPLICATION_JSON is rejected by name whatever it carries.
+  - it: rejects config SPRING_APPLICATION_JSON carrying fintechbankx.tls.enforce=false
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_APPLICATION_JSON: '{"fintechbankx":{"tls":{"enforce":false}}}'
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_APPLICATION_JSON is not allowed"
+  - it: rejects extraEnv spring.application.json carrying fintechbankx.tls.enforce=false
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.application.json
+          value: '{"fintechbankx.tls.enforce":"false"}'
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.application.json"
+  - it: accepts names that only contain fintechbankx and tls elsewhere (control)
+    template: templates/deployment.yaml
+    set:
+      config.APP_FINTECHBANKX_TLS_ENFORCE_NOTE: x
+      config.FINTECHBANKX_TLSA_RECORD: x
+      extraEnv:
+        - name: FINTECHBANKX_FEATURE_TLS_BANNER
+          value: x
+    asserts:
+      - notFailedTemplate: {}
