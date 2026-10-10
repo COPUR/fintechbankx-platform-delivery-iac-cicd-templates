@@ -104,14 +104,18 @@ config: {}
 # externalSecret secretKeys may not name a spring.datasource/flyway/liquibase/
 # r2dbc property (SPRING_DATASOURCE_USERNAME/PASSWORD excepted),
 # spring.application.json, or anything containing JDBC_URL, SSLFACTORY or
-# SSLHOSTNAMEVERIFIER, spring.config.import/location/additional-location/name or
-# spring.profiles.active/include in any spelling (the chart renders no config
-# import and no profile); DB_URL belongs in config only; JVM options
-# (javaToolOptions, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS) must not
-# mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json,
-# spring.config or spring.profiles, nor read an options file ('@' argument
-# file, -XX:VMOptionsFile, -XX:Flags) (fbx.validateDatabaseTls; rendering fails
-# otherwise).
+# SSLHOSTNAMEVERIFIER, spring.config.import/location/additional-location/name,
+# any spring.profiles.* name (active, include, default, group.*; the chart
+# renders the only profile, from kafka.runtime) or any fintechbankx.tls.* name
+# (fintechbankx.tls.enforce turns the service's startup TLS assertion off; it is
+# for the local profile and tests only), in any spelling including Spring
+# relaxed binding ('-' inside an element, foo[bar]); DB_URL belongs in config
+# only; JVM options (javaToolOptions, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS,
+# _JAVA_OPTIONS) must not mention datasource, flyway, liquibase, r2dbc, jdbc,
+# ssl, application.json, spring.config, spring.profiles, fintechbankx.tls,
+# security.protocol or endpoint.identification, nor read an options file ('@'
+# argument file, -XX:VMOptionsFile, -XX:Flags) (fbx.validateDatabaseTls;
+# rendering fails otherwise).
 databaseCa:
   enabled: true
   configMapName: rds-ca-bundle
@@ -123,6 +127,13 @@ databaseCa:
 # MSK IAM, security.protocol SASL_SSL), strimzi -> kafka-strimzi (Strimzi
 # mutual TLS, SSL), "" -> no profile. Every user-set spring.profiles.* name is
 # rejected (config, extraEnv, externalSecret keys, JVM options).
+# fbx.validateKafkaTls: a config key or extraEnv name ending in
+# security[._-]?protocol (KAFKA_SECURITY_PROTOCOL, SPRING_KAFKA_SECURITY_PROTOCOL,
+# SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL, ...) must be SASL_SSL or SSL
+# (SASL_SSL with msk, SSL with strimzi); PLAINTEXT, SASL_PLAINTEXT and empty are
+# rejected. A name containing endpoint[._-]?identification[._-]?algorithm must
+# be https. Both need a literal extraEnv value (no valueFrom) and may not come
+# from the ExternalSecret.
 kafka:
   runtime: ""
 
