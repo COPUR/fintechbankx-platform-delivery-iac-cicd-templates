@@ -279,6 +279,8 @@ services:
       topic-init: {condition: service_completed_successfully}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-ln-loan-lifecycle
+      # local: the only profile that allows PLAINTEXT Kafka and PostgreSQL without TLS
+      SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
       MANAGEMENT_SERVER_PORT: "8081"
       DB_URL: jdbc:postgresql://postgres:5432/db_ln_loan_lifecycle_local
@@ -314,6 +316,8 @@ services:
       topic-init: {condition: service_completed_successfully}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-pay-initiation-settlement
+      # local: the only profile that allows PLAINTEXT Kafka and PostgreSQL without TLS
+      SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
       MANAGEMENT_SERVER_PORT: "8081"
       DB_URL: jdbc:postgresql://postgres:5432/db_pay_initiation_settlement_local
@@ -351,6 +355,8 @@ services:
       topic-init: {condition: service_completed_successfully}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-cus-profile-kyc
+      # local: the only profile that allows PLAINTEXT Kafka and PostgreSQL without TLS
+      SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
       MANAGEMENT_SERVER_PORT: "8081"
       DB_URL: jdbc:postgresql://postgres:5432/db_cus_profile_kyc_local
@@ -386,6 +392,8 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-rsk-decisioning
+      # local: the only profile that allows PLAINTEXT Kafka and PostgreSQL without TLS
+      SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
       MANAGEMENT_SERVER_PORT: "8081"
       DB_URL: jdbc:postgresql://postgres:5432/db_rsk_decisioning_local
@@ -419,6 +427,8 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-cmp-evidence
+      # local: the only profile that allows PLAINTEXT Kafka and PostgreSQL without TLS
+      SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
       MANAGEMENT_SERVER_PORT: "8081"
       DB_URL: jdbc:postgresql://postgres:5432/db_cmp_evidence_local

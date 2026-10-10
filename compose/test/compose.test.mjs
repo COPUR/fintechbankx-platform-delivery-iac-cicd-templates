@@ -204,6 +204,22 @@ test("every service in services.tsv is wired in compose with its own database an
   }
 });
 
+test("every service in services.tsv runs the local profile, which alone allows the stack's PLAINTEXT Kafka and non-TLS PostgreSQL", () => {
+  // The stack runs Kafka on PLAINTEXT and PostgreSQL without sslmode=verify-full.
+  // The service-side TLS assertion (Kafka repo SERVICE_CLIENT_CONFIGURATION.md,
+  // chart README "Service-side TLS assertion") refuses both outside the local
+  // profile, and only that profile sets its off switch.
+  const doc = composeDoc();
+  for (const s of services().filter((x) => x.key !== "monolith")) {
+    const env = doc.services[s.key].environment;
+    const profiles = String(env.SPRING_PROFILES_ACTIVE ?? "").split(",").map((p) => p.trim());
+    assert.ok(profiles.includes("local"), `${s.key} must set SPRING_PROFILES_ACTIVE=local (got ${env.SPRING_PROFILES_ACTIVE})`);
+    for (const k of Object.keys(env)) {
+      assert.doesNotMatch(k, /^FINTECHBANKX_TLS/i, `${s.key}.${k}: the off switch comes from the local profile only`);
+    }
+  }
+});
+
 test("compose commits no credentials and pins every image", () => {
   const doc = composeDoc();
   for (const [name, svc] of Object.entries(doc.services)) {

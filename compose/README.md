@@ -204,6 +204,14 @@ compose file, so a line can also replace a default. Names must be
 (`OIDC_*`, `DB_*`, `SPRING_DATASOURCE_*`, `SPRING_SECURITY_*`, `KEYCLOAK*`,
 `KC_*`) is rejected. Example: `payment-initiation-settlement-service__ACCOUNTS_ADAPTER=in-memory`.
 
+**Spring profile**: the five services run with `SPRING_PROFILES_ACTIVE=local`.
+The stack uses Kafka over `PLAINTEXT` on `kafka:9092` and PostgreSQL without
+TLS, which the service-side TLS assertion allows only under the `local`
+profile (fintechbankx-platform-event-streaming-kafka
+`docs/guides/SERVICE_CLIENT_CONFIGURATION.md`, and the chart README section
+"Service-side TLS assertion"). Compose sets no `FINTECHBANKX_TLS_*` variable;
+the off switch comes from the profile.
+
 **Caller allow-lists**: customer `SERVICE_CALLERS=svc-ln-loan-lifecycle`; risk
 and compliance `SERVICE_CALLERS=svc-pay-initiation-settlement` (comma separated
 `azp` values, the variable the three services read).
