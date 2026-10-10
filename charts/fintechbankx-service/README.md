@@ -215,28 +215,42 @@ editing it:
    checks (a) that exactly one file under `templates/` defines `fbx.guard`
    and that the sha256 of that whole file is the pinned one, (b) that no
    other file of the chart, subchart directories and `.tgz` archives
-   included, defines an `fbx.*` template in any spelling (`{{define`,
-   `{{- define`, extra white space, a `"..."` or `` `...` `` name, `block`),
-   since a later definition replaces the vendored one (an archive is read
-   the way Helm loads it: every entry that is not a directory, whatever its
-   typeflag, by its pax or GNU long name, `\` separators and cleaned paths;
-   an archive Helm would refuse, or a sparse entry, fails the check; every
-   file is read without a leading UTF-8 BOM, as Helm reads it), and (c) that every
-   workload template runs the guard before it writes anything (step 2). A
-   workload template is one that writes, itself or through an included
-   define, at the top level of a YAML document in any spelling (block or
-   flow/JSON, a quoted key, `kind :`, tags, anchors, an indented document) a
-   kind outside the script's pod-free list (`POD_FREE_KINDS`: ConfigMap,
-   Secret, Service, ServiceAccount, HorizontalPodAutoscaler,
-   PodDisruptionBudget, NetworkPolicy, ExternalSecret, RBAC, monitoring and
-   mesh kinds, ...), so Pod, ReplicaSet, Deployment, StatefulSet, DaemonSet,
-   Job, CronJob, a List and a custom resource such as a Rollout all count,
-   or a templated or unreadable kind; or one that writes text the script
-   cannot read where a document's top-level keys go (`tpl`, `.Files.Get`,
-   `toYaml` of a value, an include of a template the chart does not define).
-   The script reads the template text: text an action writes inside a value
-   (a value holding a newline) is not followed, which step 3's quoting
-   rule covers. The guard is `fbx.guard` with the helpers it calls:
+   included, defines an `fbx.*` template with a `define` or `block` action
+   (`{{define`, `{{- define`, white space or line breaks inside the action,
+   a `"..."` or `` `...` `` name with Go string escapes), since a later
+   definition replaces the vendored one (an archive is read the way Helm
+   loads it: every entry that is not a directory, whatever its typeflag, by
+   its pax or GNU long name, `\` separators and cleaned paths; an archive
+   Helm would refuse, or a sparse entry, fails the check; every file is read
+   without a leading UTF-8 BOM, as Helm reads it), and (c) that every
+   workload template runs the guard before it writes anything (step 2).
+   The pod-free rule of (c) is strict on purpose, so that the script does
+   not have to model YAML: a template counts as pod-free only when every
+   document it writes, itself or through a define it includes at the top
+   level, has only plain keys (`^[A-Za-z][A-Za-z0-9]*:`) on its top-level
+   lines (column 0, outside template actions, comments and `---`/`...`
+   markers aside; a `- ` entry may follow a top-level key whose value is
+   empty) and a kind that is a plain name from the script's pod-free list
+   (`POD_FREE_KINDS`: ConfigMap, Secret, Service, ServiceAccount,
+   HorizontalPodAutoscaler, PodDisruptionBudget, NetworkPolicy,
+   ExternalSecret, RBAC, monitoring and mesh kinds, ...). Every other
+   template is a workload template: one with a kind outside the list (Pod,
+   ReplicaSet, Deployment, StatefulSet, DaemonSet, Job, CronJob, a List, a
+   custom resource such as a Rollout), a templated kind, a top-level line
+   with a quoted key, `kind :`, a tag, anchor, alias or directive, flow or
+   JSON text, an indented document, a document with no kind and no include
+   at its top level, text the script cannot read where top-level keys go
+   (`tpl`, `.Files.Get`, `toYaml` of a value, an include of a template the
+   chart does not define), or template output inside a flow collection that
+   spans lines. Lines are split where YAML breaks them (LF, CR, and NEL, LS
+   and PS in UTF-8), and the text is read as written and with the trim
+   markers applied. The script reads the template text: text an action
+   writes inside a value (a value holding a newline) is not followed, which
+   step 3's quoting rule covers. So the checks catch a vendored copy that
+   differs, an `fbx.*` redefinition, and a workload template that does not
+   call the guard first, in conventional chart YAML and template code; text
+   held in values, the adapter's mapping and code after the guard call are
+   review matters (step 2). The guard is `fbx.guard` with the helpers it calls:
    `fbx.validateEnvSources`, `fbx.validateDatabaseTls`, `fbx.validateKafkaTls`,
    `fbx.validateKafkaTlsValue`, `fbx.validateSecretNames`, `fbx.secretOnlyName`,
    `fbx.secretOnlyReason`, `fbx.validateKeyNames`, `fbx.validateDatabaseCa`,
@@ -255,12 +269,17 @@ editing it:
    share one adapter dict between several workload templates) that calls it
    unconditionally before any output of its own. Only comments, variable
    assignments, `fail` and `if`/`range`/`with` blocks that write nothing may
-   come before the call, and none of them may change what the guard reads:
-   no `set`, `unset`, `merge` or `mergeOverwrite` (or a `must*` form) except
-   on a variable bound to a dict the template built (`$vals := dict ...`), and
-   no `tpl`, also through an included define (an include whose name is chosen
-   at render time counts with every template of the chart); an `{{ if }}`
-   without `{{ else }}` may enclose the whole template (an optional Job).
+   come before the call, and the script refuses there, also through an
+   included define (an include whose name is chosen at render time counts
+   with every template of the chart): `tpl`; `merge`, `mergeOverwrite`,
+   `mustMerge` and `mustMergeOverwrite`, whatever their arguments (sprig
+   merges nested maps in place, so a dict the template built that holds
+   `.Values` or one of its maps passes the write on); `set` and `unset`,
+   unless the first argument is a bare variable and every assignment to it
+   in the same template or define (`:=` or `=`, in any block, inside
+   parentheses too; a `range` variable counts) is a `dict` call with no pipe
+   after it (`$vals := dict ...`). An `{{ if }}` without `{{ else }}` may
+   enclose the whole template (an optional Job).
    The script does not read what runs after the call: a template must not change `.Values` after the guard has run
    (so that it renders a value the guard never saw); that, like the
    adapter's mapping, is for review. With this chart's value

@@ -1,16 +1,22 @@
 // Tests for scripts/ci/verify-vendored-guard.sh <chart-dir> <expected-sha256>,
 // the check a service chart's CI runs on its vendored copy of the guard
-// (charts/fintechbankx-service README, "Vendoring the guard", step 1):
-//   (a) exactly one file under templates/ defines fbx.guard, and its whole-file
-//       sha256 is the pinned digest (a provenance header changes the digest);
-//   (b) no other file of the chart, subchart directories and .tgz archives
-//       included (an archive read the way Helm loads it), defines an fbx.*
-//       template in any spelling;
-//   (c) every workload template (one whose document's top-level kind, in any
-//       spelling, is outside the pod-free list or unreadable, or that writes
-//       unread text there) runs the guard, directly or through an adapter
-//       define, before it writes any output and before anything that can
-//       change what the guard reads (set, unset, merge*, tpl).
+// (charts/fintechbankx-service README, "Vendoring the guard", step 1). It
+// catches, in conventional chart YAML and template code:
+//   (a) a vendored copy that differs: exactly one file under templates/
+//       defines fbx.guard, and its whole-file sha256 is the pinned digest (a
+//       provenance header changes the digest);
+//   (b) an fbx.* redefinition: no other file of the chart, subchart
+//       directories and .tgz archives included (an archive read the way Helm
+//       loads it), has a define or block of an fbx.* name;
+//   (c) a workload template that does not call the guard first: a template
+//       is pod-free only when every top-level line of each YAML document it
+//       writes is a plain key and its kind is a plain name from the pod-free
+//       list; every other template runs the guard, directly or through an
+//       adapter define, before it writes any output, and before it only
+//       comments, assigns variables, fails or opens blocks that write
+//       nothing (no merge*, set or unset other than on a variable bound only
+//       to dict calls, no tpl).
+// Text inside values and code after the guard call are review matters.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -487,8 +493,8 @@ const helmMembers = {
     [tarMember("sub/templates/job.yaml", HIDDEN_JOB, { magic: "ustar ", version: " \0", prefix: "1" })],
     "sub/templates/job.yaml"
   ],
-  "a leading UTF-8 BOM before a JSON document": [
-    [tarMember("sub/templates/job.yaml", `\xef\xbb\xbf${JSON.stringify({ apiVersion: "batch/v1", kind: "Job", metadata: { name: "x" } })}\n`)],
+  "a leading UTF-8 BOM (dropped, so the first line is a plain key)": [
+    [tarMember("sub/templates/job.yaml", `\xef\xbb\xbf${HIDDEN_JOB}`)],
     "sub/templates/job.yaml"
   ]
 };
@@ -577,12 +583,15 @@ test("(c) a ConfigMap, a Service or an HPA naming a Deployment is not a workload
   assertPass(verify(makeChart(t, files)));
 });
 
-// (c) a workload template is found from its document's top-level kind in any
-// YAML spelling Helm and Kubernetes accept, from any kind outside the
-// pod-free list, and from text the script cannot read written where a
-// document's top-level keys go (tpl, .Files, a value). Helm renders each
-// spelling below, and the Pod, ReplicaSet and List cases, as that kind
-// (kubeconform -strict: valid); the guard never sees the env they render.
+// (c) a template is pod-free only when every top-level line (column 0,
+// outside template actions, not a comment or document marker) of each YAML
+// document it writes is a plain key (^[A-Za-z][A-Za-z0-9]*:) and its kind is a
+// plain name from the pod-free list. Any other top-level line (a tag, anchor,
+// alias, quote or escape, a flow collection, an indented document, ...) and
+// any kind outside the list makes it a workload template, which must call the
+// guard first. Helm renders each document below as a Job (kubeconform
+// -strict: valid; sigs.k8s.io/yaml reads kind Job); the guard never sees the
+// env it renders.
 const JOB_SPEC = [
   "metadata:",
   "  name: {{ .Release.Name }}-migrate",
@@ -596,24 +605,34 @@ const JOB_SPEC = [
   "          env: {{ toJson .Values.extraEnv }}",
   ""
 ].join("\n");
+const JOB_JSON_TAIL =
+  '"metadata": {"name": "{{ .Release.Name }}-migrate"},\n' +
+  ' "spec": {"template": {"spec": {"restartPolicy": "Never", "containers": [{"name": "migrate", ' +
+  '"image": "example.invalid/migrate:0.1.0", "env": {{ toJson .Values.extraEnv }}}]}}}}\n';
 const kindSpellings = {
-  "kind : Job (space before the colon)": ["Job", `apiVersion: batch/v1\nkind : Job\n${JOB_SPEC}`],
-  "kind: !!str Job (tag)": ["Job", `apiVersion: batch/v1\nkind: !!str Job\n${JOB_SPEC}`],
-  '"kind": Job (quoted key)': ["Job", `apiVersion: batch/v1\n"kind": Job\n${JOB_SPEC}`],
-  "'kind': Job (single-quoted key)": ["Job", `apiVersion: batch/v1\n'kind': Job\n${JOB_SPEC}`],
-  "kind: &k \"Job\" (anchor, quoted value)": ["Job", `apiVersion: batch/v1\nkind: &k "Job"\n${JOB_SPEC}`],
+  "kind: Job (plain key and value)": ["Job", `apiVersion: batch/v1\nkind: Job\n${JOB_SPEC}`],
+  "kind : Job (space before the colon)": ['top-level line "kind : Job"', `apiVersion: batch/v1\nkind : Job\n${JOB_SPEC}`],
+  "kind: !!str Job (tag on the value)": ['kind "!!str Job" is not a plain name', `apiVersion: batch/v1\nkind: !!str Job\n${JOB_SPEC}`],
+  "kind: &k \"Job\" (anchor, quoted value)": ['kind "&k \\"Job\\"" is not a plain name', `apiVersion: batch/v1\nkind: &k "Job"\n${JOB_SPEC}`],
+  '"kind": Job (quoted key)': ['top-level line "\\"kind\\": Job"', `apiVersion: batch/v1\n"kind": Job\n${JOB_SPEC}`],
+  "'kind': Job (single-quoted key)": ['top-level line "\'kind\': Job"', `apiVersion: batch/v1\n'kind': Job\n${JOB_SPEC}`],
+  "!!str kind: Job (tag on the key)": ['top-level line "!!str kind: Job"', `apiVersion: batch/v1\n!!str kind: Job\n${JOB_SPEC}`],
+  "&k kind: Job (anchor on the key)": ['top-level line "&k kind: Job"', `apiVersion: batch/v1\n&k kind: Job\n${JOB_SPEC}`],
+  "*k : Job (an alias as the key)": [
+    'top-level line "*k : Job"',
+    `apiVersion: batch/v1\n${JOB_SPEC.replace("  name: {{ .Release.Name }}-migrate", "  name: {{ .Release.Name }}-migrate\n  labels:\n    role: &k kind")}*k : Job\n`
+  ],
+  '"\\u006bind": Job (an escape in a quoted key)': ['top-level line "\\"\\\\u006bind\\": Job"', `apiVersion: batch/v1\n"\\u006bind": Job\n${JOB_SPEC}`],
   "an indented document after a comment line": [
-    "Job",
+    'indented top-level line "apiVersion: batch/v1"',
     `# migration\n${`apiVersion: batch/v1\nkind: Job\n${JOB_SPEC}`.split("\n").map((l) => (l ? `  ${l}` : l)).join("\n")}`
   ],
-  "a one-line JSON document": [
-    "Job",
-    '{"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "{{ .Release.Name }}-migrate"},\n' +
-      ' "spec": {"template": {"spec": {"restartPolicy": "Never", "containers": [{"name": "migrate", ' +
-      '"image": "example.invalid/migrate:0.1.0", "env": {{ toJson .Values.extraEnv }}}]}}}}\n'
-  ],
+  "a one-line JSON document": ["top-level line", `{"apiVersion": "batch/v1", "kind": "Job", ${JOB_JSON_TAIL}`],
+  "a JSON document with an escape in the kind key": ["top-level line", `{"apiVersion": "batch/v1", "\\u006bind": "Job", ${JOB_JSON_TAIL}`],
+  "a tagged root flow mapping (!!map {...})": ['top-level line "!!map', `!!map {"apiVersion": "batch/v1", "kind": "Job", ${JOB_JSON_TAIL}`],
+  "an anchored root flow mapping (&doc {...})": ['top-level line "&doc', `&doc {"apiVersion": "batch/v1", "kind": "Job", ${JOB_JSON_TAIL}`],
   "a pretty-printed JSON document": [
-    "Job",
+    'top-level line "{"',
     [
       "{",
       '  "apiVersion": "batch/v1",',
@@ -624,13 +643,23 @@ const kindSpellings = {
       "}",
       ""
     ].join("\n")
-  ]
+  ],
+  "kind: Job after a document marker on the same line (---kind: Job)": ["Job", `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n---kind: Job\napiVersion: batch/v1\n${JOB_SPEC}`],
+  // YAML reads CR, NEL (U+0085) and the paragraph and line separators as
+  // line breaks, so each of these kind lines is a top-level key.
+  "kind: Job after a carriage return": ["Job", `apiVersion: batch/v1\rkind: Job\n${JOB_SPEC}`],
+  "kind: Job after a NEL (U+0085)": ["Job", `apiVersion: batch/v1\u0085kind: Job\n${JOB_SPEC}`],
+  "kind: Job after a paragraph separator (U+2029)": ["Job", `apiVersion: batch/v1\u2029kind: Job\n${JOB_SPEC}`],
+  "a document without a top-level kind": ["no top-level kind", `apiVersion: batch/v1\n${JOB_SPEC}`]
 };
 for (const [label, [kind, text]] of Object.entries(kindSpellings)) {
   test(`(c) fails for a workload template without a guard call: ${label}`, (t) => {
     const files = baseFiles();
     files["templates/job.yaml"] = text;
-    assertFail(verify(makeChart(t, files)), new RegExp(`FAIL \\(c\\) templates/job\\.yaml \\(${kind}\\): no fbx\\.guard call`));
+    const r = verify(makeChart(t, files));
+    assertFail(r, /FAIL \(c\) templates\/job\.yaml \(.*\): no fbx\.guard call/);
+    const line = r.out.split("\n").find((l) => l.startsWith("FAIL (c) templates/job.yaml")) ?? "";
+    assert.ok(line.includes(kind), `expected ${JSON.stringify(kind)} in: ${line}\n${r.out}`);
   });
 }
 
@@ -694,34 +723,125 @@ test("(c) fails for an unguarded Pod while the Deployment template is conditiona
   assert.match(r.out, /ok \(c\) templates\/deployment\.yaml \(Deployment\)/);
 });
 
-test("(c) pod-free kinds in any spelling, nested kinds and unread text inside a value are not workloads", (t) => {
+test("(c) pod-free documents in conventional chart YAML are not workloads (plain keys, nested kinds, values, sequences, blocks)", (t) => {
   const files = baseFiles();
   files["templates/configmap.yaml"] = [
+    "{{- if .Values.config }}",
     "apiVersion: v1",
-    "kind : ConfigMap",
+    "kind: ConfigMap # the service's settings",
+    "{{- if .Values.named }}",
+    "metadata:",
+    "  name: {{ .Release.Name | quote }}",
+    "{{- else }}",
     "metadata:",
     "  name: x",
+    "{{- end }}",
     "data:",
     "  application.yml: |",
     "    kind: Pod",
     "    spec: {}",
     "{{ (.Files.Glob \"config/*\").AsConfig | indent 2 }}",
+    "  inline: {a: 1,",
+    "    b: 2}",
+    "{{- end }}",
     ""
   ].join("\n");
-  files["templates/hpa.json"] =
-    '{"apiVersion": "autoscaling/v2", "kind": "HorizontalPodAutoscaler", "metadata": {"name": "x"},\n' +
-    ' "spec": {"scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "x"}, "maxReplicas": 2}}\n';
-  files["templates/service.yaml"] = '"kind": Service\napiVersion: v1\nmetadata:\n  name: {{ .Release.Name | quote }}\nspec:\n  ports: [{"port": 80}]\n';
+  files["templates/hpa.yaml"] = [
+    "apiVersion: autoscaling/v2",
+    "kind: HorizontalPodAutoscaler",
+    "metadata:",
+    "  name: x",
+    "spec:",
+    "  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: x}",
+    "  maxReplicas: 2",
+    ""
+  ].join("\n");
+  files["templates/rbac.yaml"] = [
+    "apiVersion: rbac.authorization.k8s.io/v1",
+    "kind: Role",
+    "metadata:",
+    "  name: x",
+    "rules:",
+    "{{- range .Values.rules }}",
+    "- apiGroups: [\"\"]",
+    "  resources: [{{ . | quote }}]",
+    "  verbs: [get]",
+    "{{- end }}",
+    "---",
+    "apiVersion: rbac.authorization.k8s.io/v1",
+    "kind: RoleBinding",
+    "metadata:",
+    "  name: x",
+    "subjects:",
+    "- kind: ServiceAccount",
+    "  name: x",
+    "roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: x}",
+    ""
+  ].join("\n");
   files["templates/NOTES.txt"] = "{{ .Release.Name }} is installed.\n{{ .Values.notes }}\n";
   const r = verify(makeChart(t, files));
   assertPass(r);
-  assert.doesNotMatch(r.out, /\(c\) templates\/(configmap\.yaml|hpa\.json|service\.yaml|NOTES\.txt)/);
+  assert.doesNotMatch(r.out, /\(c\) templates\/(configmap\.yaml|hpa\.yaml|rbac\.yaml|NOTES\.txt)/);
 });
 
-// (c) what runs before the guard must not change what the guard reads: an
-// assignment or condition that calls set, unset, merge, mergeOverwrite (also
-// mustMerge, mustMergeOverwrite) or tpl, itself or through a define it
-// includes, can empty .Values.extraEnv for the guard and restore it after.
+// A pod-free kind counts only as a plain name under a plain key, in a document
+// whose every top-level line is a plain key: anything else makes the
+// template a workload template.
+const podFreeSpellings = {
+  "JSON (a flow mapping at the top level)": [
+    "templates/hpa.json",
+    '{"apiVersion": "autoscaling/v2", "kind": "HorizontalPodAutoscaler", "metadata": {"name": "x"},\n' +
+      ' "spec": {"scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "x"}, "maxReplicas": 2}}\n',
+    'top-level line "{'
+  ],
+  "a quoted kind key": ["templates/service.yaml", '"kind": Service\napiVersion: v1\nmetadata:\n  name: x\n', 'top-level line "\\"kind\\": Service"'],
+  "kind : (a space before the colon)": ["templates/configmap.yaml", "apiVersion: v1\nkind : ConfigMap\nmetadata:\n  name: x\n", 'top-level line "kind : ConfigMap"'],
+  "a quoted kind value": ["templates/configmap.yaml", 'apiVersion: v1\nkind: "ConfigMap"\nmetadata:\n  name: x\n', 'kind "\\"ConfigMap\\"" is not a plain name'],
+  "a templated kind": ["templates/configmap.yaml", "apiVersion: v1\nkind: {{ .Values.kind }}\nmetadata:\n  name: x\n", "templated kind"],
+  "a kind extended by template output": ["templates/configmap.yaml", 'apiVersion: v1\nkind: Config{{ .Values.suffix }}\nmetadata:\n  name: x\n', "templated kind"],
+  "a top-level sequence entry that follows no empty key": [
+    "templates/configmap.yaml",
+    "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: x}\n- kind: Job\n",
+    'top-level line "- kind: Job"'
+  ],
+  "template output in a flow collection that continues on the next line": [
+    "templates/configmap.yaml",
+    'apiVersion: batch/v1\nmetadata: {name: {{ printf "%s}" .Release.Name }}\nkind: Job\n' + JOB_SPEC.split("\n").slice(2).join("\n"),
+    "template output in a flow collection that spans lines"
+  ],
+  "a %YAML directive": ["templates/configmap.yaml", "%YAML 1.1\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n", 'top-level line "%YAML 1.1"'],
+  "content after a document marker": ["templates/configmap.yaml", "--- !!map\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n", 'top-level line "!!map"']
+};
+for (const [label, [file, text, reason]] of Object.entries(podFreeSpellings)) {
+  test(`(c) a pod-free document makes the template a workload template when it has ${label}`, (t) => {
+    const files = baseFiles();
+    files[file] = text;
+    const r = verify(makeChart(t, files));
+    assertFail(r, new RegExp(`FAIL \\(c\\) ${escapeRe(file)} \\(.*\\): no fbx\\.guard call`));
+    const line = r.out.split("\n").find((l) => l.startsWith(`FAIL (c) ${file}`)) ?? "";
+    assert.ok(line.includes(reason), `expected ${JSON.stringify(reason)} in: ${line}\n${r.out}`);
+  });
+}
+
+test("(c) a workload template in a spelling other than plain keys passes once it calls the guard first", (t) => {
+  const files = baseFiles();
+  files["templates/job.json"] = '{{- include "fbx.guard" . -}}\n{"apiVersion": "batch/v1", "kind": "Job", ' + JOB_JSON_TAIL;
+  files["templates/service.yaml"] = '{{- include "fbx.guard" . -}}\n"kind": Service\napiVersion: v1\nmetadata:\n  name: x\n';
+  const r = verify(makeChart(t, files));
+  assertPass(r);
+  assert.match(r.out, /ok \(c\) templates\/job\.json \(top-level line/);
+  assert.match(r.out, /ok \(c\) templates\/service\.yaml \(top-level line/);
+});
+
+// (c) what runs before the guard must not change what the guard reads. merge,
+// mergeOverwrite, mustMerge and mustMergeOverwrite are refused there outright
+// (they merge nested maps in place, so a dict the template built that holds
+// .Values or one of its maps passes the write on). set and unset are accepted
+// only on a bare variable every assignment of which in the same template or
+// define (:= and =, in any block, also inside parentheses) is a plain dict
+// call; tpl is refused. Each form below, itself or through a define it
+// includes, can empty .Values.extraEnv for the guard; the template renders the
+// list it captured before (helm template renders the refused entry).
 const RESTORE = '{{- $_ := set .Values "extraEnv" $env -}}\n';
 const mutations = {
   set: '{{- $_ := set .Values "extraEnv" list -}}',
@@ -733,7 +853,26 @@ const mutations = {
   "set inside a local dict that holds .Values": '{{- $d := dict "v" .Values -}}\n{{- $_ := set (index $d "v") "extraEnv" list -}}',
   "set in an if condition": '{{- if set .Values "extraEnv" list }}{{- end }}',
   "tpl of a value": "{{- $_ := tpl .Values.prelude . -}}",
-  "an include of a define that calls set": '{{- $_ := include "example.reset" . -}}'
+  "an include of a define that calls set": '{{- $_ := include "example.reset" . -}}',
+  "mergeOverwrite on a dict the template built that holds .Values": [
+    '{{- $f := dict "v" .Values -}}',
+    '{{- $_ := mergeOverwrite $f (dict "v" (dict "extraEnv" list)) -}}'
+  ].join("\n"),
+  "merge into a dict the template built": '{{- $f := dict -}}\n{{- $_ := merge $f (dict "x" 1) -}}',
+  "set on a variable redeclared in a block (the outer one is .Values)": [
+    "{{- $v := .Values -}}",
+    "{{- if true }}{{ $v := dict }}{{ end -}}",
+    '{{- $_ := set $v "extraEnv" list -}}'
+  ].join("\n"),
+  "set on a dict variable assigned .Values later (=)": '{{- $v := dict -}}\n{{- $v = .Values -}}\n{{- $_ := set $v "extraEnv" list -}}',
+  "set on a dict variable assigned .Values inside parentheses": [
+    "{{- $v := dict -}}",
+    "{{- $_ := print ($v = .Values) -}}",
+    '{{- $_ := set $v "extraEnv" list -}}'
+  ].join("\n"),
+  "set on a dict piped into default (dict | default .Values is .Values)": '{{- $v := dict | default .Values -}}\n{{- $_ := set $v "extraEnv" list -}}',
+  "set on a range variable": '{{- range $v := list .Values }}{{ $_ := set $v "extraEnv" list }}{{ end -}}',
+  "set on the root context $": '{{- $_ := set $ "Values" (dict) -}}'
 };
 for (const [label, action] of Object.entries(mutations)) {
   test(`(c) fails when an action before the guard can change what it reads: ${label}`, (t) => {
@@ -747,6 +886,24 @@ for (const [label, action] of Object.entries(mutations)) {
     );
   });
 }
+
+test("(c) fails for an adapter define that sets a variable it binds to .Values in a block", (t) => {
+  const files = baseFiles();
+  files["templates/_helpers.tpl"] = [
+    '{{- define "example.guard" -}}',
+    "{{- $v := .Values -}}",
+    "{{- with .Values }}{{ $v := dict }}{{ end -}}",
+    '{{- $_ := set $v "extraEnv" list -}}',
+    '{{- include "fbx.guard" . -}}',
+    "{{- end -}}",
+    ""
+  ].join("\n");
+  files["templates/deployment.yaml"] = '{{- include "example.guard" . -}}\n' + DEPLOYMENT_BODY;
+  assertFail(
+    verify(makeChart(t, files)),
+    /FAIL \(c\) templates\/deployment\.yaml \(Deployment\): .*example\.guard.*can change what the guard reads before it runs: it calls set on \$v/
+  );
+});
 
 test("(c) fails for an adapter define that changes .Values before it calls the guard", (t) => {
   const files = baseFiles();
@@ -769,14 +926,15 @@ test("(c) fails for an include chosen at render time before the guard when a tem
   );
 });
 
-test("(c) passes with a render-time include, a local dict built with set and pure functions before the guard (control)", (t) => {
+test("(c) passes with a render-time include, a local dict built with set and unset and pure functions before the guard (control)", (t) => {
   const files = baseFiles();
   files["templates/configmap.yaml"] = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n";
   files["templates/deployment.yaml"] = [
     '{{- $cm := include (print .Template.BasePath "/configmap.yaml") . -}}',
-    '{{- $vals := dict "config" .Values.config -}}',
+    '{{- $vals := dict "config" .Values.config "x" (.Values.x | default dict) -}}',
     '{{- $_ := set $vals "extraEnv" (concat (.Values.extraEnv | default list) (list)) -}}',
-    '{{- $_ := merge $vals (dict "kafka" (dict "runtime" "msk")) -}}',
+    '{{- if .Values.kafka }}{{ $_ := set $vals "kafka" (dict "runtime" "msk") }}{{ end -}}',
+    '{{- $_ := unset $vals "x" -}}',
     '{{- include "fbx.guard" (dict "Values" $vals) -}}',
     DEPLOYMENT_BODY
   ].join("\n");

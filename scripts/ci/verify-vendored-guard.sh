@@ -10,44 +10,59 @@
 #       reference file copied whole and unchanged, without a header: the
 #       provenance (source repository, path, commit) goes next to the pinned
 #       digest in the CI step, so a header fails here.
-#   (b) no other file of the chart defines an fbx.* template, in any spelling
-#       ({{define, {{- define, extra white space or line breaks, "..." or `...`
-#       names, Go string escapes, block): a later definition would replace the
-#       vendored one. Subchart directories and .tgz archives (nested ones too)
-#       are read as well, an archive the way Helm loads it: every entry that
-#       is not a directory, whatever its typeflag, named by its pax or GNU
-#       long name, split on '\' when its name holds one and cleaned. An
-#       archive Helm would refuse, or a sparse entry, fails this check. Every
-#       file is read without a leading UTF-8 BOM, as Helm reads it.
+#   (b) no other file of the chart defines an fbx.* template with a define or
+#       block action ({{define or {{- define, white space or line breaks
+#       inside the action, a "..." or `...` name, Go string escapes in the
+#       name): a later definition would replace the vendored one. Subchart
+#       directories and .tgz archives (nested ones too) are read as well, an
+#       archive the way Helm loads it: every entry that is not a directory,
+#       whatever its typeflag, named by its pax or GNU long name, split on '\'
+#       when its name holds one and cleaned. An archive Helm would refuse, or a
+#       sparse entry, fails this check. Every file is read without a leading
+#       UTF-8 BOM, as Helm reads it.
 #   (c) every workload template calls fbx.guard before it writes anything:
 #       directly ({{- include "fbx.guard" ... -}}) or through an adapter define
 #       of the chart that calls fbx.guard unconditionally before any output of
-#       its own. A workload template (also in subcharts; partials and
-#       NOTES.txt, which Helm does not render as manifests, aside) is one that,
-#       itself or through a define it includes, writes at the top level of a
-#       YAML document, in any spelling (block or flow/JSON, quoted key,
-#       "kind :", tags, anchors, an indented document, after "---"):
-#         - a kind outside POD_FREE_KINDS below (so Pod, ReplicaSet,
-#           ReplicationController, Deployment, StatefulSet, DaemonSet, Job,
-#           CronJob, a List and a custom resource such as a Rollout count), or
-#           a templated or unreadable kind;
-#         - text the script cannot read: an output action (tpl, .Files.Get,
-#           toYaml of a value, ...) or an include of a template the chart does
-#           not define, placed where a document's top-level keys go.
-#       It reads the template text, as written and with the trim markers
-#       applied; text an action writes inside a value (a value holding a
-#       newline) is not followed, which is why every interpolated value is
-#       quoted (README step 3). Before the call only comments, variable
-#       assignments, fail and if/range/with blocks that write nothing may run,
-#       and none of them may change what the guard reads: no set, unset,
-#       merge, mergeOverwrite (or a must* form) except on a variable bound to
-#       a dict the template built ($vals := dict ...), and no tpl, also
-#       through an included define (an include whose name is chosen at render
-#       time counts with every template of the chart). The call may sit
-#       inside an {{ if }} (without else) that encloses the whole template,
-#       the form of an optional migration Job. What runs after the call is
-#       not read: a template that changes .Values after the guard has run is
-#       a review matter, like the adapter's mapping.
+#       its own. Partials and NOTES.txt, which Helm does not render as
+#       manifests, aside, a template (also in a subchart) counts as pod-free
+#       only when every document it writes, itself or through a define it
+#       includes at the top level, passes a strict layout rule; every other
+#       template is a workload template. The rule, read on the template text as
+#       written and again with the trim markers applied, lines split where YAML
+#       breaks them (LF, CR, and NEL, LS and PS in UTF-8): every top-level line
+#       (column 0, outside template actions, not a comment or a "---"/"..."
+#       document marker) is a plain key matching ^[A-Za-z][A-Za-z0-9]*: (a "- "
+#       entry may follow a top-level key whose value is empty), and the
+#       document's kind is a plain name from POD_FREE_KINDS below. So a
+#       top-level line with a quoted key, "kind :", a tag, anchor, alias or
+#       directive, or flow or JSON text, an indented document, a templated
+#       kind, a document with no kind and no include at its top level, an
+#       output action or an include of a template the chart does not define
+#       placed where top-level keys go, and template output inside a flow
+#       collection that spans lines all make a workload template, as does any
+#       kind outside the list (Pod, ReplicaSet, ReplicationController,
+#       Deployment, StatefulSet, DaemonSet, Job, CronJob, a List, a custom
+#       resource such as a Rollout). Text an action writes inside a value (a
+#       value holding a newline) is not followed, which is why every
+#       interpolated value is quoted (README step 3).
+#       Before the call only comments, variable assignments, fail and
+#       if/range/with blocks that write nothing may run, and these are refused
+#       there, also through an included define (an include whose name is
+#       chosen at render time counts with every template of the chart): tpl;
+#       merge, mergeOverwrite, mustMerge and mustMergeOverwrite, whatever their
+#       arguments (sprig merges nested maps in place); set and unset, unless
+#       the first argument is a bare variable and every assignment to it in the
+#       same template or define (:= or =, in any block, inside parentheses too;
+#       a range variable counts) is a dict call with no pipe after it
+#       ($vals := dict ...). The call may sit inside an {{ if }} (without else)
+#       that encloses the whole template, the form of an optional migration
+#       Job.
+#       Scope: the checks catch a vendored copy that differs, an fbx.*
+#       redefinition, and a workload template that does not call the guard
+#       first, in conventional chart YAML and template code. Text held in
+#       values (tpl input, a value that writes YAML), what the adapter maps and
+#       what runs after the guard call (a template that changes .Values after
+#       the guard has run) are not read: they are review matters.
 #
 # Prints the guard file(s) found with their sha256, one line per check, and
 # exits 0 when every check passes, 1 when one fails, 2 on a usage error.
@@ -84,11 +99,12 @@ process.on("uncaughtException", (err) => {
 const [chartArg, expectedArg] = process.argv.slice(1);
 const chartDir = path.resolve(chartArg);
 const expected = expectedArg.toLowerCase();
-// Kinds known to run no pod. A document whose top-level kind is any other
-// (Pod, ReplicaSet, ReplicationController, Deployment, StatefulSet, DaemonSet,
-// Job, CronJob, a List, which Helm's client flattens into its items, a custom
-// resource such as an Argo Rollout) or is templated or unreadable makes its
-// template a workload template.
+// Kinds known to run no pod, written exactly as here. A document whose
+// top-level kind is any other plain name (Pod, ReplicaSet,
+// ReplicationController, Deployment, StatefulSet, DaemonSet, Job, CronJob, a
+// List, which Helm's client flattens into its items, a custom resource such
+// as an Argo Rollout), or that fails the layout rule of scanLayout below,
+// makes its template a workload template.
 const POD_FREE_KINDS = [
   "APIService", "AuthorizationPolicy", "Certificate", "ClusterIssuer", "ClusterRole", "ClusterRoleBinding",
   "ClusterSecretStore", "ConfigMap", "CustomResourceDefinition", "DestinationRule", "Endpoints", "EndpointSlice",
@@ -100,7 +116,6 @@ const POD_FREE_KINDS = [
   "Sidecar", "StorageClass", "Telemetry", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding",
   "ValidatingWebhookConfiguration", "VirtualService"
 ];
-const podFree = new Set(POD_FREE_KINDS.map((k) => k.toLowerCase()));
 const GUARD = "fbx.guard";
 const failures = [];
 const lines = [];
@@ -432,7 +447,7 @@ function lex(src) {
     if (open < 0) { tokens.push({ type: "text", value: src.slice(i), start: i }); break; }
     if (open > i) tokens.push({ type: "text", value: src.slice(i, open), start: i });
     let k = open + 2;
-    if (src[k] === "-" && /\s/.test(src[k + 1] ?? "")) k += 1;
+    if (src[k] === "-" && /[ \t\r\n]/.test(src[k + 1] ?? "")) k += 1;
     let m = k;
     while (m < src.length && /\s/.test(src[m])) m++;
     if (src.startsWith("/*", m)) {
@@ -485,8 +500,8 @@ function lex(src) {
 
 // Trim markers of an action or comment token: {{- removes the white space
 // before it, -}} the white space after it.
-const leftTrim = (src, t) => src[t.start + 2] === "-" && /\s/.test(src[t.start + 3] ?? "");
-const rightTrim = (src, t) => src.startsWith("-}}", t.end - 3) && /\s/.test(src[t.end - 4] ?? "");
+const leftTrim = (src, t) => src[t.start + 2] === "-" && /[ \t\r\n]/.test(src[t.start + 3] ?? "");
+const rightTrim = (src, t) => src.startsWith("-}}", t.end - 3) && /[ \t\r\n]/.test(src[t.end - 4] ?? "");
 
 // Go string literal ("..." with escapes, or `...`) at the start of s.
 function readString(s) {
@@ -663,27 +678,93 @@ function callsIn(tokens) {
   return calls;
 }
 
-// What runs before the guard must not change what it reads. sprig's set,
-// unset, merge and mergeOverwrite (and the must* forms) change their first
-// argument in place, so they may only target a variable bound to a dict the
-// template built itself ($vals := dict ...), never .Values, $, an alias of
-// .Values or a dict reached through index; tpl runs template text taken from
-// a value. An include counts with what the included define runs, and an
-// include whose name is chosen at render time with what any template of the
-// chart runs. actionMutation returns why an action can change what the guard
-// reads ("calls set", "includes x, which calls set", ...) or null, and records
-// in fresh the variables an assignment binds to a new dict.
-const MUTATORS = /(?<![\w.$])(set|unset|merge|mergeOverwrite|mustMerge|mustMergeOverwrite)(?![\w])\s*(\$[A-Za-z0-9_]+(?![\w.]))?/g;
+// What runs before the guard must not change what it reads, so the script
+// refuses there, without modelling what a value holds:
+//   - tpl (it runs template text taken from a value);
+//   - merge, mergeOverwrite, mustMerge and mustMergeOverwrite, whatever their
+//     arguments: sprig merges nested maps in place, so even a dict the
+//     template built passes the write on to .Values when it holds .Values or
+//     one of its maps;
+//   - set and unset, unless the first argument is a bare variable ($name) and
+//     every assignment to that name in the same template or define (:= and =,
+//     in any block, also inside parentheses; a range variable counts as an
+//     assignment) is a dict call with no pipe after it ($vals := dict ...).
+// An include counts with what the included define runs, and an include whose
+// name is chosen at render time with what any template of the chart runs.
+// actionMutation returns why an action can change what the guard reads
+// ("calls mergeOverwrite, ...", "includes x, which calls set on $v, ...") or
+// null; assignments is assignmentsIn() of the action's template or define.
+const MERGERS = /(?<![\w.$])(merge|mergeOverwrite|mustMerge|mustMergeOverwrite)(?![\w])/;
+const SETTERS = /(?<![\w.$])(set|unset)(?![\w])/g;
+const DECLARATION = /(?<![\w.$])(\$[A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*(\$[A-Za-z_][A-Za-z0-9_]*))?\s*(:=|=)/g;
 const stripStrings = (body) => body.replace(/"(?:[^"\\]|\\.)*"|`[^`]*`|'(?:[^'\\]|\\.)*'/g, '""');
 const defineMutationMemo = new Map();
 let chartMutationMemo;
 let chartMutationBusy = false;
 
-function actionMutation(t, fresh, stack) {
+// The pipeline that starts at s[from]: up to the ')' that closes the
+// parentheses it sits in, or to the end of the action.
+function pipelineFrom(s, from) {
+  let depth = 0;
+  for (let i = from; i < s.length; i++) {
+    if (s[i] === "(") depth++;
+    else if (s[i] === ")" && depth-- === 0) return s.slice(from, i);
+  }
+  return s.slice(from);
+}
+
+// A dict call with no pipe after it: dict "k" v ..., arguments in parentheses
+// included (dict "x" (.Values.x | default list)).
+function isDictCall(pipeline) {
+  const p = pipeline.trim();
+  if (!/^dict(?![\w.])/.test(p)) return false;
+  let depth = 0;
+  for (const c of p) {
+    if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (c === "|" && depth === 0) return false;
+  }
+  return true;
+}
+
+// Every assignment of each variable name in a template or define body (nested
+// defines left out): name -> [{ ok, text }], ok when it is a dict call.
+function assignmentsIn(tokens) {
+  const found = new Map();
+  const note = (name, ok, text) => {
+    if (!found.has(name)) found.set(name, []);
+    found.get(name).push({ ok, text });
+  };
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.type === "open" && t.word === "define") { const e = matchingEnd(tokens, i); i = e < 0 ? tokens.length : e; continue; }
+    if (typeof t.body !== "string") continue;
+    const flat = stripStrings(t.body);
+    for (const m of flat.matchAll(DECLARATION)) {
+      const rangeVariable = /(?:^|[\s(])range\s*$/.test(flat.slice(0, m.index));
+      const pipeline = pipelineFrom(flat, m.index + m[0].length);
+      const text = `${m[0]} ${pipeline.trim()}`.replace(/\s+/g, " ");
+      if (m[2]) {
+        note(m[1], false, text);
+        note(m[2], false, text);
+      } else note(m[1], !rangeVariable && isDictCall(pipeline), text);
+    }
+  }
+  return found;
+}
+
+function actionMutation(t, assignments, stack) {
   const flat = stripStrings(t.body);
   if (/(?<![\w.$])tpl(?![\w])/.test(flat)) return "calls tpl";
-  for (const m of flat.matchAll(MUTATORS)) {
-    if (!(m[2] && fresh.has(m[2]))) return `calls ${m[1]}`;
+  const merger = MERGERS.exec(flat);
+  if (merger) return `calls ${merger[1]}, which merges nested maps in place (refused before the guard call)`;
+  for (const m of flat.matchAll(SETTERS)) {
+    const arg = /^\s+(\$[A-Za-z_][A-Za-z0-9_]*)(?=[\s)]|$)/.exec(flat.slice(m.index + m[0].length));
+    if (!arg) return `calls ${m[1]} on something other than a variable bound to a dict call`;
+    const list = assignments.get(arg[1]) ?? [];
+    if (list.length === 0) return `calls ${m[1]} on ${arg[1]}, which this template or define does not assign`;
+    const bad = list.find((a) => !a.ok);
+    if (bad) return `calls ${m[1]} on ${arg[1]}, which is assigned something other than a dict call (${bad.text.length > 50 ? `${bad.text.slice(0, 47)}...` : bad.text})`;
   }
   for (const m of t.body.matchAll(/(?<![\w.$])(?:include|template)\s+("(?:[^"\\]|\\.)*"|`[^`]*`)/g)) {
     const r = readString(m[1]);
@@ -694,19 +775,14 @@ function actionMutation(t, fresh, stack) {
     const why = chartMutation();
     if (why) return `includes a template chosen at render time, and ${why}`;
   }
-  const assign = /^(\$[A-Za-z0-9_]+)\s*:?=\s*([\s\S]*)$/.exec(t.body);
-  if (assign) {
-    if (/^dict(?![\w])/.test(assign[2].trim())) fresh.add(assign[1]);
-    else fresh.delete(assign[1]);
-  }
   return null;
 }
 
 function mutationInTokens(tokens, stack) {
-  const fresh = new Set();
+  const assignments = assignmentsIn(tokens);
   for (const t of tokens) {
     if (t.type === "text" || t.type === "comment") continue;
-    const why = actionMutation(t, fresh, stack);
+    const why = actionMutation(t, assignments, stack);
     if (why) return why;
   }
   return null;
@@ -749,7 +825,7 @@ function guardFirst(tokens, mode, where, seen) {
   const calls = callsIn(tokens).filter((c) => c.type === "call" && reachesGuard(c.name));
   if (calls.length === 0) return { error: "no fbx.guard call (directly or through an adapter define)" };
   const stack = [];
-  const fresh = new Set();
+  const assignments = assignmentsIn(tokens);
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (t.type === "text") {
@@ -761,7 +837,7 @@ function guardFirst(tokens, mode, where, seen) {
     }
     if (t.type === "comment") continue;
     if (t.type === "quiet" || t.type === "else" || (t.type === "open" && t.word !== "define" && t.word !== "block")) {
-      const why = actionMutation(t, fresh, new Set());
+      const why = actionMutation(t, assignments, new Set());
       if (why) return { error: `${quote(t.body)} (line ${t.line}${where}) can change what the guard reads before it runs: it ${why}` };
     }
     if (t.type === "quiet" || t.type === "else") continue;
@@ -813,11 +889,11 @@ function skeletonOf(tokens, src, trimStart, trim) {
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (t.type === "text") {
-      text += trim && trimNext ? t.value.replace(/^\s+/, "") : t.value;
+      text += trim && trimNext ? t.value.replace(/^[ \t\r\n]+/, "") : t.value;
       trimNext = false;
       continue;
     }
-    if (trim && leftTrim(src, t)) text = text.replace(/\s+$/, "");
+    if (trim && leftTrim(src, t)) text = text.replace(/[ \t\r\n]+$/, "");
     let last = t;
     if (t.type === "open" && t.word === "define") {
       const e = matchingEnd(tokens, i);
@@ -832,150 +908,202 @@ function skeletonOf(tokens, src, trimStart, trim) {
   return { text, marks };
 }
 
-// The pod-free test for a kind value (the text after "kind:"): a plain,
-// quoted, tagged or anchored name; anything else (a template action, an
-// alias, a block scalar, a nested collection, nothing) is unreadable.
+// The rule for a pod-free document is strict on purpose, so that the script
+// does not have to model YAML: a template is pod-free only when every
+// top-level line of each document it writes (column 0, outside template
+// actions, not a comment or document marker) is a plain key written as
+// ^[A-Za-z][A-Za-z0-9]*: and the document's kind is a plain name from
+// POD_FREE_KINDS. A top-level line that starts with a tag, anchor, alias,
+// quote, flow collection, sequence entry (other than under a top-level key
+// whose value is empty), directive or anything else, an indented document, a
+// kind that is not a plain name, a document without a top-level kind, and
+// template output inside a flow collection that is still open at the end of
+// its line (the script cannot tell where the collection ends) make the
+// template a workload template, which must call the guard first. Lines are
+// split where YAML breaks them: LF, CR and, in UTF-8 text, NEL, LS and PS.
+const QUIET = "\u0002";
+const YAML_BREAK = /\r\n|\r|\n|\xc2\x85|\xe2\x80[\xa8\xa9]/;
+const podFreeExact = new Set(POD_FREE_KINDS);
+const writes = (t) => t.type === "output" || t.type === "call";
+const shown = (s) => {
+  const v = s.replace(/\u0002/g, "").replace(/\u0001/g, "{{...}}").trim();
+  return JSON.stringify(v.length > 40 ? `${v.slice(0, 37)}...` : v);
+};
+
+// The pod-free test for a kind value (the text after "kind:", with the
+// actions that write nothing removed): a plain name from POD_FREE_KINDS is
+// pod-free; another plain name is a workload kind; anything else (template
+// output, a quote, tag or anchor, nothing) is not a plain name.
 function kindLabel(value) {
-  let v = value.replace(/^[ \t]+/, "");
-  for (let m; (m = /^(?:![^\s,{}[\]]*|&[^\s,{}[\]]+)[ \t]+/.exec(v)); ) v = v.slice(m[0].length);
-  const end = "(?=[ \\t]*(?:$|#|,|\\}))";
-  const m = new RegExp(`^(?:"([A-Za-z][A-Za-z0-9]*)"|'([A-Za-z][A-Za-z0-9]*)'|([A-Za-z][A-Za-z0-9]*))${end}`).exec(v);
-  if (!m) return v.startsWith(MARK) ? "templated kind" : "unreadable kind";
-  const name = m[1] ?? m[2] ?? m[3];
-  return podFree.has(name.toLowerCase()) ? null : name;
+  const v = value.replace(/\u0002/g, "");
+  if (v.includes(MARK)) return "templated kind";
+  const m = /^[ \t]*([A-Za-z][A-Za-z0-9]*)[ \t]*(?:#.*)?$/.exec(v);
+  if (!m) return `kind ${shown(v)} is not a plain name`;
+  return podFreeExact.has(m[1]) ? null : m[1];
 }
 
 // Reads the top level of every YAML document a template writes, laid out as
-// written and with the trim markers applied (either can hide a key the other
-// shows when an action sits between two lines). A document's
-// top level is every line no earlier line of the same document is indented
-// less than (an indented document after a comment line is valid YAML), a
-// flow mapping that starts such a line ({"kind": "Job", ...}), or a complex
-// (?) or merge (<<) key there. Returns the kinds found there that are not
-// pod-free, the actions that write text the script cannot read there (an
-// output action, or an include of a template the chart does not define; with
-// readOutput only), and the include/template calls placed there.
-function scanDocuments(tokens, src, trimStart, readOutput) {
+// written and with the trim markers applied (either can hide a line the other
+// shows when an action sits between two lines). Returns the reasons that
+// make the template a workload template (kinds), the actions that write text
+// the script cannot read at the top level (an output action, or an include of
+// a template the chart does not define), and the include/template calls
+// placed there. strict: the text is read as top-level text (a template, or a
+// define included at the top level); otherwise only top-level kind keys are
+// collected. fragment: a define's body (no document needs a kind of its own).
+function scanDocuments(tokens, src, trimStart, strict, fragment) {
   const kinds = [];
   const unread = [];
   const rootCalls = new Set();
-  for (const trim of [false, true]) scanLayout(skeletonOf(tokens, src, trimStart, trim), src, readOutput, kinds, unread, rootCalls);
+  for (const trim of [false, true]) scanLayout(skeletonOf(tokens, src, trimStart, trim), src, strict, fragment, kinds, unread, rootCalls);
   return { kinds, unread, rootCalls };
 }
 
-function scanLayout({ text, marks }, src, readOutput, kinds, unread, rootCalls) {
-  const addKind = (label) => { if (label !== null && !kinds.includes(label)) kinds.push(label); };
+const OPENER = /^(?:(?:-[ \t]+)|(?:(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#:{}[\],"'][^#:]*?)[ \t]*:[ \t]+))*(?:[!&][^\s,{}[\]]*[ \t]+)*([{[])/;
+const BLOCK_SCALAR = /(?:^|:|-)[ \t]*(?:[!&][^\s,{}[\]]*[ \t]+)*[|>][-+1-9]*[ \t\u0002]*(?:#.*)?$/;
+
+function scanLayout({ text, marks }, src, strict, fragment, kinds, unread, rootCalls) {
+  const add = (label) => { if (label !== null && !kinds.includes(label)) kinds.push(label); };
+  const flag = (label) => { doc.flagged = true; add(label); };
   let mi = 0;
   let docMin = Infinity;
+  let seenRoot = false;
+  let doc = { lines: 0, kind: false, writes: false, flagged: false };
   let scalarIndent = null;
+  let sequence = false;
   let flow = null;
   const placed = (t, column) => {
     const ind = /\|\s*n?indent\s+(\d+)\s*$/.exec(t.body);
     return (ind ? Number(ind[1]) : column) <= docMin;
   };
   const checkAction = (t, column) => {
-    if (t.type === "call" && t.name !== null && defines.has(t.name)) {
-      if (placed(t, column)) rootCalls.add(t);
+    const call = t.type === "call" || (t.type === "open" && t.word === "block");
+    if (call && t.name !== null && defines.has(t.name)) {
+      if (placed(t, column)) { rootCalls.add(t); doc.writes = true; }
     } else if (t.type === "output" || t.type === "call") {
-      if (readOutput && placed(t, column) && !unread.includes(t)) unread.push(t);
+      if (placed(t, column)) {
+        doc.writes = true;
+        if (strict && !unread.includes(t)) unread.push(t);
+      }
     }
   };
   const sourceColumn = (t) => {
     const lineStart = src.lastIndexOf("\n", t.start - 1) + 1;
     return /^[ \t]*$/.test(src.slice(lineStart, t.start)) ? t.start - lineStart : null;
   };
+  const endDoc = () => {
+    if (strict && !fragment && doc.lines > 0 && !doc.kind && !doc.writes && !doc.flagged) add("no top-level kind");
+    doc = { lines: 0, kind: false, writes: false, flagged: false };
+    docMin = Infinity;
+    seenRoot = false;
+    sequence = false;
+    scalarIndent = null;
+    flow = null;
+  };
+  // Follows an open flow collection over str; flags template output in one
+  // that is still open at the end of the line.
   const flowChars = (str) => {
     for (let i = 0; i < str.length; i++) {
       const c = str[i];
+      if (c === MARK) flow.writes = true;
       if (flow.quote) {
-        if (flow.root && flow.depth === 1) flow.top += c;
-        if (c === "\\" && flow.quote === '"') { i++; if (flow.root && flow.depth === 1) flow.top += str[i] ?? ""; continue; }
+        if (c === "\\" && flow.quote === '"') { i++; continue; }
         if (c === flow.quote) flow.quote = null;
         continue;
       }
-      if (c === "#" && /\s/.test(str[i - 1] ?? " ")) break;
-      if ((c === '"' || c === "'") && "{[,:".includes(flow.prev)) {
-        flow.quote = c;
-        if (flow.root && flow.depth === 1) flow.top += c;
-        flow.prev = c;
-        continue;
-      }
-      if (c === "{" || c === "[") {
-        flow.depth++;
-        if (flow.root && flow.depth === 2) flow.top += "\u0002";
-        flow.prev = c;
-        continue;
-      }
+      if (c === "#" && /[ \t]/.test(str[i - 1] ?? " ")) break;
+      if ((c === '"' || c === "'") && "{[,:".includes(flow.prev)) { flow.quote = c; flow.prev = c; continue; }
+      if (c === "{" || c === "[") { flow.depth++; flow.prev = c; continue; }
       if (c === "}" || c === "]") {
-        if (--flow.depth === 0) {
-          closeFlow();
-          return;
-        }
+        if (--flow.depth === 0) { flow = null; return; }
         flow.prev = c;
         continue;
       }
-      if (flow.root && flow.depth === 1) flow.top += c;
-      if (!/\s/.test(c)) flow.prev = c;
+      if (!/[ \t\u0002]/.test(c)) flow.prev = c;
     }
-    if (flow && flow.root && flow.depth === 1) flow.top += " ";
+    if (strict && flow.writes) flag("template output in a flow collection that spans lines");
   };
-  const closeFlow = () => {
-    if (flow && flow.root) {
-      for (const m of flow.top.matchAll(/(?:^|,)[ \t]*(?:"kind"|'kind'|kind)[ \t]*:([^,]*)/gi)) addKind(kindLabel(m[1].replace(/\u0002/g, "{}")));
-    }
-    flow = null;
-  };
-  for (const raw of text.split("\n")) {
+  for (const raw of text.split(YAML_BREAK)) {
     const lineMarks = [];
     for (const ch of raw) if (ch === MARK) lineMarks.push(marks[mi++]);
-    const lead = /^[ \t\u0001]*/.exec(raw)[0];
-    let rest = raw.slice(lead.length);
-    let indent = lead.replace(/\u0001/g, "").length;
-    const leading = lead.split(MARK).length - 1;
-    const separator = indent === 0 ? /^(?:---|\.\.\.)(?=[ \t]|$)[ \t]*/.exec(rest) : null;
-    if (flow && !separator) { flowChars(raw); continue; }
-    if (flow) closeFlow();
+    let k = 0;
+    // Actions that write (output, include) stay MARK; the others become QUIET.
+    const line = raw.replace(/\u0001/g, () => (writes(lineMarks[k++]) ? MARK : QUIET));
+    const markAt = [];
+    for (let p = 0; p < line.length; p++) if (line[p] === MARK || line[p] === QUIET) markAt.push(p);
+    const lead = /^[ \t\u0001\u0002]*/.exec(line)[0];
+    let rest = line.slice(lead.length);
+    let indent = lead.replace(/[\u0001\u0002]/g, "").length;
+    // Helm splits a template's output into documents at every line that
+    // starts with "---", whatever follows it on the line.
+    const separator = indent === 0 ? /^(?:---|\.\.\.(?=[ \t\u0001\u0002]|$))/.exec(rest) : null;
+    if (flow && !separator) { flowChars(line); continue; }
     if (scalarIndent !== null) {
       if (!separator && (rest === "" || indent > scalarIndent)) continue;
       scalarIndent = null;
     }
-    for (let k = 0; k < lineMarks.length; k++) {
-      const t = lineMarks[k];
-      if (k < leading) checkAction(t, indent);
-      else {
-        const column = sourceColumn(t);
-        if (column !== null) checkAction(t, column);
-      }
-    }
     if (separator) {
-      // "---" starts a document, which may begin on the same line.
-      docMin = Infinity;
-      rest = rest.slice(separator[0].length);
+      lineMarks.forEach((t, j) => { if (markAt[j] < lead.length) checkAction(t, indent); });
+      endDoc();
+      const after = lead.length + separator[0].length;
+      const lead2 = /^[ \t\u0001\u0002]*/.exec(line.slice(after))[0];
+      rest = line.slice(after + lead2.length);
+      indent = 0;
+      lineMarks.forEach((t, j) => {
+        if (markAt[j] < after) return;
+        const column = markAt[j] < after + lead2.length ? 0 : sourceColumn(t);
+        if (column !== null) checkAction(t, column);
+      });
+    } else {
+      lineMarks.forEach((t, j) => {
+        const column = markAt[j] < lead.length ? indent : sourceColumn(t);
+        if (column !== null) checkAction(t, column);
+      });
     }
     if (rest === "" || rest.startsWith("#")) continue;
-    const root = indent <= docMin;
     docMin = Math.min(docMin, indent);
-    if (root) {
-      const key = /^(?:"kind"|'kind'|kind)[ \t]*:/i.exec(rest);
-      if (key) addKind(kindLabel(rest.slice(key[0].length)));
-      else if (/^\?/.test(rest) || /^<<[ \t]*:/.test(rest)) addKind("unreadable kind");
+    if (indent > 0) {
+      // The first line of an indented document (or fragment) is enough.
+      if (!seenRoot && strict && !doc.flagged) flag(`indented top-level line ${shown(rest)}`);
+      doc.lines++;
+    } else {
+      seenRoot = true;
+      doc.lines++;
+      if (!(sequence && /^-(?=[ \t\u0001\u0002]|$)/.test(rest))) {
+        sequence = false;
+        const key = /^([A-Za-z][A-Za-z0-9]*):(?=[ \t\u0001\u0002]|$)/.exec(rest);
+        if (key) {
+          const value = rest.slice(key[0].length);
+          if (key[1].toLowerCase() === "kind") {
+            doc.kind = true;
+            add(kindLabel(value));
+          }
+          // An empty value: a block sequence may follow at column 0.
+          sequence = /^[ \t\u0002]*(?:#.*)?$/.test(value);
+        } else if (strict) {
+          flag(`top-level line ${shown(rest)}`);
+        } else {
+          const kindKey = /^(?:"kind"|'kind'|kind)[ \t]*:/i.exec(rest);
+          if (kindKey) add(kindLabel(rest.slice(kindKey[0].length)));
+        }
+      }
     }
-    const opener = /^(?:(?:-[ \t]+)|(?:(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#:{}[\],"'][^#:]*?)[ \t]*:[ \t]+))*(?:[!&][^\s,{}[\]]*[ \t]+)*([{[])/.exec(rest);
+    const opener = OPENER.exec(rest);
     if (opener) {
-      flow = { depth: 0, root: root && opener[0].length === 1 && opener[1] === "{", top: "", quote: null, prev: "{" };
+      flow = { depth: 0, quote: null, prev: "{", writes: false };
       flowChars(rest.slice(opener[0].length - 1));
       continue;
     }
-    if (/(?:^|:|-)[ \t]*(?:[!&][^\s,{}[\]]*[ \t]+)*[|>][-+1-9]*[ \t]*(?:#.*)?$/.test(rest)) scalarIndent = indent;
+    if (BLOCK_SCALAR.test(rest)) scalarIndent = indent;
   }
-  closeFlow();
+  endDoc();
 }
 
 // Why a template is a workload template: the kinds it writes at a document's
 // top level and the text it cannot read there, also through the defines it
 // includes (a define placed at the top level is read for output too).
-function workloadKinds(tokens, src, trimStart, readOutput, seen) {
-  const r = scanDocuments(tokens, src, trimStart, readOutput);
+function workloadKinds(tokens, src, trimStart, readOutput, seen, fragment = false) {
+  const r = scanDocuments(tokens, src, trimStart, readOutput, fragment);
   const kinds = [...r.kinds];
   for (const t of r.unread) {
     const label = `text from ${quote(t.body)} at line ${t.line}`;
@@ -988,7 +1116,7 @@ function workloadKinds(tokens, src, trimStart, readOutput, seen) {
     if (seen.has(key)) continue;
     seen.add(key);
     for (const d of defines.get(c.name)) {
-      for (const k of workloadKinds(d.body, d.file.text, d.trimStart, mode, seen)) if (!kinds.includes(k)) kinds.push(k);
+      for (const k of workloadKinds(d.body, d.file.text, d.trimStart, mode, seen, true)) if (!kinds.includes(k)) kinds.push(k);
     }
   }
   return kinds;
