@@ -335,7 +335,7 @@ October 2026 (what each one checks in detail is in its own repository):
 | Service repositories | Assertion | Off switch | Kafka profiles |
 |---|---|---|---|
 | `fintechbankx-lendingpayments-loan-lifecycle-core`, `fintechbankx-lendingpayments-payment-orchestration-initiation-settlement`, `-bulk-orchestration`, `-recurring-mandates`, `-request-to-pay` | startup check before any datasource or Kafka bean, on by default (`fintechbankx.tls.enforce: true` in `application.yml`): datasource `sslmode=verify-full` and, with Kafka configured, `SASL_SSL` or `SSL` | `fintechbankx.tls.enforce: false`, set only by `application-local.yml` (profile `local`) and the test resources | `application-kafka-msk.yml`, `application-kafka-strimzi.yml` |
-| `fintechbankx-customer-profile-kyc-core`, `fintechbankx-riskcompliance-risk-decisioning-core`, `fintechbankx-riskcompliance-compliance-evidence-core` | `DatabaseTlsGuard` and `KafkaTlsGuard`, active whenever `DB_SSL_ROOT_CERT` is set (this chart always sets it while `databaseCa.enabled`); the Kafka guard only while the outbox relay is on. Risk and compliance accept only `SASL_SSL` (`kafka.runtime: msk`), customer `SASL_SSL` or `SSL` | none: the guards skip when `DB_SSL_ROOT_CERT` is unset (local runs, tests); no `fintechbankx.tls.enforce`, no `local` profile file | `kafka-msk`, `kafka-strimzi` (profile files in customer, profile documents in `application.yml` in risk and compliance) |
+| `fintechbankx-customer-profile-kyc-core`, `fintechbankx-riskcompliance-risk-decisioning-core`, `fintechbankx-riskcompliance-compliance-evidence-core` | `DatabaseTlsGuard` and `KafkaTlsGuard`, both registered whenever `DB_SSL_ROOT_CERT` is set (this chart always sets it while `databaseCa.enabled`), whether the outbox relay is on or off: the relay flag gates publishing, not the checks. `KafkaTlsGuard` reads the producer's effective `security.protocol` and accepts `SASL_SSL` or `SSL` in all three services, so `kafka.runtime: msk` and `strimzi` both start them | none: the guards skip when `DB_SSL_ROOT_CERT` is unset (local runs, tests); no `fintechbankx.tls.enforce`, no `local` profile file | `kafka-msk`, `kafka-strimzi` (profile files in customer, profile documents in `application.yml` in risk and compliance) |
 | `fintechbankx-openfinance-*` (consent-auth-service, corporate-data-business-financial, open-data-atm-directory, open-data-products-catalog, payee-metadata-banking-metadata, payee-metadata-payee-verification, retail-data-personal-financial) | `AwsTransportSecurityConfiguration` (products-catalog: `DatabaseTlsEnvironmentPostProcessor`), active under the `aws` profile that the services' own charts render (corporate-data, banking-metadata and retail-data also under `kafka-msk` / `kafka-strimzi`); `SASL_SSL` or `SSL` | none: not activating `aws` (local runs, tests) | `application-kafka-msk.yml`, `application-kafka-strimzi.yml` where the service uses Kafka |
 
 Every other service, and every new one, is to add the assertion in the first
@@ -350,8 +350,6 @@ branches has it, so for them the off switch is the absence of
 - It sets `DB_SSL_ROOT_CERT` only while `databaseCa.enabled`; with
   `databaseCa.enabled: false` customer, risk and compliance register neither
   guard. Those three keep the default `true`.
-- `kafka.runtime: strimzi` stops risk and compliance at startup while their
-  outbox relay is on.
 
 The assertion's off switch is the property `fintechbankx.tls.enforce` (env
 `FINTECHBANKX_TLS_ENFORCE`), set by the `local` profile and test resources
