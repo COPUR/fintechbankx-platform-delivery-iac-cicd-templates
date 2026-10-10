@@ -206,9 +206,9 @@ test("every service in services.tsv is wired in compose with its own database an
 
 test("every service in services.tsv runs the local profile, which alone allows the stack's PLAINTEXT Kafka and non-TLS PostgreSQL", () => {
   // The stack runs Kafka on PLAINTEXT and PostgreSQL without sslmode=verify-full.
-  // The service-side TLS assertion (Kafka repo SERVICE_CLIENT_CONFIGURATION.md,
-  // chart README "Service-side TLS assertion") refuses both outside the local
-  // profile, and only that profile sets its off switch.
+  // The proposed service-side TLS assertion (Kafka repo
+  // SERVICE_CLIENT_CONFIGURATION.md, chart README "Service-side TLS assertion")
+  // is to refuse both outside the local profile, which alone sets its off switch.
   const doc = composeDoc();
   for (const s of services().filter((x) => x.key !== "monolith")) {
     const env = doc.services[s.key].environment;

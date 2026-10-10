@@ -8,9 +8,10 @@ release:
   name: ci
   namespace: lending
 tests:
-  # Services ship a startup TLS assertion that is on by default; only the
-  # property fintechbankx.tls.enforce (env FINTECHBANKX_TLS_ENFORCE) turns it
-  # off, and only the local profile and test resources set it. The chart
+  # Services are to ship a startup TLS assertion that is on by default
+  # (README: Proposed, not implemented yet); only the property
+  # fintechbankx.tls.enforce (env FINTECHBANKX_TLS_ENFORCE) is to turn it off,
+  # set by the local profile and test resources only. The chart
   # rejects every name matching (?i)^fintechbankx[._-]?tls([._-]|$) in config
   # keys, extraEnv names (value or valueFrom) and externalSecret data/extraData
   # secretKeys, and JVM options that mention fintechbankx[._-]?tls.

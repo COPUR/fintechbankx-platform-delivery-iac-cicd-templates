@@ -206,8 +206,9 @@ compose file, so a line can also replace a default. Names must be
 
 **Spring profile**: the five services run with `SPRING_PROFILES_ACTIVE=local`.
 The stack uses Kafka over `PLAINTEXT` on `kafka:9092` and PostgreSQL without
-TLS, which the service-side TLS assertion allows only under the `local`
-profile (fintechbankx-platform-event-streaming-kafka
+TLS, which the service-side TLS assertion (Proposed, not implemented in the
+service repositories yet) is to allow only under the `local` profile
+(fintechbankx-platform-event-streaming-kafka
 `docs/guides/SERVICE_CLIENT_CONFIGURATION.md`, and the chart README section
 "Service-side TLS assertion"). Compose sets no `FINTECHBANKX_TLS_*` variable;
 the off switch comes from the profile.

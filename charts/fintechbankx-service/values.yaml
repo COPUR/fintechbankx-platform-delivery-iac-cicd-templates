@@ -134,8 +134,11 @@ databaseCa:
 # SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL, ...) must be SASL_SSL or SSL
 # (SASL_SSL with msk, SSL with strimzi); PLAINTEXT, SASL_PLAINTEXT and empty are
 # rejected. A name containing endpoint[._-]?identification[._-]?algorithm must
-# be https. Both need a literal extraEnv value (no valueFrom) and may not come
-# from the ExternalSecret.
+# be https. Both name rules also apply to the Spring relaxed-binding form
+# (lower case, '-' inside an element ignored, foo[bar] read as foo.bar), e.g.
+# spring.kafka.secu-rity.protocol, spring.kafka.properties[security.protocol].
+# Both need a literal extraEnv value (no valueFrom) and may not come from the
+# ExternalSecret.
 kafka:
   runtime: ""
 
