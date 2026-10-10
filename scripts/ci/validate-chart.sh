@@ -78,6 +78,10 @@ must_fail "DB_URL materialised from the ExternalSecret" --set-string environment
   --set-string 'externalSecret.data[0].secretKey=DB_URL' --set-string 'externalSecret.data[0].property=jdbc_url'
 must_fail "DB_URL with a second sslmode" \
   --set-string 'config.DB_URL=jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslmode=require'
+must_fail "config.DB_URL that is not a PostgreSQL JDBC URL (skips the sslmode parse)" \
+  --set-string 'config.DB_URL=postgresql://db.example.internal:5432/db?sslmode=disable'
+must_fail "config db.url (DB_URL in another spelling)" \
+  --set-string 'config.db\.url=jdbc:postgresql://db.example.internal:5432/db?sslmode=disable'
 must_fail "extraEnv SPRING_DATASOURCE_URL" \
   --set 'extraEnv[0].name=SPRING_DATASOURCE_URL' --set-string 'extraEnv[0].value=jdbc:postgresql://db.example.internal:5432/db?sslmode=require'
 must_fail "extraEnv SPRING_R2DBC_URL from valueFrom" \

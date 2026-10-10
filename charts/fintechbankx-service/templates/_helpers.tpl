@@ -101,7 +101,12 @@ the env names the Secret materialises and whose values are never seen here):
     name comes later in the env list and replaces it (the customer, risk and
     compliance guards are active only while it is set); sslmode and
     sslrootcert belong in config.DB_URL;
-  - DB_URL outside config (config.DB_URL is the one allowed place);
+  - DB_URL outside config, and any other spelling of it in config
+    (fbx.isDbUrlName: dburl once lower-cased and stripped of everything but
+    [a-z0-9], e.g. db.url, db-url, dbUrl; the config key DB_URL is the one
+    allowed place). A non-empty config.DB_URL must be a
+    jdbc:[<wrapper>:]postgresql: URL, so it always goes through the parse
+    above;
   - (?i)^spring[._-]?config([._-]|$): every spring.config.* name by prefix
     (import, location, additional-location, name, activate.on-profile,
     on-not-found, and the indexed forms spring.config.import[0] /
@@ -207,6 +212,11 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- end -}}
 {{- end -}}
 
+{{/* DB_URL in any spelling: lower case with every character other than [a-z0-9] removed is dburl (DB_URL, db.url, db-url, dbUrl, db[url], "DB_URL "). */}}
+{{- define "fbx.isDbUrlName" -}}
+{{- if eq (regexReplaceAll "[^a-z0-9]" (lower (toString .)) "") "dburl" -}}true{{- end -}}
+{{- end -}}
+
 {{- define "fbx.isJvmOptionsName" -}}
 {{- if regexMatch "(?i)^(JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS)$" (toString .) -}}true{{- end -}}
 {{- end -}}
@@ -224,6 +234,12 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- $root := . -}}
 {{- include "fbx.validateJvmOptions" (dict "where" "javaToolOptions" "value" .Values.javaToolOptions) -}}
 {{- range $name, $value := .Values.config -}}
+{{- if and (ne $name "DB_URL") (include "fbx.isDbUrlName" $name) -}}
+{{- fail (printf "config.%s is DB_URL in another spelling; use the key DB_URL, where the JDBC URL is checked" $name) -}}
+{{- end -}}
+{{- if and (eq $name "DB_URL") (ne (trim (toString $value)) "") (not (regexMatch "(?i)^jdbc:(?:[a-z0-9-]+:)*postgresql:" (trim (toString $value)))) -}}
+{{- fail "config.DB_URL must be a jdbc:[<wrapper>:]postgresql: URL (or empty), so that it goes through the sslmode=verify-full check" -}}
+{{- end -}}
 {{- with include "fbx.datasourceOverrideName" $name -}}
 {{- fail (printf "config.%s is not allowed: %s" $name .) -}}
 {{- end -}}
@@ -234,7 +250,7 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- end -}}
 {{- range $env := .Values.extraEnv -}}
 {{- $envName := toString (default "" $env.name) -}}
-{{- if eq (upper $envName) "DB_URL" -}}
+{{- if include "fbx.isDbUrlName" $envName -}}
 {{- fail (printf "extraEnv must not set %s (value or valueFrom); set the JDBC URL in config.DB_URL, where sslmode=verify-full is enforced" $envName) -}}
 {{- end -}}
 {{- with include "fbx.datasourceOverrideName" $envName -}}
@@ -254,7 +270,7 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- range $field := list "data" "extraData" -}}
 {{- range $entry := (index $root.Values.externalSecret $field | default list) -}}
 {{- $key := toString (default "" $entry.secretKey) -}}
-{{- if or (eq (upper $key) "DB_URL") (include "fbx.isJvmOptionsName" $key) -}}
+{{- if or (include "fbx.isDbUrlName" $key) (include "fbx.isJvmOptionsName" $key) -}}
 {{- fail (printf "externalSecret.%s must not materialise %s; set the JDBC URL in config.DB_URL and JVM options in javaToolOptions, where they are checked (keep only the credentials in the secret)" $field $key) -}}
 {{- end -}}
 {{- with include "fbx.datasourceOverrideName" $key -}}

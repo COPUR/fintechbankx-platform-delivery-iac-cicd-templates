@@ -1,0 +1,135 @@
+suite: config.DB_URL is the one JDBC URL route
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # config.DB_URL (exactly that key) is the one place for the JDBC URL. Any
+  # other spelling of DB_URL (dburl once lower-cased and stripped of every
+  # character other than [a-z0-9], e.g. db.url, db-url, dbUrl) is
+  # refused as a config key, an extraEnv name (value or valueFrom) and an
+  # externalSecret data/extraData secretKey. A non-empty config.DB_URL must be
+  # a jdbc:[<wrapper>:]postgresql: URL, so it always goes through the strict
+  # parse (database_ca_test.yaml): exactly one sslmode=verify-full, exactly one
+  # sslrootcert=<mountPath>/<key>, no sslfactory/sslfactoryarg/
+  # sslhostnameverifier/sslpasswordcallback/service, no percent-encoded or
+  # upper-case TLS keys, no TLS key before '?'.
+  - it: rejects config db.url (DB_URL in another spelling)
+    template: templates/deployment.yaml
+    set:
+      config:
+        db.url: jdbc:postgresql://db.example.internal:5432/db?sslmode=disable
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.db.url is DB_URL in another spelling"
+  - it: rejects config Db_Url
+    template: templates/deployment.yaml
+    set:
+      config.Db_Url: jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.Db_Url is DB_URL in another spelling"
+  - it: rejects config db-url
+    template: templates/deployment.yaml
+    set:
+      config:
+        db-url: x
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.db-url is DB_URL in another spelling"
+  - it: rejects extraEnv db.url from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: db.url
+          valueFrom:
+            secretKeyRef: {name: other, key: url}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set db.url"
+  - it: rejects extraEnv "DB_URL " (trailing space)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "DB_URL "
+          value: jdbc:postgresql://db.example.internal:5432/db?sslmode=disable
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set DB_URL"
+  - it: rejects externalSecret.extraData materialising db-url
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: db-url
+          remoteSecretName: staging/loan-lifecycle-service/db-app
+          property: url
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise db-url"
+  - it: rejects a config.DB_URL that is not a PostgreSQL JDBC URL (h2)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:h2:mem:db
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must be a jdbc:\\[<wrapper>:\\]postgresql: URL"
+  - it: rejects a config.DB_URL without the jdbc prefix (not parsed otherwise)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: postgresql://db.example.internal:5432/db?sslmode=disable
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must be a jdbc:\\[<wrapper>:\\]postgresql: URL"
+  - it: accepts an empty config.DB_URL (skeleton placeholder, no connection)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: ""
+    asserts:
+      - notFailedTemplate: {}
+  # Strict parse regression cases not in database_ca_test.yaml.
+  - it: rejects sslfactoryarg
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslfactoryarg=x
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must not set sslfactoryarg"
+  - it: rejects sslmode=verify-full twice (exactly one)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslmode=verify-full
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must set sslmode exactly once"
+  - it: rejects a second sslrootcert after the mounted one
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslrootcert=/tmp/any-ca.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must set sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem exactly once"
+  - it: rejects a percent-encoded sslrootcert value
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=%2Ftmp%2Fany-ca.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must set sslrootcert="
+  - it: rejects config dbUrl (camel case)
+    template: templates/deployment.yaml
+    set:
+      config.dbUrl: jdbc:postgresql://db.example.internal:5432/db?sslmode=disable
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.dbUrl is DB_URL in another spelling"
+  - it: accepts names that only contain DB_URL (control)
+    template: templates/deployment.yaml
+    set:
+      config.APP_DB_URL_LABEL: x
+      config.DB_URLS_NOTE: x
+    asserts:
+      - notFailedTemplate: {}

@@ -113,7 +113,8 @@ config: {}
 # (fintechbankx.tls.enforce turns the service's startup TLS assertion off; it is
 # for the local profile and tests only), in any spelling including Spring
 # relaxed binding ('-' inside an element, foo[bar]); DB_URL belongs in config
-# only; JVM options (javaToolOptions, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS,
+# only, under exactly that key (db.url, db-url, dbUrl are refused), and a
+# non-empty config.DB_URL must be a jdbc:[<wrapper>:]postgresql: URL; JVM options (javaToolOptions, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS,
 # _JAVA_OPTIONS) must not mention datasource, flyway, liquibase, r2dbc, jdbc,
 # ssl, application.json, spring.config, spring.profiles, fintechbankx.tls,
 # security.protocol or endpoint.identification, nor read an options file ('@'
