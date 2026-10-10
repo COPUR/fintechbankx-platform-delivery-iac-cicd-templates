@@ -86,9 +86,12 @@ probes:
 # Seconds the pod keeps serving after it is removed from endpoints.
 preStopSleepSeconds: 10
 
+# Rendered as JAVA_TOOL_OPTIONS; checked by the JVM option rule of the guard
+# (see databaseCa below).
 javaToolOptions: "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
 
 # Non-secret runtime settings, rendered into a ConfigMap and loaded with envFrom.
+# Keys and values go through the guard (see databaseCa below).
 config: {}
 
 # Amazon RDS / DocumentDB CA bundle for TLS with certificate verification
@@ -97,30 +100,35 @@ config: {}
 # trust-manager Bundle rds-ca-bundle publishes the ConfigMap in every service
 # namespace. The volume is not optional: a missing bundle keeps the pod from
 # starting instead of letting it connect without verification. The path is
-# also exported as DB_SSL_ROOT_CERT. Every jdbc:postgresql value in config or
-# extraEnv must carry exactly one sslmode=verify-full and, while enabled, exactly
-# one sslrootcert=<mountPath>/<key>; sslfactory, sslhostnameverifier and service
-# are rejected. config keys, extraEnv names (value or valueFrom) and
-# externalSecret secretKeys may not name a spring.datasource/flyway/liquibase/
-# r2dbc property (SPRING_DATASOURCE_USERNAME/PASSWORD excepted),
-# spring.application.json, anything containing JDBC_URL, SSL_FACTORY,
-# SSL_HOSTNAME_VERIFIER, SSL_PASSWORD_CALLBACK, SSL_ROOT_CERT (DB_SSL_ROOT_CERT
-# is the chart's own) or SSL_MODE (separators optional), any spring.config.* name (import, import[0], location,
-# activate.on-profile, ...), any spring.ssl.* name or name containing
-# ssl.bundle (SPRING_SSL_BUNDLE_*, spring.data.mongodb.ssl.bundle),
-# any spring.profiles.* name (active, include, default, group.*; the chart
-# renders the only profile, from kafka.runtime) or any fintechbankx.tls.* name
-# (fintechbankx.tls.enforce turns the service's startup TLS assertion off; it is
-# for the local profile and tests only), in any spelling including Spring
-# relaxed binding ('-' inside an element, foo[bar]); DB_URL belongs in config
-# only, under exactly that key (db.url, db-url, dbUrl are refused), and a
-# non-empty config.DB_URL must be a jdbc:[<wrapper>:]postgresql: URL; JVM options (javaToolOptions, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS,
-# _JAVA_OPTIONS) must not mention datasource, flyway, liquibase, r2dbc, jdbc,
-# ssl, application.json, spring.config, spring.profiles, fintechbankx.tls,
-# security.protocol, endpoint.identification, java.security.properties,
-# jdk.tls or hostname verification, nor read an options file ('@' argument
-# file, also quoted, -XX:VMOptionsFile, -XX:Flags) (fbx.validateDatabaseTls;
-# rendering fails otherwise).
+# also exported as DB_SSL_ROOT_CERT.
+#
+# Datasource and TLS guard (fbx.guard; README "Datasource and TLS guard"),
+# over config keys, extraEnv (value or valueFrom), externalSecret data/extraData
+# secretKeys and javaToolOptions; rendering fails otherwise:
+#   - names are checked as given and in their Spring relaxed-binding form
+#     ('-' inside an element ignored, foo[bar] and '_' read as '.'): no
+#     spring.config.* or spring.profiles.* name (indexed forms included; the
+#     chart renders the only profile, from kafka.runtime below), no
+#     fintechbankx.tls.* (the service's startup TLS assertion off switch) or
+#     spring.application.json, no spring.ssl.* or *ssl.bundle name, no
+#     spring.datasource/flyway/liquibase/r2dbc name except
+#     SPRING_DATASOURCE_USERNAME/PASSWORD, and no name containing jdbc url,
+#     ssl factory, ssl host name verifier, ssl password callback, ssl root cert
+#     (DB_SSL_ROOT_CERT is the chart's own) or ssl mode, separators optional;
+#   - DB_URL only as the config key DB_URL (db.url, db-url, dbUrl are
+#     refused); a non-empty value must be a jdbc:[<wrapper>:]postgresql: URL
+#     with exactly one sslmode=verify-full and, while databaseCa is enabled,
+#     exactly one sslrootcert=<mountPath>/<key>, and no sslfactory,
+#     sslfactoryarg, sslhostnameverifier, sslpasswordcallback or service;
+#   - JVM options (javaToolOptions, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS,
+#     _JAVA_OPTIONS) must not mention datasource, flyway, liquibase, r2dbc,
+#     jdbc, ssl, application.json, spring.config, spring.profiles,
+#     fintechbankx.tls, security.protocol, endpoint.identification,
+#     java.security.properties, jdk.tls or hostname verification, nor read an
+#     options file ('@' argument file, also quoted, -XX:VMOptionsFile,
+#     -XX:Flags), need a literal extraEnv value and may not come from the
+#     ExternalSecret;
+#   - no envFrom, extraEnvFrom or externalSecret.dataFrom value.
 databaseCa:
   enabled: true
   configMapName: rds-ca-bundle
@@ -147,7 +155,9 @@ databaseCa:
 kafka:
   runtime: ""
 
-# Extra env entries (Kubernetes EnvVar objects).
+# Extra env entries (Kubernetes EnvVar objects), rendered after the chart's own
+# entries. Names (value or valueFrom) and literal values go through the guard
+# (see databaseCa above).
 extraEnv: []
 
 # Secrets synced from AWS Secrets Manager by External Secrets Operator.

@@ -187,8 +187,9 @@ fintechbankx[._-]tls, security[._-]protocol, endpoint[._-]identification,
 java[._-]security[._-]properties, jdk[._-]tls or hostname[._-]verification
 (also once '-' is removed and brackets read as '.'), an option that starts
 with '@' (argument file; also after a quote), -XX:VMOptionsFile or -XX:Flags
-(case-insensitive) is rejected, and these names need a literal extraEnv value (no valueFrom, not
-even next to an empty value) and may not come from the ExternalSecret.
+(case-insensitive) is rejected, and these names need a literal extraEnv
+value (no valueFrom, not even next to an empty value) and may not come from
+the ExternalSecret.
 This closes the chart-side routes only; a profile or config file baked into
 the image, and TLS on routes the chart does not see (a Kafka client or a
 datasource built in code), are the service's own startup check (README,

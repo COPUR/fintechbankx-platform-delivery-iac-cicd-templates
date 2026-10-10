@@ -12,13 +12,153 @@ follows the platform contract (ports, labels, ExternalSecret store, IRSA).
 | Scale and HA | HPA (CPU + memory), PDB (fails rendering if `minAvailable` >= min replicas), zone spread `DoNotSchedule`, host spread `ScheduleAnyway`, `maxUnavailable: 0` |
 | Security | non-root UID 10001, read-only root FS, all capabilities dropped, `RuntimeDefault` seccomp, image by digest, `latest` rejected |
 | Secrets | `ExternalSecret` against `ClusterSecretStore/aws-secrets-manager` |
-| Database TLS | ConfigMap `rds-ca-bundle` (key `global-bundle.pem`, published in every service namespace by the mesh repo's trust-manager Bundle) mounted read-only at `/etc/fintechbankx/rds-ca` and exported as `DB_SSL_ROOT_CERT`; not optional, so a missing bundle stops the pod instead of connecting unverified. Every `jdbc:[<wrapper>:]postgresql:` value in `config` or `extraEnv` is parsed (query split on `&`, `key=value`): exactly one `sslmode=verify-full`, exactly one `sslrootcert=<mountPath>/<key>` while `databaseCa.enabled`, no `sslfactory`, `sslfactoryarg`, `sslhostnameverifier`, `sslpasswordcallback` or `service`, no percent-encoded or upper-case TLS keys, no TLS key before the `?` (the terraform-modules `aurora-postgresql` `jdbc_url` passes); one name rule covers `config` keys, `extraEnv` names (with `value` or `valueFrom`) and `externalSecret.data`/`extraData` `secretKey`s: no name matching `(?i)^spring[._-]?(datasource|flyway|liquibase|r2dbc)[._-]` except `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`, no `spring.application.json` in any spelling, no name containing `jdbc[._-]?url`, `ssl[._-]?factory`, `ssl[._-]?host[._-]?name[._-]?verifier` or `ssl[._-]?password[._-]?callback` (`spring.datasource.hikari.jdbc-url`, `REPORTING_JDBCURL`, `PGJDBC_SSL_FACTORY`), no name containing `ssl[._-]?root[._-]?cert` or `ssl[._-]?mode` (`DB_SSL_ROOT_CERT` is rendered by the chart from `databaseCa`, and a later `extraEnv` entry of that name would replace it and turn the customer, risk and compliance guards off; `sslmode` and `sslrootcert` belong in `config.DB_URL`), no `(?i)^spring[._-]?config([._-]\|$)` (every `spring.config.*` name by prefix, including `spring.config.activate.*` and the indexed forms `spring.config.import[0]` and `SPRING_CONFIG_IMPORT_0_`; the chart renders no config import; a config tree, if ever needed, is rendered by the chart on the fixed mount `optional:configtree:/etc/fintechbankx/config/`, never from a user value), no `(?i)^spring[._-]?ssl([._-]\|$)` and no name containing `ssl[._-]?bundle` (`SPRING_SSL_BUNDLE_*`, `spring.ssl.bundle.pem.*`/`jks.*` can replace the trust anchor of a DocumentDB, PostgreSQL or Kafka client; `spring.data.mongodb.ssl.bundle` and the like can point a client at another bundle), no `(?i)^spring[._-]?profiles([._-]\|$)` (every `spring.profiles.*` name, including `spring.profiles.default` and `spring.profiles.group.*`; the chart renders the only profile, from `kafka.runtime`), no `(?i)^fintechbankx[._-]?tls([._-]\|$)` (the off switch of the service's TLS assertion, see below), and `DB_URL` only in `config`, under exactly that key (`config.DB_URL` is the one allowed place; any other spelling such as `db.url`, `db-url` or `dbUrl` is refused on every route, and the secret keeps only the credentials); a non-empty `config.DB_URL` must be a `jdbc:[<wrapper>:]postgresql:` URL, so it always goes through the parse above; each of these regex name rules also matches the Spring relaxed-binding form of the name (`-` inside an element ignored, `foo[bar]` read as `foo.bar`, so `spring.pro-files.active` and `fintechbankx.tls[enforce]` are caught); `javaToolOptions` and any `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` or `_JAVA_OPTIONS` in `config`/`extraEnv` must not mention `datasource`, `flyway`, `liquibase`, `r2dbc`, `jdbc`, `ssl`, `application.json`, `spring.config`, `spring.profiles`, `fintechbankx.tls`, `security.protocol`, `endpoint.identification`, `java.security.properties` (a security properties file can replace the trust manager or keystore type), `jdk.tls` or `hostname verification` (also once `-` is removed), nor read options from a file (an option starting with `@`, also after a quote, `-XX:VMOptionsFile`, `-XX:Flags`) (case-insensitive), and those names need a literal `value` (no `valueFrom`, not even next to an empty `value`) and may not come from the ExternalSecret; a datasource set by a profile or config file inside the image is the service's own startup check (see [Service-side TLS assertion](#service-side-tls-assertion)); `databaseCa.enabled: false` for services without a relational database |
+| Database TLS | ConfigMap `rds-ca-bundle` (key `global-bundle.pem`, published in every service namespace by the mesh repo's trust-manager Bundle) mounted read-only at `/etc/fintechbankx/rds-ca` and exported as `DB_SSL_ROOT_CERT`; not optional, so a missing bundle stops the pod instead of connecting unverified. `config.DB_URL` is the one JDBC URL route and must pass the strict parse (exactly one `sslmode=verify-full`, exactly one `sslrootcert=<mountPath>/<key>`); every name and value the pod's environment can get from values goes through `fbx.guard`, see [Datasource and TLS guard](#datasource-and-tls-guard). A datasource set by a profile or config file inside the image is the service's own startup check (see [Service-side TLS assertion](#service-side-tls-assertion)); `databaseCa.enabled: false` for services without a relational database |
 | Kafka TLS and profile | `kafka.runtime` (`""`, `msk` or `strimzi`; default `""`) renders the only Spring profile: `msk` sets `SPRING_PROFILES_ACTIVE=kafka-msk` (Amazon MSK IAM over `SASL_SSL`), `strimzi` sets `kafka-strimzi` (Strimzi mutual TLS over `SSL`), `""` sets none and is for services without Kafka; the profile names follow the Kafka repo's client guide. A `config` key or `extraEnv` name matching `(?i)(^\|[._-])security[._-]?protocol$` (`KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_PRODUCER_SECURITY_PROTOCOL`, `SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL`, `spring.kafka.streams.security.protocol`, ...) must hold `SASL_SSL` or `SSL` (case-insensitive, trimmed; `PLAINTEXT`, `SASL_PLAINTEXT` and empty are rejected), one matching `(?i)endpoint[._-]?identification[._-]?algorithm` must hold `https`; both name rules are also checked against the Spring relaxed-binding form of the name (lower case, `-` inside an element ignored, `foo[bar]` read as `foo.bar`), so `spring.kafka.secu-rity.protocol` and `spring.kafka.properties[security.protocol]` are covered too (`fbx.kafkaTlsName`); a protocol name needs `kafka.runtime` `msk` or `strimzi` (with `""` the service would get no auth profile); with `kafka.runtime: msk` every such protocol must be `SASL_SSL`, with `strimzi` `SSL`; these names need a literal `extraEnv` `value` (no `valueFrom`) and may not come from the ExternalSecret (`fbx.validateKafkaTls`) |
 | Identity | ServiceAccount annotated with the IRSA role (`serviceAccount.roleArn`) |
 | Observability | pod label `fintechbankx.io/service-id` and `prometheus.io/scrape|port|path` annotations, so the observability repo's PodMonitor `fintechbankx-services` (`fintechbankx-platform-observability-sre-operations`, `deploy/kustomize/base/monitors/podmonitor-fintechbankx-services.yaml`) is the single scrape path (Istio merged metrics on 15020); OTLP env to the platform collector. `observability.serviceMonitor.enabled: true` is an opt-in for clusters without that PodMonitor and drops the annotations to avoid double scraping |
 | Network | none by default: `NetworkPolicy` is owned by the service-mesh platform repo (`fintechbankx-platform-mesh-security-service-mesh`, `k8s/istio/security/network-policies.yaml`), like AuthorizationPolicy. `networkPolicy.enabled: true` renders an opt-in policy (own namespace, ingress gateway, observability, DNS, istiod, `egressCidrs`) for clusters the mesh repo does not cover; `egressCidrs` defaults to `[]` and the schema accepts only IPv4 prefixes `/8`-`/32` and IPv6 prefixes `/32`-`/128` (so `0.0.0.0/0`, `::/0` and halves such as `0.0.0.0/1` + `128.0.0.0/1` are rejected); the template (`fbx.validateEgressCidrs`) narrows this to the "VPC or VPC endpoint subnets" intent: an IPv4 range wider than `/16` only inside RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) or `100.64.0.0/10` (an AWS VPC CIDR block is `/16` at most, so a VPC in public space still fits), no IPv6 range that overlaps the IPv4-mapped block `::ffff:0:0/96` or the NAT64 prefixes `64:ff9b::/96` and `64:ff9b:1::/48`, and no IPv6 range broader than `/48` unless it lies fully inside the unique local block `fc00::/7` (an Amazon-provided VPC IPv6 block is `/56`, a subnet `/64`) |
 | Mesh | `app`/`version` labels, `sidecar.istio.io/inject: "true"`, Service ports named `http` (8080) and `http-management` (8081); no AuthorizationPolicy, PeerAuthentication, DestinationRule or `excludeInboundPorts` (owned by the mesh repo / forbidden by the contract) |
 | Migration Job | not rendered by this chart; a service that runs Flyway as a Job labels its pods `app.kubernetes.io/name=<sa>` (the mesh grants Aurora egress on that label; the Job may run with or without a sidecar) and `app.kubernetes.io/component=db-migration`. The chart's selectors include `app.kubernetes.io/component=service`, so the Service, PDB and topology spread never select Job pods |
+
+## Datasource and TLS guard
+
+`fbx.guard` (`templates/_helpers.tpl`, called at the top of
+`templates/deployment.yaml`) checks every route by which values reach the
+pod's environment. Rendering fails with the reason; nothing is rewritten.
+
+| Input route | What the guard checks |
+| --- | --- |
+| `config` keys (rendered into the ConfigMap, loaded with `envFrom`) | name rules below; values of `security.protocol` / `endpoint.identification.algorithm` names; every `jdbc:[<wrapper>:]postgresql:` value is parsed; JVM option names have their value checked |
+| `extraEnv` with `value` | the same as `config`, except that `DB_URL` is refused in every spelling |
+| `extraEnv` with `valueFrom` | name rules below; JVM option, `security.protocol` and `endpoint.identification.algorithm` names are refused (the value cannot be seen), also next to an empty `value` |
+| `externalSecret.data` / `extraData` `secretKey` | name rules below; `DB_URL`, JVM option and Kafka TLS names are refused (the secret keeps only credentials) |
+| `javaToolOptions` (rendered as `JAVA_TOOL_OPTIONS`) | JVM option rules below |
+| `envFrom`, `extraEnvFrom`, `externalSecret.dataFrom` values | refused (`fbx.validateEnvSources`): they load names the guard never sees; the chart renders only its own `configMapRef` and `secretRef` |
+
+Name rules (`fbx.datasourceOverrideName`, `fbx.overrideNameReason`), checked
+against the name as given (case-insensitive) and against its Spring
+relaxed-binding form (`fbx.canonicalName`: lower case, `-` and white space
+removed, `[`, `]` and `_` read as `.`), so `spring.pro-files.active`,
+`spring.config.import[0]`, `SPRING_CONFIG_IMPORT_0_` and
+`fintechbankx.tls[enforce]` are all caught:
+
+1. `spring.config.*` by prefix, `(?i)^spring[._-]?config([._-]|$)` (import,
+   location, additional-location, name, `activate.*`, `on-not-found`, indexed
+   forms), and `spring.profiles.*` by prefix, `(?i)^spring[._-]?profiles([._-]|$)`
+   (active, include, default, `group.*`, indexed forms). The chart renders no
+   config import, and `SPRING_PROFILES_ACTIVE` from `kafka.runtime` is the only
+   profile.
+2. JVM options (`fbx.isJvmOptionsName`: `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`,
+   `_JAVA_OPTIONS`, and the chart's `javaToolOptions`; `fbx.validateJvmOptions`):
+   the value must not mention `datasource`, `flyway`, `liquibase`, `r2dbc`,
+   `jdbc`, `ssl`, `application.json`, `spring.config`, `spring.profiles`,
+   `fintechbankx.tls`, `security.protocol`, `endpoint.identification`,
+   `java.security.properties`, `jdk.tls` or `hostname verification` (also once
+   `-` is removed and brackets read as `.`), nor read options from a file (an
+   option starting with `@`, also after a quote, `-XX:VMOptionsFile`,
+   `-XX:Flags`). These names need a literal `extraEnv` `value` and may not come
+   from the ExternalSecret. `JAVA_OPTS` reaches no JVM in the template image
+   (see the JVM options paragraph under
+   [Service-side TLS assertion](#service-side-tls-assertion)).
+3. The startup assertion off switch `(?i)^fintechbankx[._-]?tls([._-]|$)`
+   (`FINTECHBANKX_TLS_ENFORCE` in any spelling) and `spring.application.json`
+   in any spelling (`SPRING_APPLICATION_JSON`), whatever they carry.
+4. `(?i)^spring[._-]?ssl([._-]|$)` and any name containing `ssl[._-]?bundle`:
+   `SPRING_SSL_BUNDLE_*`, `spring.ssl.bundle.pem.*` / `jks.*` can replace the
+   trust anchor of a DocumentDB, PostgreSQL or Kafka client, and
+   `spring.data.mongodb.ssl.bundle` and the like can point a client at another
+   bundle. `javax.net.ssl.*` and other trust-store system properties are
+   refused in JVM options by the `ssl` mention (rule 2).
+5. Datasource overrides: `(?i)^spring[._-]?(datasource|flyway|liquibase|r2dbc)[._-]`
+   except `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`, and any
+   name containing `jdbc[._-]?url`, `ssl[._-]?factory` (also `sslfactoryarg`),
+   `ssl[._-]?host[._-]?name[._-]?verifier`, `ssl[._-]?password[._-]?callback`,
+   `ssl[._-]?root[._-]?cert` or `ssl[._-]?mode` (`spring.datasource.hikari.jdbc-url`,
+   `spring.datasource.hikari.data-source-properties.*`, `REPORTING_JDBCURL`,
+   `PGJDBC_SSL_FACTORY`, `PGSSLROOTCERT`, `OPF_DB_SSL_MODE`). `DB_SSL_ROOT_CERT`
+   is rendered by the chart from `databaseCa`; an `extraEnv` entry of that name
+   comes later in the env list and would replace it (an empty value turns the
+   customer, risk and compliance guards off).
+6. `DB_URL` (`fbx.isDbUrlName`: `dburl` once lower-cased and stripped of every
+   character other than `[a-z0-9]`) only as the `config` key `DB_URL`; a
+   non-empty `config.DB_URL` must be a `jdbc:[<wrapper>:]postgresql:` URL, and
+   every such value in `config` or `extraEnv` is parsed the way PgJDBC reads it
+   (`fbx.validateJdbcUrl`; split after the first `?`, then on `&`, `key=value`
+   on the first `=`): exactly one `sslmode`, equal to `verify-full` (PgJDBC
+   keeps the last one); with `databaseCa.enabled` exactly one `sslrootcert`,
+   equal to `<mountPath>/<key>`; no `sslfactory`, `sslfactoryarg`,
+   `sslhostnameverifier`, `sslpasswordcallback` or `service`; plain
+   `[A-Za-z0-9_.-]` parameter names, no percent-encoded `=` or `&`, TLS keys in
+   lower case, and no TLS key before the `?` (the terraform-modules
+   `aurora-postgresql` `jdbc_url` passes). `sslfactory` cannot come in by
+   another route: rule 5 refuses it as a name and under
+   `spring.datasource.*`, rule 2 in JVM options.
+7. Kafka (`fbx.validateKafkaTls`): see the Kafka row above; a
+   `security.protocol` name must hold `SASL_SSL` or `SSL` (as a literal
+   value), an `endpoint.identification.algorithm` name `https`.
+
+## Vendoring the guard
+
+A service chart (`deploy/helm/<service>` in the customer, risk, compliance,
+open-finance, lending and payment repositories) adopts the guard without
+editing it:
+
+1. Copy `charts/fintechbankx-service/templates/_helpers.tpl` unchanged into
+   the service chart, e.g. as `templates/_fbx_helpers.tpl` (any name starting
+   with `_`). The guard is `fbx.guard` with the helpers it calls:
+   `fbx.validateEnvSources`, `fbx.validateDatabaseTls`, `fbx.validateKafkaTls`,
+   `fbx.validateKafkaTlsValue`, `fbx.validateJdbcUrl`, `fbx.validateJvmOptions`,
+   `fbx.datasourceOverrideName`, `fbx.overrideNameReason`, `fbx.canonicalName`,
+   `fbx.isDbUrlName`, `fbx.isJvmOptionsName`, `fbx.kafkaTlsName`, plus
+   `fbx.kafkaProfile` to render the profile. The file's other `fbx.*` helpers
+   do nothing unless included; service charts use their own prefix
+   (`products.*`, ...), so nothing collides. Re-copy the file whenever this
+   chart's guard changes.
+2. Call it once, at the top of the template that renders the workload (a
+   failure in any template stops the whole render). With this chart's value
+   names it is `{{- include "fbx.guard" . -}}`. With other names, pass an
+   adapter dict; the guard reads only `.Values`, and every key is optional
+   except `databaseCa.mountPath` and `key` while `databaseCa.enabled`:
+
+   ```yaml
+   {{- include "fbx.guard" (dict "Values" (dict
+         "config" .Values.env
+         "extraEnv" .Values.additionalEnv
+         "javaToolOptions" .Values.jvmOptions
+         "databaseCa" .Values.databaseCaBundle
+         "kafka" (dict "runtime" .Values.kafkaRuntime)
+         "externalSecret" (dict "enabled" .Values.secrets.enabled "data" .Values.secrets.keys))) -}}
+   ```
+
+   Every env list the chart renders from values goes in: a migration Job's or
+   an init container's extra env is concatenated into `extraEnv` (or the guard
+   is called a second time with it), and a second secret's keys into
+   `externalSecret.extraData`. Error messages name this chart's routes
+   (`config.<key>`, `extraEnv`, `externalSecret.data`).
+3. Render only what the guard has seen: the ConfigMap from the `config` map,
+   `env` from the chart's own entries (`DB_SSL_ROOT_CERT`, `JAVA_TOOL_OPTIONS`
+   from `javaToolOptions`, `SPRING_PROFILES_ACTIVE` from `fbx.kafkaProfile`)
+   followed by `extraEnv` (the guard refuses `extraEnv` names that would
+   replace the first and third, and checks the value of the second),
+   `envFrom` only for the
+   chart's own ConfigMap and Secret, the ExternalSecret only with
+   `data`/`extraData` (no `dataFrom`), and no `command`/`args` that expand a
+   launcher variable. Remove any `envFrom`/`extraEnvFrom`/`dataFrom` value.
+4. Copy the tests, replacing `../ci/loan-lifecycle-values.yaml` with the
+   service's own fixture and, if its value names differ, the `set:` paths:
+   helm-unittest suites `database_ca_test.yaml`, `database_override_names_test.yaml`,
+   `datasource_tls_names_test.yaml`, `db_url_test.yaml`,
+   `spring_config_profiles_test.yaml`, `relaxed_binding_names_test.yaml`,
+   `ssl_bundle_names_test.yaml`, `tls_enforce_switch_test.yaml`,
+   `jvm_options_test.yaml`, `env_sources_test.yaml`, `kafka_protocol_test.yaml`,
+   `kafka_runtime_profiles_test.yaml` and `kafka_runtime_required_test.yaml`;
+   and the `must_fail` cases of `scripts/ci/validate-chart.sh` from
+   "DB_URL materialised from the ExternalSecret" to "KAFKA_SECURITY_PROTOCOL=SSL
+   without kafka.runtime" (DB_URL, datasource, config and profile names, SSL
+   bundle, `DB_SSL_ROOT_CERT`, JVM options, `extraEnvFrom`, the off switch and
+   Kafka). `scripts/ci/fixtures/vendored-guard-chart` is a worked example:
+   `validate-chart.sh` copies `_helpers.tpl` into it unchanged and checks that
+   it renders and refuses six cases through the adapter dict.
 
 ## Required values
 
@@ -81,10 +221,14 @@ in any spelling, as a `config` key, an `extraEnv` name (`value` or
 is refused by name, whatever it carries. The chart also refuses every
 `spring.profiles.*` name it does not render itself, so `local` (or a
 `spring.profiles.default` / `spring.profiles.group.*` that leads to it) cannot
-be switched on through the chart.
+be switched on through the chart. For customer, risk and compliance, whose
+guards run while `DB_SSL_ROOT_CERT` is set, the chart refuses that name (and
+every `ssl[._-]?root[._-]?cert` name) on every route, so an `extraEnv` entry
+cannot replace the chart's own value with an empty one.
 
 That covers this chart only. A service deployed with its own chart (`deploy/helm`
-in the lending and payment repositories) depends on that chart's own name check,
+in the lending and payment repositories) depends on that chart's own name check
+until it vendors this guard (see [Vendoring the guard](#vendoring-the-guard)),
 and in October 2026 none matches every spelling: the loan-lifecycle-core chart
 compares the upper-cased `config` key with `FINTECHBANKX_TLS_ENFORCE`, so a
 `config` key `fintechbankx.tls.enforce` renders into the ConfigMap the pod loads
