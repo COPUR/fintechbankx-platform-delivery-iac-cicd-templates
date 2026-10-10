@@ -14,9 +14,10 @@ tests:
   # spring.kafka.properties[security.protocol] bind like the plain names.
   # Every name rule is therefore also checked against a canonical form (lower
   # case, '[', ']' and '_' as '.', every other character outside [a-z0-9.]
-  # removed, repeated dots collapsed, leading and trailing dots trimmed), and
-  # every JVM options rule against the value with every character other than
-  # [a-z0-9] removed.
+  # removed, repeated dots collapsed, leading and trailing dots trimmed; the
+  # property reading, where '_' is dropped instead, is covered by
+  # property_reading_names_test.yaml), and every JVM options rule against the
+  # value with every character other than [a-z0-9] removed.
   - it: rejects config spring.pro-files.active (dash inside an element)
     template: templates/deployment.yaml
     set:

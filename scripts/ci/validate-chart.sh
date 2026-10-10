@@ -160,6 +160,20 @@ must_fail "javaToolOptions with -Dspring.kafka.bootstrap-servers (kafka mention)
   --set-string 'javaToolOptions=-Dspring.kafka.bootstrap-servers=other.example.internal:9092'
 must_fail "KAFKA_SECURITY_PROTOCOL=SSL without kafka.runtime (no auth profile)" --expect 'is set but kafka.runtime is empty' \
   --set-string 'config.KAFKA_SECURITY_PROTOCOL=SSL'
+# Spring Boot's property mapper splits an env name on '.' only and drops '_'
+# inside an element, so these bind spring.kafka.ssl.*, spring.data.mongodb.*
+# and spring.profiles.active (fbx.propertyName).
+must_fail "config spring.kafka.s_sl.trust-store-type ('_' inside an element binds as ssl)" \
+  --expect 'config.spring.kafka.s_sl.trust-store-type is not allowed: a Kafka client TLS setting' \
+  --set-string 'kafka.runtime=strimzi' --set-string 'config.KAFKA_SECURITY_PROTOCOL=SSL' \
+  --set-string 'config.spring\.kafka\.s_sl\.trust-store-type=PKCS12'
+must_fail "externalSecret.extraData spring.data.mongo_db.host ('_' inside an element binds as mongodb)" \
+  --expect 'externalSecret.extraData must not materialise spring.data.mongo_db.host' \
+  --set-string 'externalSecret.extraData[0].secretKey=spring.data.mongo_db.host' \
+  --set-string 'externalSecret.extraData[0].remoteSecretName=dev/customer-profile-kyc-service/docdb' \
+  --set-string 'externalSecret.extraData[0].property=host'
+must_fail "config spring.pro_files.active ('_' inside an element binds as profiles)" \
+  --expect 'config.spring.pro_files.active is not allowed' --set-string 'config.spring\.pro_files\.active=local'
 must_fail "public IPv6 egress CIDR broader than /48 (2001:db8::/32)" --set networkPolicy.enabled=true \
   --set-string 'networkPolicy.egressCidrs[0].cidr=2001:db8::/32' --set 'networkPolicy.egressCidrs[0].ports[0]=443'
 if "$helm" lint "$chart" >/dev/null 2>&1; then
@@ -231,6 +245,12 @@ vendored_must_fail "secret key mongodb.uri (MONGODB_URI in another spelling)" --
   --set 'secrets.keys[1].secretKey=mongodb.uri' --set-string 'secrets.keys[1].property=uri'
 vendored_must_fail "jvmOptions with -DMONGODB_URI (mongodb mention)" --expect 'javaToolOptions must not mention .*mongodb' \
   --set-string 'jvmOptions=-DMONGODB_URI=mongodb://other.example.internal:27017/db'
+vendored_must_fail "env spring.data.mongo_db.uri ('_' inside an element)" --expect 'config.spring.data.mongo_db.uri is not allowed: a spring.data.mongodb.\* property' \
+  --set-string 'env.spring\.data\.mongo_db\.uri=mongodb://docdb.example.internal:27017/db?tls=false'
+vendored_must_fail "additionalEnv spring.kafka.consumer.s_sl.trust-store-type from valueFrom ('_' inside an element)" \
+  --expect 'extraEnv must not set spring.kafka.consumer.s_sl.trust-store-type' \
+  --set 'additionalEnv[0].name=spring.kafka.consumer.s_sl.trust-store-type' \
+  --set-string 'additionalEnv[0].valueFrom.secretKeyRef.name=other' --set-string 'additionalEnv[0].valueFrom.secretKeyRef.key=type'
 
 echo "[helm-unittest] $chart/tests"
 "$helm" unittest "$chart"

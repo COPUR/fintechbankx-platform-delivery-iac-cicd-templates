@@ -13,7 +13,7 @@ follows the platform contract (ports, labels, ExternalSecret store, IRSA).
 | Security | non-root UID 10001, read-only root FS, all capabilities dropped, `RuntimeDefault` seccomp, image by digest, `latest` rejected |
 | Secrets | `ExternalSecret` against `ClusterSecretStore/aws-secrets-manager` |
 | Database TLS | ConfigMap `rds-ca-bundle` (key `global-bundle.pem`, published in every service namespace by the mesh repo's trust-manager Bundle) mounted read-only at `/etc/fintechbankx/rds-ca` and exported as `DB_SSL_ROOT_CERT`; not optional, so a missing bundle stops the pod instead of connecting unverified. `config.DB_URL` is the one JDBC URL route and must pass the strict parse (exactly one `sslmode=verify-full`, exactly one `sslrootcert=<mountPath>/<key>`); every name and value the pod's environment can get from values goes through `fbx.guard`, see [Datasource and TLS guard](#datasource-and-tls-guard). A datasource set by a profile or config file inside the image is the service's own startup check (see [Service-side TLS assertion](#service-side-tls-assertion)); `databaseCa.enabled: false` for services without a relational database |
-| Kafka TLS and profile | `kafka.runtime` (`""`, `msk` or `strimzi`; default `""`) renders the only Spring profile: `msk` sets `SPRING_PROFILES_ACTIVE=kafka-msk` (Amazon MSK IAM over `SASL_SSL`), `strimzi` sets `kafka-strimzi` (Strimzi mutual TLS over `SSL`), `""` sets none and is for services without Kafka; the profile names follow the Kafka repo's client guide. A `config` key or `extraEnv` name matching `(?i)(^\|[._-])security[._-]?protocol$` (`KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_PRODUCER_SECURITY_PROTOCOL`, `SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL`, `spring.kafka.streams.security.protocol`, ...) must hold `SASL_SSL` or `SSL` (case-insensitive, trimmed; `PLAINTEXT`, `SASL_PLAINTEXT` and empty are rejected), one matching `(?i)endpoint[._-]?identification[._-]?algorithm` must hold `https`; both name rules are also checked against the Spring relaxed-binding form of the name (lower case, characters other than `[a-z0-9]` inside an element ignored, `foo[bar]` read as `foo.bar`), so `spring.kafka.secu-rity.protocol` and `spring.kafka.properties[security.protocol]` are covered too (`fbx.kafkaTlsName`); a protocol name needs `kafka.runtime` `msk` or `strimzi` (with `""` the service would get no auth profile); with `kafka.runtime: msk` every such protocol must be `SASL_SSL`, with `strimzi` `SSL`; these names need a literal `extraEnv` `value` (no `valueFrom`) and may not come from the ExternalSecret (`fbx.validateKafkaTls`). The client's TLS material is not a values setting: every `spring.kafka[.<client>].ssl.*` and `spring.kafka[.<client>].properties.ssl.*` name other than `ssl.endpoint.identification.algorithm` is refused on every route whatever `kafka.runtime` is, and `KAFKA_TLS_CERT`, `KAFKA_TLS_KEY` and `KAFKA_TLS_CA` (read by the `kafka-strimzi` profile) come only from a Secret (name rule 7) |
+| Kafka TLS and profile | `kafka.runtime` (`""`, `msk` or `strimzi`; default `""`) renders the only Spring profile: `msk` sets `SPRING_PROFILES_ACTIVE=kafka-msk` (Amazon MSK IAM over `SASL_SSL`), `strimzi` sets `kafka-strimzi` (Strimzi mutual TLS over `SSL`), `""` sets none and is for services without Kafka; the profile names follow the Kafka repo's client guide. A `config` key or `extraEnv` name matching `(?i)(^\|[._-])security[._-]?protocol$` (`KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_PRODUCER_SECURITY_PROTOCOL`, `SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL`, `spring.kafka.streams.security.protocol`, ...) must hold `SASL_SSL` or `SSL` (case-insensitive, trimmed; `PLAINTEXT`, `SASL_PLAINTEXT` and empty are rejected), one matching `(?i)endpoint[._-]?identification[._-]?algorithm` must hold `https`; both name rules are also checked against the two Spring relaxed-binding readings of the name (lower case, characters other than `[a-z0-9]` inside an element ignored, `foo[bar]` read as `foo.bar`, `_` read as `.` in the environment reading and ignored in the property reading), so `spring.kafka.secu-rity.protocol`, `spring.kafka.security.pro_tocol` and `spring.kafka.properties[security.protocol]` are covered too (`fbx.kafkaTlsName`); a protocol name needs `kafka.runtime` `msk` or `strimzi` (with `""` the service would get no auth profile); with `kafka.runtime: msk` every such protocol must be `SASL_SSL`, with `strimzi` `SSL`; these names need a literal `extraEnv` `value` (no `valueFrom`) and may not come from the ExternalSecret (`fbx.validateKafkaTls`). The client's TLS material is not a values setting: every `spring.kafka[.<client>].ssl.*` and `spring.kafka[.<client>].properties.ssl.*` name other than `ssl.endpoint.identification.algorithm` is refused on every route whatever `kafka.runtime` is, and `KAFKA_TLS_CERT`, `KAFKA_TLS_KEY` and `KAFKA_TLS_CA` (read by the `kafka-strimzi` profile) come only from a Secret (name rule 7) |
 | Identity | ServiceAccount annotated with the IRSA role (`serviceAccount.roleArn`) |
 | Observability | pod label `fintechbankx.io/service-id` and `prometheus.io/scrape|port|path` annotations, so the observability repo's PodMonitor `fintechbankx-services` (`fintechbankx-platform-observability-sre-operations`, `deploy/kustomize/base/monitors/podmonitor-fintechbankx-services.yaml`) is the single scrape path (Istio merged metrics on 15020); OTLP env to the platform collector. `observability.serviceMonitor.enabled: true` is an opt-in for clusters without that PodMonitor and drops the annotations to avoid double scraping |
 | Network | none by default: `NetworkPolicy` is owned by the service-mesh platform repo (`fintechbankx-platform-mesh-security-service-mesh`, `k8s/istio/security/network-policies.yaml`), like AuthorizationPolicy. `networkPolicy.enabled: true` renders an opt-in policy (own namespace, ingress gateway, observability, DNS, istiod, `egressCidrs`) for clusters the mesh repo does not cover; `egressCidrs` defaults to `[]` and the schema accepts only IPv4 prefixes `/8`-`/32` and IPv6 prefixes `/32`-`/128` (so `0.0.0.0/0`, `::/0` and halves such as `0.0.0.0/1` + `128.0.0.0/1` are rejected); the template (`fbx.validateEgressCidrs`) narrows this to the "VPC or VPC endpoint subnets" intent: an IPv4 range wider than `/16` only inside RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) or `100.64.0.0/10` (an AWS VPC CIDR block is `/16` at most, so a VPC in public space still fits), no IPv6 range that overlaps the IPv4-mapped block `::ffff:0:0/96` or the NAT64 prefixes `64:ff9b::/96` and `64:ff9b:1::/48`, and no IPv6 range broader than `/48` unless it lies fully inside the unique local block `fc00::/7` (an Amazon-provided VPC IPv6 block is `/56`, a subnet `/64`) |
@@ -41,13 +41,24 @@ key and value they interpolate (ConfigMap keys, ExternalSecret `secretKey`,
 | Other values written into the pod spec (`preStopSleepSeconds`, `probes.*`, `priorityClassName`, `terminationGracePeriodSeconds`, `revisionHistoryLimit`, `serviceAccount.name`, ...) | not part of the guard: `values.schema.json` types them and the templates render every number with `int` and every string with `quote`, so no value can close its line and add fields such as `args: ["--spring.config.import=..."]` |
 
 Name rules (`fbx.datasourceOverrideName`, `fbx.overrideNameReason`), checked
-against the name as given (case-insensitive) and against its Spring
-relaxed-binding form (`fbx.canonicalName`: lower case, `[`, `]` and `_` read
-as `.`, every other character outside `[a-z0-9.]` removed, repeated dots
-collapsed). Spring Boot 3.3 skips every character other than `[a-z0-9]`
-inside a name element, so `spring.pro-files.active`, `spring.pro:files.active`
-(an env name Kubernetes 1.32+ accepts), `spring.config.import[0]`,
-`SPRING_CONFIG_IMPORT_0_` and `fintechbankx.tls[enforce]` are all caught:
+against the name as given (case-insensitive) and against both of its Spring
+relaxed-binding readings. Spring Boot 3.3.6 maps every environment variable
+through two property mappers and skips every character other than `[a-z0-9]`
+inside a name element:
+
+- the environment reading (`fbx.canonicalName`: lower case, `[`, `]` and `_`
+  read as `.`, every other character outside `[a-z0-9.]` removed, repeated
+  dots collapsed), so `spring.pro-files.active`, `spring.pro:files.active` (an
+  env name Kubernetes 1.32+ accepts), `spring.config.import[0]`,
+  `SPRING_CONFIG_IMPORT_0_` and `fintechbankx.tls[enforce]` are caught;
+- the property reading (`fbx.propertyName`: only `.` and `[...]` separate
+  elements, so `_` is removed like any other character), so
+  `spring.pro_files.active`, `spring.kafka.s_sl.trust-store-type`,
+  `spring.data.mongo_db.host`, `spring.con_fig.import`,
+  `spring.applica_tion.json`, `fintech_bankx.tls.enforce` and
+  `spring.data_source.url` are caught; with Spring Boot 3.3.6 each of them
+  binds the plain name (`spring.pro_files.active=local` activates `local`).
+
 
 1. `spring.config.*` by prefix, `(?i)^spring[._-]?config([._-]|$)` (import,
    location, additional-location, name, `activate.*`, `on-not-found`, indexed
@@ -128,8 +139,9 @@ inside a name element, so `spring.pro-files.active`, `spring.pro:files.active`
    (value-checked above); `security.protocol` is not under `ssl`, and other
    `spring.kafka[.<client>].properties.*` names (`sasl.*` for MSK IAM) are
    not refused. With Spring Boot 3.3.6, `SPRING_KAFKA_SSL_TRUST_STORE_LOCATION`,
-   `SPRING_KAFKA_SSL_TRUSTSTORELOCATION`, `spring.kafka.s-sl.trust-store-location`
-   and `SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION` all reach the
+   `SPRING_KAFKA_SSL_TRUSTSTORELOCATION`, `spring.kafka.s-sl.trust-store-location`,
+   `spring.kafka.s_sl.trust-store-location` and
+   `SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION` all reach the
    client's `ssl.truststore.location` (`SPRING_KAFKA_SSL_TRUSTSTORE_LOCATION`
    binds nothing; it is refused with the rest).
    Secret-only names (`fbx.validateSecretNames`, `fbx.secretOnlyName`):
@@ -157,8 +169,9 @@ inside a name element, so `spring.pro-files.active`, `spring.pro:files.active`
    env spelling (any case), allowed on the same routes as
    `SPRING_DATASOURCE_USERNAME` and `_PASSWORD`; `spring.data.mongodb.password`
    is refused like `spring.datasource.password`. With Spring Boot 3.3.6,
-   `SPRING_DATA_MONGODB_URI`, `spring.data.mongo-db.uri` and
-   `spring.data[mongodb].uri` all bind `spring.data.mongodb.uri`
+   `SPRING_DATA_MONGODB_URI`, `spring.data.mongo-db.uri`,
+   `spring.data.mongo_db.uri` and `spring.data[mongodb].uri` all bind
+   `spring.data.mongodb.uri`
    (`SPRING_DATA_MONGO_DB_URI` binds nothing). Secret-only name
    (`fbx.validateSecretNames`, `fbx.secretOnlyName`, `fbx.secretOnlyReason`):
    `MONGODB_URI` is the connection string, credentials and TLS options
@@ -212,7 +225,7 @@ editing it:
    `fbx.secretOnlyReason`, `fbx.validateKeyNames`, `fbx.validateJdbcUrl`,
    `fbx.validateJvmOptions`,
    `fbx.datasourceOverrideName`, `fbx.overrideNameReason`, `fbx.canonicalName`,
-   `fbx.isDbUrlName`, `fbx.isJvmOptionsName`, `fbx.kafkaTlsName`, plus
+   `fbx.propertyName`, `fbx.isDbUrlName`, `fbx.isJvmOptionsName`, `fbx.kafkaTlsName`, plus
    `fbx.kafkaProfile` to render the profile. The file's other `fbx.*` helpers
    do nothing unless included; service charts use their own prefix
    (`products.*`, ...), so nothing collides. Whenever this chart's guard
@@ -277,7 +290,8 @@ editing it:
    the `set:` paths: helm-unittest suites `database_ca_test.yaml`,
    `database_override_names_test.yaml`, `datasource_tls_names_test.yaml`,
    `db_url_test.yaml`, `spring_config_profiles_test.yaml`,
-   `relaxed_binding_names_test.yaml`, `ssl_bundle_names_test.yaml`,
+   `relaxed_binding_names_test.yaml`, `property_reading_names_test.yaml`,
+   `ssl_bundle_names_test.yaml`,
    `tls_enforce_switch_test.yaml`, `jvm_options_test.yaml`,
    `env_sources_test.yaml`, `key_injection_test.yaml`,
    `variable_references_test.yaml`, `kafka_protocol_test.yaml`,
@@ -286,11 +300,11 @@ editing it:
    (`template_interpolation_test.yaml` covers this chart's own templates; a
    service chart writes the same cases for its templates); and the
    `must_fail` cases of `scripts/ci/validate-chart.sh` from "DB_URL
-   materialised from the ExternalSecret" to "KAFKA_SECURITY_PROTOCOL=SSL
-   without kafka.runtime" (DB_URL, datasource, config and profile names, SSL
+   materialised from the ExternalSecret" to "config spring.pro_files.active"
+   (DB_URL, datasource, config and profile names, SSL
    bundle, `DB_SSL_ROOT_CERT`, JVM options, `$(VAR)` and `${...}`,
    `extraEnvFrom`, the off switch, Kafka protocol and Kafka client TLS
-   names, DocumentDB names), keeping each case's `--expect`
+   names, DocumentDB names, `_` inside an element), keeping each case's `--expect`
    pattern so that a case cannot pass because the render failed for another
    reason. The digest and the checks of step 1 prove the copy and the call
    sites, not the adapter's mapping: only these negative render cases show

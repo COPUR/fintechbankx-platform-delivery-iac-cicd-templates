@@ -251,11 +251,15 @@ the env names the Secret materialises and whose values are never seen here):
     checks; security.protocol is not under ssl and keeps its value check.
     Other spring.kafka[.<client>].properties.* names (sasl.* for MSK IAM)
     are not refused.
-Each rule is checked against the name as given and against its relaxed-binding
-canonical form (fbx.canonicalName: Spring Boot skips every character other than
-[a-z0-9] inside an element and reads foo[bar] as foo.bar, so spring.pro-files,
-spring.pro:files and spring[profiles] bind like the plain name). The helper
-prints the reason (non-empty means rejected).
+Each rule is checked against the name as given and against both of its
+relaxed-binding readings: the environment reading (fbx.canonicalName: '_'
+separates elements, Spring Boot skips every character other than [a-z0-9]
+inside an element and reads foo[bar] as foo.bar, so spring.pro-files,
+spring.pro:files and spring[profiles] bind like the plain name) and the
+property reading (fbx.propertyName: only '.' and '[...]' separate elements and
+'_' is skipped too, so spring.pro_files, spring.kafka.s_sl and
+spring.data.mongo_db bind as spring.profiles, spring.kafka.ssl and
+spring.data.mongodb). The helper prints the reason (non-empty means rejected).
 JVM options (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS and the chart's
 javaToolOptions) can set -Dspring.datasource.url=..., -Djavax.net.ssl.*,
 -Dspring.config.*, -Dspring.profiles.*, -Dspring.ssl.bundle.*,
@@ -305,12 +309,36 @@ and against this form.
 {{- trimAll "." $c -}}
 {{- end -}}
 
+{{/*
+Property reading of a name, the second form every name rule is checked
+against: Spring Boot 3.3.6 maps an environment variable through its default
+property mapper as well as the environment one, and the default mapper splits
+the name on '.' only and skips every character other than [a-z0-9] inside an
+element, '_' included. So spring.kafka.s_sl.trust-store-type,
+spring.data.mongo_db.host, spring.pro_files.active and fintech_bankx.tls.enforce
+(env names and ConfigMap keys Kubernetes accepts) bind
+spring.kafka.ssl.trust-store-type, spring.data.mongodb.host,
+spring.profiles.active and fintechbankx.tls.enforce, which fbx.canonicalName
+(s.sl, mongo.db, pro.files) does not show. Lower case, '[' and ']' read as
+'.', every character outside [a-z0-9.] removed ('_' too), repeated dots
+collapsed, leading and trailing dots trimmed.
+*/}}
+{{- define "fbx.propertyName" -}}
+{{- $c := regexReplaceAll "[\\[\\]]+" (lower (toString .)) "." -}}
+{{- $c = regexReplaceAll "[^a-z0-9.]+" $c "" -}}
+{{- $c = regexReplaceAll "[.]+" $c "." -}}
+{{- trimAll "." $c -}}
+{{- end -}}
+
 {{- define "fbx.datasourceOverrideName" -}}
 {{- $n := toString . -}}
 {{- if not (regexMatch "(?i)^SPRING_(DATASOURCE|DATA_MONGODB)_(USERNAME|PASSWORD)$" $n) -}}
 {{- $reason := include "fbx.overrideNameReason" $n -}}
 {{- if not $reason -}}
 {{- $reason = include "fbx.overrideNameReason" (include "fbx.canonicalName" $n) -}}
+{{- end -}}
+{{- if not $reason -}}
+{{- $reason = include "fbx.overrideNameReason" (include "fbx.propertyName" $n) -}}
 {{- end -}}
 {{- $reason -}}
 {{- end -}}
@@ -450,12 +478,16 @@ check covers clients built in code; README "Service-side TLS assertion"):
     (Amazon MSK IAM), with strimzi SSL (Strimzi mutual TLS);
   - these names need a literal extraEnv value (no valueFrom, not even next to
     an empty value) and may not come from the ExternalSecret.
+Both name patterns are also checked against fbx.canonicalName and
+fbx.propertyName (spring.kafka.secu-rity.protocol,
+spring.kafka.security.pro_tocol, spring.kafka.properties[security.protocol]).
 */}}
 {{- define "fbx.kafkaTlsName" -}}
 {{- $n := toString . -}}
 {{- $c := include "fbx.canonicalName" $n -}}
-{{- if or (regexMatch "(?i)(^|[._-])security[._-]?protocol$" $n) (regexMatch "(^|\\.)security\\.?protocol$" $c) -}}protocol
-{{- else if or (regexMatch "(?i)endpoint[._-]?identification[._-]?algorithm" $n) (regexMatch "endpoint\\.?identification\\.?algorithm" $c) -}}endpoint
+{{- $p := include "fbx.propertyName" $n -}}
+{{- if or (regexMatch "(?i)(^|[._-])security[._-]?protocol$" $n) (regexMatch "(^|\\.)security\\.?protocol$" $c) (regexMatch "(^|\\.)security\\.?protocol$" $p) -}}protocol
+{{- else if or (regexMatch "(?i)endpoint[._-]?identification[._-]?algorithm" $n) (regexMatch "endpoint\\.?identification\\.?algorithm" $c) (regexMatch "endpoint\\.?identification\\.?algorithm" $p) -}}endpoint
 {{- end -}}
 {{- end -}}
 
@@ -533,6 +565,8 @@ ${MONGODB_URI} from the env names KAFKA_TLS_CA and MONGODB_URI, not from
 kafka.tls.ca, Kafka_Tls_Ca or mongodb.uri, so any other spelling
 ((?i)^kafka[._-]?tls([._-]|$) and (?i)^mongodb[._-]?uri$, also in canonical
 form) is refused on every route, and every spelling is refused under config.
+(These names are read only as ${NAME} placeholders, not bound through
+relaxed binding, so fbx.propertyName adds nothing here.)
 JVM options cannot set them (-DKAFKA_TLS_CA or -DMONGODB_URI would win over
 the environment): fbx.validateJvmOptions refuses kafka and mongodb.
 fbx.secretOnlyName prints "exact" for an allowed spelling, "other" for

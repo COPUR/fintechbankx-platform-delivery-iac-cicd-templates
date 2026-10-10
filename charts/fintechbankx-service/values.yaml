@@ -106,9 +106,10 @@ config: {}
 # Datasource and TLS guard (fbx.guard; README "Datasource and TLS guard"),
 # over config keys, extraEnv (value or valueFrom), externalSecret data/extraData
 # secretKeys and javaToolOptions; rendering fails otherwise:
-#   - names are checked as given and in their Spring relaxed-binding form
+#   - names are checked as given and in both Spring relaxed-binding readings
 #     (every character other than [a-z0-9] inside an element ignored, foo[bar]
-#     and '_' read as '.'): no
+#     read as foo.bar, and '_' read as '.' in one reading and ignored in the
+#     other, so spring.pro_files.active binds as spring.profiles.active): no
 #     spring.config.* or spring.profiles.* name (indexed forms included; the
 #     chart renders the only profile, from kafka.runtime below), no
 #     fintechbankx.tls.* (the service's startup TLS assertion off switch) or
@@ -164,10 +165,11 @@ databaseCa:
 # SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL, ...) must be SASL_SSL or SSL
 # (SASL_SSL with msk, SSL with strimzi); PLAINTEXT, SASL_PLAINTEXT and empty are
 # rejected. A name containing endpoint[._-]?identification[._-]?algorithm must
-# be https. Both name rules also apply to the Spring relaxed-binding form
+# be https. Both name rules also apply to the Spring relaxed-binding readings
 # (lower case, characters other than [a-z0-9] inside an element ignored,
-# foo[bar] read as foo.bar), e.g.
-# spring.kafka.secu-rity.protocol, spring.kafka.properties[security.protocol].
+# foo[bar] read as foo.bar, '_' read as '.' or ignored), e.g.
+# spring.kafka.secu-rity.protocol, spring.kafka.security.pro_tocol,
+# spring.kafka.properties[security.protocol].
 # Both need a literal extraEnv value (no valueFrom) and may not come from the
 # ExternalSecret. Whatever the runtime, every other spring.kafka[.<client>].ssl.*
 # and spring.kafka[.<client>].properties.ssl.* name is refused (the profile in
