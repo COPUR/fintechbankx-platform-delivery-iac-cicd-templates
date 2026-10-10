@@ -2,7 +2,8 @@
 # Validates charts/fintechbankx-service: helm lint (strict) and helm template
 # for every CI fixture and for the microservice skeleton values, kubeconform on
 # the rendered manifests (core + CRD schemas), negative cases that must fail,
-# the vendored-guard smoke chart (scripts/ci/fixtures/vendored-guard-chart),
+# the vendored-guard smoke chart (scripts/ci/fixtures/vendored-guard-chart, also
+# checked with scripts/ci/verify-vendored-guard.sh),
 # helm-unittest suites (charts/fintechbankx-service/tests) and the strict-mTLS
 # validator over the rendered output.
 # Usage: scripts/ci/validate-chart.sh
@@ -174,6 +175,11 @@ cp -R scripts/ci/fixtures/vendored-guard-chart "$vendored"
 cp "$chart/templates/_helpers.tpl" "$vendored/templates/_helpers.tpl"
 echo "[vendored guard] renders with the adapter dict"
 "$helm" template vg "$vendored" > /dev/null
+# The check a service chart's CI runs on its vendored copy (README step 1):
+# one header-less copy with the pinned digest, no other fbx.* definition, and
+# the guard first in every workload template.
+echo "[vendored guard] verify-vendored-guard.sh"
+bash scripts/ci/verify-vendored-guard.sh "$vendored" "$(sha256sum "$chart/templates/_helpers.tpl" | cut -d' ' -f1)"
 vendored_must_fail() {
   local why="$1"; shift
   local expect="" err

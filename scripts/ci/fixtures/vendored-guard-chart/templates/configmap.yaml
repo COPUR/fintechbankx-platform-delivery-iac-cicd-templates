@@ -1,13 +1,4 @@
-{{- /* Adapter: map this chart's value names onto the ones fbx.guard reads. */ -}}
-{{- include "fbx.guard" (dict "Values" (dict
-      "config" .Values.env
-      "extraEnv" .Values.additionalEnv
-      "extraEnvFrom" .Values.additionalEnvFrom
-      "javaToolOptions" .Values.jvmOptions
-      "databaseCa" .Values.databaseCaBundle
-      "kafka" (dict "runtime" .Values.kafkaRuntime)
-      "externalSecret" (dict "enabled" .Values.secrets.enabled "data" .Values.secrets.keys
-        "dataFrom" .Values.secrets.dataFrom))) -}}
+{{- include "vendored-guard-example.guard" . -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

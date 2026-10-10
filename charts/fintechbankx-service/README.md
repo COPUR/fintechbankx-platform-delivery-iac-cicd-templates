@@ -177,9 +177,36 @@ A service chart (`deploy/helm/<service>` in the customer, risk, compliance,
 open-finance, lending and payment repositories) adopts the guard without
 editing it:
 
-1. Copy `charts/fintechbankx-service/templates/_helpers.tpl` unchanged into
-   the service chart, e.g. as `templates/_fbx_helpers.tpl` (any name starting
-   with `_`). The guard is `fbx.guard` with the helpers it calls:
+1. Copy `charts/fintechbankx-service/templates/_helpers.tpl` whole and
+   unchanged, without a header, into the service chart, e.g. as
+   `templates/_fbx_helpers.tpl` (any name starting with `_`), and have the
+   service's CI run `scripts/ci/verify-vendored-guard.sh <chart-dir>
+   <sha256>` (copied from this repository at the same commit) with the
+   file's sha256 pinned in the CI step, and the copy's provenance (source
+   repository `fintechbankx-platform-delivery-iac-cicd-templates`, path
+   `charts/fintechbankx-service/templates/_helpers.tpl`, commit) recorded
+   next to the pinned digest:
+
+   ```yaml
+   - name: Vendored platform guard
+     run: |
+       # fintechbankx-platform-delivery-iac-cicd-templates
+       # charts/fintechbankx-service/templates/_helpers.tpl at <commit>
+       bash scripts/ci/verify-vendored-guard.sh deploy/helm/<service> <sha256>
+   ```
+
+   This is the one vendoring convention (the lending charts' header-less
+   whole-file copy): a header inside the file changes its digest, and the
+   script refuses it. The script prints the file it found and its sha256 and
+   checks (a) that exactly one file under `templates/` defines `fbx.guard`
+   and that the sha256 of that whole file is the pinned one, (b) that no
+   other file of the chart, subchart directories and `.tgz` archives
+   included, defines an `fbx.*` template in any spelling (`{{define`,
+   `{{- define`, extra white space, a `"..."` or `` `...` `` name, `block`),
+   since a later definition replaces the vendored one, and (c) that every
+   workload template (Deployment, StatefulSet, DaemonSet, Job, CronJob,
+   also one rendered through an included define) runs the guard before it
+   writes anything (step 2). The guard is `fbx.guard` with the helpers it calls:
    `fbx.validateEnvSources`, `fbx.validateDatabaseTls`, `fbx.validateKafkaTls`,
    `fbx.validateKafkaTlsValue`, `fbx.validateSecretNames`, `fbx.secretOnlyName`,
    `fbx.secretOnlyReason`, `fbx.validateKeyNames`, `fbx.validateJdbcUrl`,
@@ -188,10 +215,16 @@ editing it:
    `fbx.isDbUrlName`, `fbx.isJvmOptionsName`, `fbx.kafkaTlsName`, plus
    `fbx.kafkaProfile` to render the profile. The file's other `fbx.*` helpers
    do nothing unless included; service charts use their own prefix
-   (`products.*`, ...), so nothing collides. Re-copy the file whenever this
-   chart's guard changes.
-2. Call it once, at the top of the template that renders the workload (a
-   failure in any template stops the whole render). With this chart's value
+   (`products.*`, ...), so nothing collides. Whenever this chart's guard
+   changes, re-copy the file and re-pin its sha256 and commit in the CI step.
+2. Call it as the first action of every template that renders a workload
+   (the Deployment, a migration Job, a CronJob, ...), directly or through an
+   adapter define of the chart (e.g. `<chart>.guard`, the simplest way to
+   share one adapter dict between several workload templates) that calls it
+   unconditionally before any output of its own. Only comments, variable
+   assignments, `fail` and `if`/`range`/`with` blocks that write nothing may
+   come before the call; an `{{ if }}` without `{{ else }}` may enclose the
+   whole template (an optional Job). With this chart's value
    names it is `{{- include "fbx.guard" . -}}`. With other names, pass an
    adapter dict; the guard reads only `.Values`, and every key is optional
    except `databaseCa.mountPath` and `key` while `databaseCa.enabled`. The
@@ -203,6 +236,8 @@ editing it:
    guard refuses them when non-empty):
 
    ```yaml
+   {{- /* templates/_adapter.tpl */ -}}
+   {{- define "example.guard" -}}
    {{- include "fbx.guard" (dict "Values" (dict
          "config" .Values.env
          "extraEnv" .Values.additionalEnv
@@ -212,6 +247,10 @@ editing it:
          "kafka" (dict "runtime" .Values.kafkaRuntime)
          "externalSecret" (dict "enabled" .Values.secrets.enabled "data" .Values.secrets.keys
            "dataFrom" .Values.secrets.dataFrom))) -}}
+   {{- end -}}
+
+   {{- /* first line of templates/deployment.yaml and of every other workload template */ -}}
+   {{- include "example.guard" . -}}
    ```
 
    Every env list the chart renders from values goes in: a migration Job's or
@@ -253,10 +292,13 @@ editing it:
    `extraEnvFrom`, the off switch, Kafka protocol and Kafka client TLS
    names, DocumentDB names), keeping each case's `--expect`
    pattern so that a case cannot pass because the render failed for another
-   reason. `scripts/ci/fixtures/vendored-guard-chart` is a worked example:
-   `validate-chart.sh` copies `_helpers.tpl` into it unchanged and checks that
-   it renders and refuses every `vendored_must_fail` case through the adapter
-   dict, each for its expected reason.
+   reason. The digest and the checks of step 1 prove the copy and the call
+   sites, not the adapter's mapping: only these negative render cases show
+   that every value route reaches the guard. `scripts/ci/fixtures/vendored-guard-chart`
+   is a worked example: `validate-chart.sh` copies `_helpers.tpl` into it
+   unchanged, runs `verify-vendored-guard.sh` on it, and checks that it
+   renders and refuses every `vendored_must_fail` case through its adapter
+   define, each for its expected reason.
 
 ## Required values
 
