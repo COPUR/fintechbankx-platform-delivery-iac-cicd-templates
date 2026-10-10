@@ -356,7 +356,7 @@
             "properties": {
               "cidr": {
                 "type": "string",
-                "description": "A narrowed range (VPC or VPC endpoint subnets): an IPv4 CIDR with a prefix of /8 to /32 or an IPv6 CIDR with a prefix of /32 to /128. Wider ranges are rejected, including any-address ranges split into halves (0.0.0.0/1 + 128.0.0.0/1).",
+                "description": "A narrowed range (VPC or VPC endpoint subnets): an IPv4 CIDR with a prefix of /8 to /32 or an IPv6 CIDR with a prefix of /32 to /128. Wider ranges are rejected, including any-address ranges split into halves (0.0.0.0/1 + 128.0.0.0/1). The template additionally rejects public IPv4 ranges wider than /16 (outside RFC1918 and 100.64.0.0/10) and IPv6 ranges overlapping the IPv4-mapped block ::ffff:0:0/96.",
                 "minLength": 1,
                 "pattern": "^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}/(?:[89]|[12][0-9]|3[0-2])|[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*/(?:3[2-9]|[4-9][0-9]|1[01][0-9]|12[0-8]))$"
               },

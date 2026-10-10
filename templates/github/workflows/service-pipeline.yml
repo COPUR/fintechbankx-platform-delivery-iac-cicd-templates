@@ -30,7 +30,8 @@ name: service-pipeline
 on:
   pull_request:
     branches: [main, dev, staging]
-    # labeled/unlabeled re-run the tdd gate when no-behaviour-change is added or removed
+    # labeled/unlabeled re-run the tdd gate (no-behaviour-change) and contract-checks
+    # (contract-break-approved) when the label is added or removed
     types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]

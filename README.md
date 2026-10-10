@@ -43,6 +43,26 @@ credentials are pinned to commit SHAs (checked by
 | Service skeleton | [templates/microservice](templates/microservice/README.md) | starting point for a new service |
 | Secondary CI templates (GitLab, Jenkins) | [templates/ci](templates/ci/gitlab/java23-quality-gates.yml), [ci/templates](ci/templates/microservice/gitlab-ci.yml) | only where GitHub Actions is not available |
 
+Contract waivers (`contract-checks.yml`, Proposed):
+
+- A `<spec>.accepted-breaking.txt` waiver added or changed in a PR (OpenAPI or
+  AsyncAPI, anywhere in the repository, compared with the merge base of
+  `origin/main`) fails `contracts/openapi` and `contracts/asyncapi` unless the
+  PR carries the label `contract-break-approved`. Only the data-contracts
+  owners apply that label; a provider PR cannot waive its own break. Deleting
+  a waiver needs no label. The caller must trigger on `pull_request` types
+  `labeled` and `unlabeled` (the sample `service-pipeline.yml` does) so the
+  check re-runs when the label is added.
+- Labels can be applied by anyone with triage access, so provider repositories
+  should also route the waiver files to the data-contracts owners in
+  `CODEOWNERS`, for example `**/*.accepted-breaking.txt @<org>/<data-contracts-owners>`,
+  with required code-owner review on `main`.
+- The default `asyncapi-catalog-ref` (`b0e31ee...`) is a commit that is so far
+  only on the AsyncAPI catalog's open PR #10 (the `ASYNCAPI_DIR` support). When
+  catalog PR #10 merges, bump the pin in a reviewed PR of this repository to the
+  catalog `main` commit that contains it (the test
+  `scripts/ci/test/contract-checks-asyncapi.test.mjs` pins the same value).
+
 GitHub Actions is the primary CI/CD path. Details, permissions per workflow and
 the AWS/GitHub setup each service needs: [docs/delivery/CONSUMING_DELIVERY_WORKFLOWS.md](docs/delivery/CONSUMING_DELIVERY_WORKFLOWS.md).
 

@@ -113,6 +113,52 @@ jobs:
         with:
           node-version: "22"
 
+      # A provider PR must not waive its own break: any *.accepted-breaking.txt (OpenAPI or AsyncAPI, anywhere in
+      # the repository) added or changed against the merge base of origin/main fails this job unless the PR carries
+      # the label contract-break-approved. Only the data-contracts owners apply that label; provider repos also
+      # list **/*.accepted-breaking.txt in CODEOWNERS. Callers trigger on pull_request types labeled/unlabeled so
+      # the check re-runs when the label is added. Deleting a waiver tightens the gate and needs no label.
+      - name: Accepted-breaking waivers need contract-break-approved
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          WAIVER_BASE_REF: origin/main
+        run: |
+          set -euo pipefail
+          label=contract-break-approved
+          pathspec=':(glob)**/*.accepted-breaking.txt'
+          if ! git rev-parse --verify --quiet "${WAIVER_BASE_REF}^{commit}" >/dev/null; then
+            git fetch --no-tags origin "+refs/heads/${WAIVER_BASE_REF#origin/}:refs/remotes/${WAIVER_BASE_REF}" >/dev/null 2>&1 || true
+          fi
+          changed="$(mktemp)"
+          if base="$(git merge-base "$WAIVER_BASE_REF" HEAD 2>/dev/null)"; then
+            git diff --name-only --no-renames --diff-filter=d "$base" HEAD -- "$pathspec" > "$changed"
+          else
+            echo "::warning::$WAIVER_BASE_REF is not available; every accepted-breaking file in the tree counts as changed."
+            git ls-files -- "$pathspec" > "$changed"
+          fi
+          if [ ! -s "$changed" ]; then
+            echo "No accepted-breaking file added or changed against $WAIVER_BASE_REF."
+            exit 0
+          fi
+          echo "Accepted-breaking files added or changed against $WAIVER_BASE_REF:"
+          cat "$changed"
+          case "$EVENT_NAME" in
+            pull_request|pull_request_target)
+              if printf '%s' "$PR_LABELS" | node -e 'const t = require("fs").readFileSync(0, "utf8").trim(); const l = t ? JSON.parse(t) : []; process.exit(Array.isArray(l) && l.includes(process.argv[1]) ? 0 : 1)' "$label"; then
+                echo "Label $label present: waiver change approved by the data-contracts owners."
+                exit 0
+              fi
+              while IFS= read -r f; do
+                echo "::error file=$f::$f is added or changed in this PR. A provider cannot waive its own breaking change: a data-contracts owner reviews the waiver and applies the label $label."
+              done < "$changed"
+              exit 1
+              ;;
+            *)
+              echo "::warning::accepted-breaking files differ from $WAIVER_BASE_REF on a $EVENT_NAME run; labels exist only on pull requests, so the PR run enforces $label."
+              ;;
+          esac
+
       - name: Find specs
         id: specs
         env:
@@ -233,6 +279,52 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
+
+      # A provider PR must not waive its own break: any *.accepted-breaking.txt (OpenAPI or AsyncAPI, anywhere in
+      # the repository) added or changed against the merge base of origin/main fails this job unless the PR carries
+      # the label contract-break-approved. Only the data-contracts owners apply that label; provider repos also
+      # list **/*.accepted-breaking.txt in CODEOWNERS. Callers trigger on pull_request types labeled/unlabeled so
+      # the check re-runs when the label is added. Deleting a waiver tightens the gate and needs no label.
+      - name: Accepted-breaking waivers need contract-break-approved
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          WAIVER_BASE_REF: origin/main
+        run: |
+          set -euo pipefail
+          label=contract-break-approved
+          pathspec=':(glob)**/*.accepted-breaking.txt'
+          if ! git rev-parse --verify --quiet "${WAIVER_BASE_REF}^{commit}" >/dev/null; then
+            git fetch --no-tags origin "+refs/heads/${WAIVER_BASE_REF#origin/}:refs/remotes/${WAIVER_BASE_REF}" >/dev/null 2>&1 || true
+          fi
+          changed="$(mktemp)"
+          if base="$(git merge-base "$WAIVER_BASE_REF" HEAD 2>/dev/null)"; then
+            git diff --name-only --no-renames --diff-filter=d "$base" HEAD -- "$pathspec" > "$changed"
+          else
+            echo "::warning::$WAIVER_BASE_REF is not available; every accepted-breaking file in the tree counts as changed."
+            git ls-files -- "$pathspec" > "$changed"
+          fi
+          if [ ! -s "$changed" ]; then
+            echo "No accepted-breaking file added or changed against $WAIVER_BASE_REF."
+            exit 0
+          fi
+          echo "Accepted-breaking files added or changed against $WAIVER_BASE_REF:"
+          cat "$changed"
+          case "$EVENT_NAME" in
+            pull_request|pull_request_target)
+              if printf '%s' "$PR_LABELS" | node -e 'const t = require("fs").readFileSync(0, "utf8").trim(); const l = t ? JSON.parse(t) : []; process.exit(Array.isArray(l) && l.includes(process.argv[1]) ? 0 : 1)' "$label"; then
+                echo "Label $label present: waiver change approved by the data-contracts owners."
+                exit 0
+              fi
+              while IFS= read -r f; do
+                echo "::error file=$f::$f is added or changed in this PR. A provider cannot waive its own breaking change: a data-contracts owner reviews the waiver and applies the label $label."
+              done < "$changed"
+              exit 1
+              ;;
+            *)
+              echo "::warning::accepted-breaking files differ from $WAIVER_BASE_REF on a $EVENT_NAME run; labels exist only on pull requests, so the PR run enforces $label."
+              ;;
+          esac
 
       - name: Find AsyncAPI specs
         id: specs

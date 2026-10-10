@@ -97,8 +97,11 @@ config: {}
 # trust-manager Bundle rds-ca-bundle publishes the ConfigMap in every service
 # namespace. The volume is not optional: a missing bundle keeps the pod from
 # starting instead of letting it connect without verification. The path is
-# also exported as DB_SSL_ROOT_CERT. A postgresql config.DB_URL must use
-# sslmode=verify-full (rendering fails otherwise).
+# also exported as DB_SSL_ROOT_CERT. Every jdbc:postgresql value in config or
+# extraEnv must carry exactly one sslmode=verify-full and, while enabled, exactly
+# one sslrootcert=<mountPath>/<key>; sslfactory, sslhostnameverifier and service
+# are rejected, and extraEnv must not set DB_URL / SPRING_DATASOURCE_URL
+# (fbx.validateDatabaseTls; rendering fails otherwise).
 databaseCa:
   enabled: true
   configMapName: rds-ca-bundle
@@ -175,7 +178,9 @@ networkPolicy:
   # VPC / VPC endpoint ranges per environment, e.g.
   #   - cidr: 10.20.0.0/16
   #     ports: [443, 5432, 9098]
-  # 0.0.0.0/0 and ::/0 are rejected by values.schema.json.
+  # 0.0.0.0/0 and ::/0 are rejected by values.schema.json; public IPv4 wider
+  # than /16 (outside RFC1918 and 100.64.0.0/10) and IPv4-mapped IPv6
+  # (::ffff:0:0/96) by fbx.validateEgressCidrs.
   egressCidrs: []
 
 istio:

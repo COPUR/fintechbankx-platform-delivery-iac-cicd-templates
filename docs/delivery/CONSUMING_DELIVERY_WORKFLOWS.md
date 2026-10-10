@@ -152,7 +152,10 @@ Pinning (supply chain):
   `state-bucket`/`state-key`/`lock-table`; apply runs the saved plan only.
 - `contract-checks`: allowlist file `<spec>.accepted-breaking.txt` next to the
   spec, one oasdiff error line per accepted break, each with a comment saying
-  who accepted it and when it can be deleted.
+  who accepted it and when it can be deleted. Adding or changing a waiver
+  fails the job unless the PR carries the label `contract-break-approved`,
+  applied only by the data-contracts owners (also list
+  `**/*.accepted-breaking.txt` in the provider repo's `CODEOWNERS`).
 - `db-migration-verify`: `schema` = `sc_<ctx>_<cap>`; migrations are
   discovered from `*/db/migration/V*.sql`.
 
@@ -195,4 +198,6 @@ removes duplicated templates; see the chart README for the value mapping.
   AuthorizationPolicy: the chart renders none unless `networkPolicy.enabled:
   true`, and then only with narrowed `egressCidrs` (the chart schema accepts
   IPv4 `/8`-`/32` and IPv6 `/32`-`/128` only, so `0.0.0.0/0`, `::/0` and
-  halves such as `0.0.0.0/1` are rejected).
+  halves such as `0.0.0.0/1` are rejected; the template also rejects public
+  IPv4 ranges broader than `/16` outside RFC1918 and `100.64.0.0/10`, and any
+  IPv6 range overlapping the IPv4-mapped block `::ffff:0:0/96`).

@@ -376,3 +376,78 @@ test(
     assert.match(b.log, /BREAKING api\/asyncapi\/svc-cus-profile-kyc\.yaml: removed-spec/);
   },
 );
+
+// --- 5. accepted-breaking waivers need the contract-break-approved label ------------------------
+// A provider PR must not waive its own break: adding or changing any *.accepted-breaking.txt
+// (OpenAPI or AsyncAPI) against origin/main fails both contract jobs unless the PR carries the
+// label contract-break-approved, which only the data-contracts owners apply.
+
+const WAIVER = `${D}/svc-cus-profile-kyc.accepted-breaking.txt`;
+const OAS_WAIVER = "api/openapi/loan.accepted-breaking.txt";
+const waiverStep = (jobName) => {
+  const s = (workflow().jobs[jobName].steps ?? []).find((x) => /^Accepted-breaking waivers need contract-break-approved/.test(x.name ?? ""));
+  if (!s) throw new Error(`waiver approval step not found in ${jobName}`);
+  return s;
+};
+// Runs the step with its literal env (WAIVER_BASE_REF) plus the event fields a test supplies.
+const runWaiver = (jobName, env, opts) => {
+  const s = waiverStep(jobName);
+  assert.equal(s.env.WAIVER_BASE_REF, "origin/main", "waivers count from origin/main");
+  return runStep(s, { WAIVER_BASE_REF: s.env.WAIVER_BASE_REF, ...env }, opts);
+};
+const pr = (labels) => ({ EVENT_NAME: "pull_request", PR_LABELS: JSON.stringify(labels) });
+
+for (const jobName of ["asyncapi", "openapi"]) {
+  test(`${jobName}: the waiver approval step reads the PR labels, runs every time and fails the job`, () => {
+    const s = waiverStep(jobName);
+    assert.equal(s.env.EVENT_NAME, "${{ github.event_name }}");
+    assert.equal(s.env.PR_LABELS, "${{ toJSON(github.event.pull_request.labels.*.name) }}");
+    assert.equal(s.if, undefined, "not skipped when the repo has no spec yet (a pre-emptive waiver is still a waiver)");
+    assert.equal(s["continue-on-error"], undefined);
+    const names = workflow().jobs[jobName].steps.map((x) => x.name);
+    assert.ok(names.indexOf(s.name) > names.indexOf("Set up Node.js"), "needs node");
+  });
+
+  test(`${jobName}: adding or changing a waiver without the label fails; with it passes`, () => {
+    for (const [main, branch, what] of [
+      [{ [SPEC]: spec() }, { [WAIVER]: "removed-property x # v2 plan\n" }, "added AsyncAPI waiver"],
+      [{ [SPEC]: spec(), [WAIVER]: "# none\n" }, { [WAIVER]: "removed-property x # v2 plan\n" }, "changed AsyncAPI waiver"],
+      [{ "api/openapi/loan.yaml": "openapi: 3.0.3\n" }, { [OAS_WAIVER]: "GET /loans removed\n" }, "added OpenAPI waiver"],
+      [{ [SPEC]: spec(), [WAIVER]: "# none\n" }, { [WAIVER]: null, "api/asyncapi/renamed.accepted-breaking.txt": "# none\n" }, "renamed waiver"],
+      [{ "README.md": "x\n" }, { "nested/deeper/x.accepted-breaking.txt": "x\n" }, "waiver outside the spec dirs"],
+    ]) {
+      const svc = serviceRepo({ main, branch });
+      for (const labels of [[], ["contracts"], ["contract-break-approved-ish"]]) {
+        const r = runWaiver(jobName, pr(labels), { cwd: svc.work });
+        assert.notEqual(r.status, 0, `${what} with labels ${JSON.stringify(labels)} must fail: ${r.log}`);
+        assert.match(r.log, /::error file=[^:]*accepted-breaking\.txt::.*contract-break-approved/);
+      }
+      const ok = runWaiver(jobName, pr(["documentation", "contract-break-approved"]), { cwd: svc.work });
+      assert.equal(ok.status, 0, `${what} with the label: ${ok.log}`);
+      assert.match(ok.log, /contract-break-approved present/);
+    }
+  });
+
+  test(`${jobName}: unchanged or deleted waivers need no label; other events only warn`, () => {
+    let svc = serviceRepo({ main: { [SPEC]: spec(), [WAIVER]: "# none\n" }, branch: { [SPEC]: spec({ customerId: { type: "string" } }) } });
+    let r = runWaiver(jobName, pr([]), { cwd: svc.work });
+    assert.equal(r.status, 0, r.log);
+    assert.match(r.log, /No accepted-breaking file added or changed/);
+    svc = serviceRepo({ main: { [SPEC]: spec(), [WAIVER]: "# none\n" }, branch: { [WAIVER]: null } });
+    r = runWaiver(jobName, pr([]), { cwd: svc.work });
+    assert.equal(r.status, 0, `removing a waiver tightens the gate: ${r.log}`);
+    svc = serviceRepo({ main: { [SPEC]: spec() }, branch: { [WAIVER]: "x\n" } });
+    r = runWaiver(jobName, { EVENT_NAME: "push", PR_LABELS: "null" }, { cwd: svc.work });
+    assert.equal(r.status, 0, r.log);
+    assert.match(r.log, /::warning::.*contract-break-approved/);
+  });
+
+  test(`${jobName}: origin/main unavailable counts every waiver in the tree as changed`, () => {
+    const svc = serviceRepo({ main: { [SPEC]: spec(), [WAIVER]: "# none\n" }, mainOnly: true });
+    svc.git("remote", "set-url", "origin", path.join(os.tmpdir(), "fbx-no-such-remote.git"));
+    const r = runWaiver(jobName, pr([]), { cwd: svc.work });
+    assert.notEqual(r.status, 0, r.log);
+    assert.match(r.log, /not available/);
+    assert.equal(runWaiver(jobName, pr(["contract-break-approved"]), { cwd: svc.work }).status, 0);
+  });
+}
