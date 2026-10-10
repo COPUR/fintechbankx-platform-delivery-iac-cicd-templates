@@ -100,8 +100,13 @@ config: {}
 # also exported as DB_SSL_ROOT_CERT. Every jdbc:postgresql value in config or
 # extraEnv must carry exactly one sslmode=verify-full and, while enabled, exactly
 # one sslrootcert=<mountPath>/<key>; sslfactory, sslhostnameverifier and service
-# are rejected, and neither extraEnv nor externalSecret.data/extraData may set
-# DB_URL / SPRING_DATASOURCE_URL
+# are rejected. config keys, extraEnv names (value or valueFrom) and
+# externalSecret secretKeys may not name a spring.datasource/flyway/liquibase/
+# r2dbc property (SPRING_DATASOURCE_USERNAME/PASSWORD excepted),
+# spring.application.json, or anything containing JDBC_URL, SSLFACTORY or
+# SSLHOSTNAMEVERIFIER; DB_URL belongs in config only; JVM options
+# (javaToolOptions, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS) must not
+# mention datasource, flyway, liquibase, r2dbc, jdbc, ssl or application.json
 # (fbx.validateDatabaseTls; rendering fails otherwise).
 databaseCa:
   enabled: true
@@ -180,9 +185,9 @@ networkPolicy:
   #   - cidr: 10.20.0.0/16
   #     ports: [443, 5432, 9098]
   # 0.0.0.0/0 and ::/0 are rejected by values.schema.json; public IPv4 wider
-  # than /16 (outside RFC1918 and 100.64.0.0/10) and IPv4-mapped IPv6
-  # (::ffff:0:0/96) or NAT64 (64:ff9b::/96, 64:ff9b:1::/48) by
-  # fbx.validateEgressCidrs.
+  # than /16 (outside RFC1918 and 100.64.0.0/10), public IPv6 wider than /48
+  # (outside the ULA block fc00::/7) and IPv4-mapped IPv6 (::ffff:0:0/96) or
+  # NAT64 (64:ff9b::/96, 64:ff9b:1::/48) by fbx.validateEgressCidrs.
   egressCidrs: []
 
 istio:

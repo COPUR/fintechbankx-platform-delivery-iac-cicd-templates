@@ -83,24 +83,65 @@ substring:
     (the driver ignores SSLMODE and would fall back to sslmode=prefer), and no
     TLS key before the '?'.
 Checked values: every config value and every extraEnv value that starts with
-jdbc:[<wrapper>:]postgresql: (case-insensitive). extraEnv must not set DB_URL or
-SPRING_DATASOURCE_*URL, SPRING_FLYWAY_URL or SPRING_APPLICATION_JSON (any case;
-a valueFrom would bypass the check), config may not carry the latter three, and
-neither may externalSecret.data / extraData (secretKey is the env name the Secret
-materialises; a URL from Secrets Manager is never seen here); set them in config.
+jdbc:[<wrapper>:]postgresql: (case-insensitive).
+
+Names (fbx.datasourceOverrideName; config keys, extraEnv names whether they use
+value or valueFrom, and externalSecret.data / extraData secretKeys, which are
+the env names the Secret materialises and whose values are never seen here):
+  - (?i)^spring[._-]?(datasource|flyway|liquibase|r2dbc)[._-] (any Spring
+    datasource, Flyway, Liquibase or R2DBC property, not only *URL), except
+    SPRING_DATASOURCE_USERNAME and SPRING_DATASOURCE_PASSWORD;
+  - spring.application.json in any spelling ([._-] or none, any case);
+  - any name containing jdbc[._-]?url, sslfactory or sslhostnameverifier;
+  - DB_URL outside config (config.DB_URL is the one allowed place).
+JVM options (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS and the chart's
+javaToolOptions) can set -Dspring.datasource.url=... or -Djavax.net.ssl.*: a
+value that mentions datasource, flyway, liquibase, r2dbc, jdbc, ssl or
+application[._-]json (case-insensitive) is rejected, and these names may not
+come from extraEnv valueFrom or the ExternalSecret.
+This closes the chart-side routes only; a profile or config file inside the
+image is the service's own startup check.
 */}}
+{{- define "fbx.datasourceOverrideName" -}}
+{{- $n := toString . -}}
+{{- if regexMatch "(?i)^SPRING_DATASOURCE_(USERNAME|PASSWORD)$" $n -}}
+{{- else if regexMatch "(?i)^spring[._-]?(datasource|flyway|liquibase|r2dbc)[._-]|^spring[._-]?application[._-]?json$|jdbc[._-]?url|sslfactory|sslhostnameverifier" $n -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{- define "fbx.isJvmOptionsName" -}}
+{{- if regexMatch "(?i)^(JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS)$" (toString .) -}}true{{- end -}}
+{{- end -}}
+
+{{- define "fbx.validateJvmOptions" -}}
+{{- if regexMatch "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json" (toString .value) -}}
+{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl or application.json (JVM system properties would override the datasource past the sslmode=verify-full check)" .where) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "fbx.validateDatabaseTls" -}}
 {{- $root := . -}}
+{{- include "fbx.validateJvmOptions" (dict "where" "javaToolOptions" "value" .Values.javaToolOptions) -}}
 {{- range $name, $value := .Values.config -}}
-{{- if regexMatch "(?i)^(SPRING_DATASOURCE_.*URL|SPRING_FLYWAY_URL|SPRING_APPLICATION_JSON)$" (toString $name) -}}
+{{- if include "fbx.datasourceOverrideName" $name -}}
 {{- fail (printf "config.%s is not allowed: it can redirect or override the datasource past the sslmode=verify-full check; set the JDBC URL in config.DB_URL" $name) -}}
+{{- end -}}
+{{- if include "fbx.isJvmOptionsName" $name -}}
+{{- include "fbx.validateJvmOptions" (dict "where" (printf "config.%s" $name) "value" $value) -}}
 {{- end -}}
 {{- include "fbx.validateJdbcUrl" (dict "root" $root "where" (printf "config.%s" $name) "url" (toString $value)) -}}
 {{- end -}}
 {{- range $env := .Values.extraEnv -}}
 {{- $envName := toString (default "" $env.name) -}}
-{{- if or (eq (upper $envName) "DB_URL") (regexMatch "(?i)^(SPRING_DATASOURCE_.*URL|SPRING_FLYWAY_URL|SPRING_APPLICATION_JSON)$" $envName) -}}
-{{- fail (printf "extraEnv must not set %s; set the JDBC URL in config.%s, where sslmode=verify-full is enforced" $envName (upper $envName)) -}}
+{{- if or (eq (upper $envName) "DB_URL") (include "fbx.datasourceOverrideName" $envName) -}}
+{{- fail (printf "extraEnv must not set %s (value or valueFrom); set the JDBC URL in config.DB_URL, where sslmode=verify-full is enforced" $envName) -}}
+{{- end -}}
+{{- if include "fbx.isJvmOptionsName" $envName -}}
+{{- if not (hasKey $env "value") -}}
+{{- fail (printf "extraEnv %s must set a literal value (valueFrom cannot be checked)" $envName) -}}
+{{- end -}}
+{{- include "fbx.validateJvmOptions" (dict "where" (printf "extraEnv.%s" $envName) "value" $env.value) -}}
 {{- end -}}
 {{- if hasKey $env "value" -}}
 {{- include "fbx.validateJdbcUrl" (dict "root" $root "where" (printf "extraEnv.%s" $envName) "url" (toString $env.value)) -}}
@@ -110,8 +151,8 @@ materialises; a URL from Secrets Manager is never seen here); set them in config
 {{- range $field := list "data" "extraData" -}}
 {{- range $entry := (index $root.Values.externalSecret $field | default list) -}}
 {{- $key := toString (default "" $entry.secretKey) -}}
-{{- if or (eq (upper $key) "DB_URL") (regexMatch "(?i)^(SPRING_DATASOURCE_.*URL|SPRING_FLYWAY_URL|SPRING_APPLICATION_JSON)$" $key) -}}
-{{- fail (printf "externalSecret.%s must not materialise %s; set the JDBC URL in config.%s, where sslmode=verify-full is enforced (keep only the credentials in the secret)" $field $key (upper $key)) -}}
+{{- if or (eq (upper $key) "DB_URL") (include "fbx.datasourceOverrideName" $key) (include "fbx.isJvmOptionsName" $key) -}}
+{{- fail (printf "externalSecret.%s must not materialise %s; set the JDBC URL in config.DB_URL and JVM options in javaToolOptions, where they are checked (keep only the credentials in the secret)" $field $key) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -183,6 +224,10 @@ subnets", so:
   - IPv6: no range that overlaps the IPv4-mapped block ::ffff:0:0/96 (inside
     it, or containing it such as ::/80) or the NAT64 prefixes 64:ff9b::/96 and
     64:ff9b:1::/48, which would re-open IPv4 egress;
+  - IPv6 width: a range broader than /48 only when it lies fully inside the
+    unique local block fc00::/7 (the schema already stops at /32); public
+    IPv6 must be /48 or narrower (an Amazon-provided VPC IPv6 block is /56,
+    a subnet /64);
   - IPv6 text must parse (one '::' at most, 8 hextets, valid dotted tail).
 Ranges are compared as bit strings: two prefixes overlap when their first
 min(p, q) bits are equal.
@@ -250,6 +295,10 @@ min(p, q) bits are equal.
 {{- if eq (trunc $k $bits) (trunc $k (index $r 0)) -}}
 {{- fail (printf "%s overlaps the NAT64 prefix %s, which reaches any IPv4 address; list the IPv4 range instead" $where (index $r 2)) -}}
 {{- end -}}
+{{- end -}}
+{{- /* width floor: a public IPv6 range is /48 or narrower; only ULA (fc00::/7) may be wider */ -}}
+{{- if and (lt $prefix 48) (not (and (ge $prefix 7) (eq (trunc 7 $bits) "1111110"))) -}}
+{{- fail (printf "%s is a public IPv6 range broader than /48; only ranges inside the unique local block fc00::/7 may be wider" $where) -}}
 {{- end -}}
 {{- else -}}
 {{- /* IPv4 (shape already checked by values.schema.json) */ -}}

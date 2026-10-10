@@ -168,11 +168,27 @@ tests:
           ports: [443]
     asserts:
       - notFailedTemplate: {}
-  - it: accepts egress CIDR 2001:db8::/32
+  - it: accepts egress CIDR 2001:db8:1::/48 (public IPv6 at the /48 floor)
     template: templates/deployment.yaml
     set:
       networkPolicy.egressCidrs:
-        - cidr: "2001:db8::/32"
+        - cidr: "2001:db8:1::/48"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR fd00::/32 (ULA, inside fc00::/7, wider than /48)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "fd00::/32"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR fc00::/32 (ULA, inside fc00::/7)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "fc00::/32"
           ports: [443]
     asserts:
       - notFailedTemplate: {}
@@ -194,7 +210,8 @@ tests:
       - notFailedTemplate: {}
   # Template floor (fbx.validateEgressCidrs) on top of the schema pattern:
   # public IPv4 at most /16 unless inside RFC1918 or 100.64.0.0/10 (an AWS VPC
-  # is /16 or narrower), and no IPv4-mapped IPv6 (::ffff:0:0/96).
+  # is /16 or narrower), public IPv6 at most /48 unless inside the ULA block
+  # fc00::/7, and no IPv4-mapped IPv6 (::ffff:0:0/96) or NAT64 prefix.
   - it: rejects egress CIDR 11.0.0.0/8 (public IPv4 broader than /16)
     template: templates/deployment.yaml
     set:
@@ -410,6 +427,42 @@ tests:
           ports: [443]
     asserts:
       - notFailedTemplate: {}
+  - it: rejects egress CIDR 2001:db8::/32 (public IPv6 broader than /48, public /32)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "2001:db8::/32"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv6 range broader than /48"
+  - it: rejects egress CIDR 2001:db8::/47 (public IPv6 broader than /48, public /47)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "2001:db8::/47"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv6 range broader than /48"
+  - it: rejects egress CIDR fe00::/32 (public IPv6 broader than /48, next to fc00::/7)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "fe00::/32"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv6 range broader than /48"
+  - it: rejects egress CIDR 2600:1f00::/40 (public IPv6 broader than /48, public /40)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "2600:1f00::/40"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv6 range broader than /48"
   - it: accepts egress CIDR 172.16.0.0/12 (RFC1918)
     template: templates/deployment.yaml
     set:
