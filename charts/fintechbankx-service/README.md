@@ -395,7 +395,13 @@ What guardrail 4a asks the assertion to cover:
   profile `kafka-msk`) or `SSL` (Strimzi mutual TLS, profile `kafka-strimzi`);
   `PLAINTEXT`, `SASL_PLAINTEXT` and an unset protocol stop startup, and
   `ssl.endpoint.identification.algorithm` stays `https`, the Kafka client
-  default (an empty or `none` value turns broker host name verification off).
+  default. In kafka-clients 3.7.1, the version Spring Boot 3.3.6 manages,
+  only an empty value (blank after trimming, or null in a client built in
+  code) turns broker host name verification off. `none` does not: the
+  client passes it to the JDK, which rejects it as an unknown
+  identification algorithm, so every broker TLS handshake fails. An
+  assertion may still refuse `none` as a misconfiguration, as
+  consent-auth-service and payee-verification do.
 - A test starts the context, or runs the check, with a non-verifying value
   (`sslmode=require`, `security.protocol=PLAINTEXT`) and expects the failure,
   so the assertion itself is proven red first.
