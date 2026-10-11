@@ -206,7 +206,8 @@ tests:
           errorPattern: "extraEnv must not set SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_LOCATION \\(value or valueFrom\\): a Kafka client TLS setting"
   # Without kafka.runtime: kafka_runtime_required_test.yaml.
   # ssl.endpoint.identification.algorithm stays allowed and value-checked
-  # (fbx.validateKafkaTls); non-ssl Kafka names are not refused.
+  # (fbx.validateKafkaTls); Kafka names outside ssl.* and sasl.* are not
+  # refused (sasl.* and spring.kafka.jaas.*: kafka_sasl_names_test.yaml).
   - it: accepts config SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM https (value-checked)
     template: templates/deployment.yaml
     set:
@@ -228,12 +229,26 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "config.SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM must be https"
-  - it: accepts non-ssl spring.kafka.properties names (MSK IAM sasl.*) and other Kafka names
+  - it: rejects the MSK IAM sasl.* names too (they come from the kafka-msk profile in the image)
     template: templates/deployment.yaml
     set:
       config:
         SPRING_KAFKA_PROPERTIES_SASL_MECHANISM: AWS_MSK_IAM
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_PROPERTIES_SASL_MECHANISM is not allowed: a Kafka SASL or JAAS setting"
+  - it: rejects spring.kafka.properties.sasl.client.callback.handler.class (MSK IAM callback handler)
+    template: templates/deployment.yaml
+    set:
+      config:
         spring.kafka.properties.sasl.client.callback.handler.class: software.amazon.msk.auth.iam.IAMClientCallbackHandler
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.properties.sasl.client.callback.handler.class is not allowed: a Kafka SASL or JAAS setting"
+  - it: accepts other Kafka names outside ssl.* and sasl.* (control)
+    template: templates/deployment.yaml
+    set:
+      config:
         KAFKA_BOOTSTRAP_SERVERS: b-1.msk.example.internal:9098
         SPRING_KAFKA_CONSUMER_GROUP_ID: loan-lifecycle
         KAFKA_LISTENER_CONCURRENCY: "2"

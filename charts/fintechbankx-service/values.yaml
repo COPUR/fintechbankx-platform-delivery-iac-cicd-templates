@@ -115,8 +115,9 @@ config: {}
 #     (every character other than [a-z0-9] inside an element ignored, foo[bar]
 #     read as foo.bar, and '_' read as '.' in one reading and ignored in the
 #     other, so spring.pro_files.active binds as spring.profiles.active): no
-#     spring.config.* or spring.profiles.* name (indexed forms included; the
-#     chart renders the only profile, from kafka.runtime below), no
+#     spring.config.*, spring.profiles.* or spring.main.* name (indexed forms
+#     included; the chart renders the only profile, from kafka.runtime below,
+#     and sets no spring.main.* property, e.g. lazy-initialization), no
 #     fintechbankx.tls.* (the service's startup TLS assertion off switch) or
 #     spring.application.json, no spring.ssl.* or *ssl.bundle name, no
 #     spring.datasource/flyway/liquibase/r2dbc name except
@@ -125,8 +126,10 @@ config: {}
 #     (DB_SSL_ROOT_CERT is the chart's own) or ssl mode, separators optional;
 #     no Kafka client TLS name, spring.kafka[.<client>].ssl.* or
 #     spring.kafka[.<client>].properties.ssl.*, other than the value-checked
-#     ssl.endpoint.identification.algorithm (see kafka below); no
-#     spring.data.mongodb.* name except SPRING_DATA_MONGODB_USERNAME/PASSWORD;
+#     ssl.endpoint.identification.algorithm (see kafka below); no Kafka SASL
+#     or JAAS name, spring.kafka[.<client>].properties.sasl.* or
+#     spring.kafka.jaas.*; no spring.data.mongodb.* name except
+#     SPRING_DATA_MONGODB_USERNAME/PASSWORD;
 #   - KAFKA_TLS_CERT, KAFKA_TLS_KEY, KAFKA_TLS_CA and MONGODB_URI (the
 #     DocumentDB connection string) only from a Secret (extraEnv
 #     valueFrom.secretKeyRef or externalSecret data/extraData), in exactly
@@ -141,7 +144,8 @@ config: {}
 #     _JAVA_OPTIONS) must not mention datasource, flyway, liquibase, r2dbc,
 #     jdbc, ssl, application.json, spring.config, spring.profiles,
 #     fintechbankx.tls, security.protocol, endpoint.identification, kafka,
-#     mongodb, java.security.properties, jdk.tls or hostname verification (also with
+#     mongodb, spring.main, sasl, jaas, java.security.auth (the JVM-wide JAAS
+#     file), java.security.properties, jdk.tls or hostname verification (also with
 #     every character other than [a-z0-9] removed, e.g. -Dspring..config.import),
 #     must be printable ASCII, must not contain '$(' or '${', nor read an
 #     options file ('@' argument file, also quoted, -XX:VMOptionsFile,
@@ -178,7 +182,9 @@ databaseCa:
 # Both need a literal extraEnv value (no valueFrom) and may not come from the
 # ExternalSecret. Whatever the runtime, every other spring.kafka[.<client>].ssl.*
 # and spring.kafka[.<client>].properties.ssl.* name is refused (the profile in
-# the image sets the client's TLS material), and the kafka-strimzi profile's
+# the image sets the client's TLS material), so is every
+# spring.kafka[.<client>].properties.sasl.* and spring.kafka.jaas.* name (the
+# kafka-msk profile sets the Amazon MSK IAM login), and the kafka-strimzi profile's
 # KAFKA_TLS_CERT, KAFKA_TLS_KEY and KAFKA_TLS_CA come only from a Secret: an
 # extraEnv entry with valueFrom.secretKeyRef (the Kafka repo's client guide
 # maps them from Secret kafka-client-tls) or an externalSecret key.

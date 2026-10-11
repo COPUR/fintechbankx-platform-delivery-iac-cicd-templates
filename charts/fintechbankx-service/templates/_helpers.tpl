@@ -276,6 +276,17 @@ the env names the Secret materialises and whose values are never seen here):
     can expand kafka-msk into local. The chart renders the only
     SPRING_PROFILES_ACTIVE (fbx.kafkaProfile, from kafka.runtime), so no
     user-set profile name is allowed;
+  - (?i)^spring[._-]?main([._-]|$): every spring.main.* name by prefix
+    (lazy-initialization, sources, allow-bean-definition-overriding,
+    allow-circular-references, web-application-type, banner-mode,
+    cloud-platform, keep-alive, ..., and the indexed forms
+    spring.main.sources[0] / SPRING_MAIN_SOURCES_0_). Spring Boot 3.3.6 binds
+    them onto the SpringApplication after the environment is prepared, over
+    what the service's code set: lazy-initialization moves a check made when
+    a bean is created (a TLS assertion on the connection pool) from startup
+    to first use, sources loads further bean definitions (a class, a package
+    or an XML file) and allow-bean-definition-overriding lets them replace
+    the service's datasource or Kafka beans. The chart sets none;
   - (?i)^spring[._-]?ssl([._-]|$) and any name containing ssl[._-]?bundle:
     spring.ssl.bundle.pem.* / jks.* (SPRING_SSL_BUNDLE_*) can replace the
     trust anchor of a DocumentDB, PostgreSQL or Kafka client, and
@@ -295,9 +306,21 @@ the env names the Secret materialises and whose values are never seen here):
     The one name under these prefixes that stays allowed is
     ssl.endpoint.identification.algorithm (its canonical form ends in
     ssl.endpoint.identification.algorithm), whose value fbx.validateKafkaTls
-    checks; security.protocol is not under ssl and keeps its value check.
-    Other spring.kafka[.<client>].properties.* names (sasl.* for MSK IAM)
-    are not refused.
+    checks; security.protocol is not under ssl and keeps its value check;
+  - Kafka SASL and JAAS,
+    (?i)^spring[._-]?kafka[._-]((<client>[._-])?(properties[._-])?sasl|jaas),
+    with no boundary after sasl or jaas (so the concatenated
+    SPRING_KAFKA_PROPERTIES_SASLJAASCONFIG is refused too, fail closed):
+    spring.kafka[.<client>].properties.sasl.* (sasl.jaas.config,
+    sasl.mechanism, sasl.client.callback.handler.class,
+    sasl.login.callback.handler.class, ...), which reach the consumer,
+    producer, admin and streams client config, and spring.kafka.jaas.*
+    (enabled, login-module, control-flag, options.*), with which
+    KafkaAutoConfiguration installs a JVM-wide KafkaClient JAAS login
+    module; whatever kafka.runtime is. The services take them from the
+    kafka-msk profile in the image (Amazon MSK IAM), and no sasl.* name
+    stays allowed. Other spring.kafka[.<client>].properties.* names
+    (outside ssl.* and sasl.*) are not refused.
 Each rule is checked against the name as given and against both of its
 relaxed-binding readings: the environment reading (fbx.canonicalName: '_'
 separates elements, Spring Boot skips every character other than [a-z0-9]
@@ -311,15 +334,18 @@ JVM options (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS and the chart's
 javaToolOptions) can set -Dspring.datasource.url=..., -Djavax.net.ssl.*,
 -Dspring.config.*, -Dspring.profiles.*, -Dspring.ssl.bundle.*,
 -Dfintechbankx.tls.*, -Dspring.kafka.*, -Dspring.data.mongodb.*,
--DKAFKA_TLS_CA or -DMONGODB_URI (a system property resolves the services'
-${KAFKA_TLS_CA} and ${MONGODB_URI} before the environment does),
--Djava.security.properties (a security properties file can replace the trust
-manager algorithm or keystore type), -Djdk.tls.* or
+-Dspring.main.*, -DKAFKA_TLS_CA or -DMONGODB_URI (a system property resolves
+the services' ${KAFKA_TLS_CA} and ${MONGODB_URI} before the environment
+does), -Djava.security.auth.login.config (a JVM-wide JAAS file whose
+KafkaClient entry the Kafka client uses when a client has no
+sasl.jaas.config), -Djava.security.properties (a security properties file
+can replace the trust manager algorithm or keystore type), -Djdk.tls.* or
 -Djdk.internal.httpclient.disableHostnameVerification, or read more options
 from a file: a value that mentions datasource, flyway, liquibase, r2dbc, jdbc,
 ssl, application[._-]json, spring[._-]config, spring[._-]profiles,
 fintechbankx[._-]tls, security[._-]protocol, endpoint[._-]identification,
-kafka, mongo[._-]db, java[._-]security[._-]properties, jdk[._-]tls or
+kafka, mongo[._-]db, spring[._-]main, sasl, jaas,
+java[._-]security[._-]auth, java[._-]security[._-]properties, jdk[._-]tls or
 hostname[._-]verification
 (also once every character other than [a-z0-9] is removed, keeping and then
 dropping white space: -Dspring..config.import, -Dspring.[profiles].active,
@@ -401,12 +427,16 @@ a TLS parameter name can replace the mounted CA or the verify-full mode, and DB_
 a spring.config.* property (import, location, additional-location, name, activate.*, indexed forms) can load or activate a file or config tree that overrides the datasource past the sslmode=verify-full check; the chart renders no config import
 {{- else if regexMatch "(?i)^spring[._-]?profiles([._-]|$)" $n -}}
 a profile can activate an application-<profile> config in the image (e.g. local) whose datasource and TLS settings the chart cannot check; the chart renders the only profile, from kafka.runtime
+{{- else if regexMatch "(?i)^spring[._-]?main([._-]|$)" $n -}}
+a spring.main.* property (lazy-initialization, sources, allow-bean-definition-overriding, web-application-type, cloud-platform, ..., indexed forms) is bound onto the SpringApplication and overrides the service's own settings: lazy-initialization moves a check made when a bean is created (such as a TLS assertion on the connection pool) from startup to first use, sources loads further bean definitions (a class, a package or an XML file) and allow-bean-definition-overriding lets them replace the service's datasource or Kafka beans; the chart sets none
 {{- else if regexMatch "(?i)^spring[._-]?ssl([._-]|$)|ssl[._-]?bundle" $n -}}
 an SSL bundle property can replace the trust anchor of the service's DocumentDB, PostgreSQL or Kafka client, or point the client at another bundle
 {{- else if regexMatch "(?i)^fintechbankx[._-]?tls([._-]|$)" $n -}}
 it can switch off the service's startup TLS assertion (fintechbankx.tls.enforce is for the local profile and tests only)
 {{- else if and (regexMatch "(?i)^spring[._-]?kafka[._-](?:[a-z0-9]+[._-])?(?:properties[._-])?ssl(?:[._-]|$)" $n) (not (regexMatch "^spring\\.?kafka\\.(?:[a-z0-9]+\\.)?(?:properties\\.)?ssl\\.endpoint\\.?identification\\.?algorithm$" (include "fbx.canonicalName" $n))) -}}
 a Kafka client TLS setting (spring.kafka[.<client>].ssl.*, spring.kafka[.<client>].properties.ssl.*) can replace the client's trust store, key store or certificates or change its TLS protocol; they come from the kafka-msk / kafka-strimzi profile in the image (the Strimzi client certificate, key and CA through KAFKA_TLS_CERT, KAFKA_TLS_KEY and KAFKA_TLS_CA from a Secret), and only ssl.endpoint.identification.algorithm may be set (https)
+{{- else if regexMatch "(?i)^spring[._-]?kafka[._-](?:(?:[a-z0-9]+[._-])?(?:properties[._-])?sasl|jaas)" $n -}}
+a Kafka SASL or JAAS setting (spring.kafka[.<client>].properties.sasl.*: sasl.jaas.config, sasl.mechanism, sasl.client.callback.handler.class, sasl.login.callback.handler.class, ...; spring.kafka.jaas.*, a JVM-wide JAAS login module) can replace the client's login module, mechanism or callback handlers; they come from the kafka-msk profile in the image (Amazon MSK IAM)
 {{- else if regexMatch "(?i)^spring[._-]?data[._-]?mongodb([._-]|$)" $n -}}
 a spring.data.mongodb.* property can point the DocumentDB client at another server or switch its TLS off; the connection string comes only from MONGODB_URI in a Secret, and only SPRING_DATA_MONGODB_USERNAME and SPRING_DATA_MONGODB_PASSWORD may be set
 {{- end -}}
@@ -447,9 +477,9 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- end -}}
 {{- $alt := regexReplaceAll "[^a-z0-9\\s]+" (lower $v) "" -}}
 {{- $flat := regexReplaceAll "[^a-z0-9]+" (lower $v) "" -}}
-{{- $rule := "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|security[._-]?protocol|endpoint[._-]?identification|kafka|mongo[._-]?db|java[._-]?security[._-]?properties|jdk[._-]?tls|hostname[._-]?verification|(^|[\\s\"'])@|-XX:(VMOptionsFile|Flags)" -}}
+{{- $rule := "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|security[._-]?protocol|endpoint[._-]?identification|kafka|mongo[._-]?db|spring[._-]?main|sasl|jaas|java[._-]?security[._-]?auth|java[._-]?security[._-]?properties|jdk[._-]?tls|hostname[._-]?verification|(^|[\\s\"'])@|-XX:(VMOptionsFile|Flags)" -}}
 {{- if or (regexMatch $rule $v) (regexMatch $rule $alt) (regexMatch $rule $flat) -}}
-{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config, spring.profiles, fintechbankx.tls, security.protocol, endpoint.identification, kafka, mongodb, java.security.properties, jdk.tls or hostname verification, nor read options from a file ('@' argument file, also quoted, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check, the trust store, the Kafka or DocumentDB client settings or the service's TLS assertion)" .where) -}}
+{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config, spring.profiles, fintechbankx.tls, security.protocol, endpoint.identification, kafka, mongodb, spring.main, sasl, jaas, java.security.auth, java.security.properties, jdk.tls or hostname verification, nor read options from a file ('@' argument file, also quoted, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check, the trust store, the Kafka or DocumentDB client settings or login module, the SpringApplication settings or the service's TLS assertion)" .where) -}}
 {{- end -}}
 {{- end -}}
 

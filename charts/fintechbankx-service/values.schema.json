@@ -304,14 +304,14 @@
           "boolean"
         ]
       },
-      "description": "Non-secret settings rendered into the ConfigMap. Keys and values are checked by fbx.guard (README \"Datasource and TLS guard\"): keys must be ConfigMap keys ([-._a-zA-Z0-9]+; the schema stops white space, control and non-ASCII characters), no spring.config.*, spring.profiles.*, spring.ssl.*, *ssl.bundle, fintechbankx.tls.*, spring.application.json or datasource/Flyway/Liquibase/R2DBC override names (relaxed-binding spellings included), DB_URL only under exactly that key and as a jdbc:[<wrapper>:]postgresql: URL with one sslmode=verify-full and no ${ or $(, Kafka security.protocol SASL_SSL/SSL and ssl.endpoint.identification.algorithm https, no other spring.kafka[.<client>].ssl.* or spring.kafka[.<client>].properties.ssl.* name, no spring.data.mongodb.* name except SPRING_DATA_MONGODB_USERNAME/PASSWORD, no KAFKA_TLS_* or MONGODB_URI name (Secret only).",
+      "description": "Non-secret settings rendered into the ConfigMap. Keys and values are checked by fbx.guard (README \"Datasource and TLS guard\"): keys must be ConfigMap keys ([-._a-zA-Z0-9]+; the schema stops white space, control and non-ASCII characters), no spring.config.*, spring.profiles.*, spring.main.*, spring.ssl.*, *ssl.bundle, fintechbankx.tls.*, spring.application.json or datasource/Flyway/Liquibase/R2DBC override names (relaxed-binding spellings included), DB_URL only under exactly that key and as a jdbc:[<wrapper>:]postgresql: URL with one sslmode=verify-full and no ${ or $(, Kafka security.protocol SASL_SSL/SSL and ssl.endpoint.identification.algorithm https, no other spring.kafka[.<client>].ssl.* or spring.kafka[.<client>].properties.ssl.* name, no spring.kafka[.<client>].properties.sasl.* or spring.kafka.jaas.* name, no spring.data.mongodb.* name except SPRING_DATA_MONGODB_USERNAME/PASSWORD, no KAFKA_TLS_* or MONGODB_URI name (Secret only).",
       "propertyNames": {
         "pattern": "^[\\x21-\\x7e]+$"
       }
     },
     "javaToolOptions": {
       "type": "string",
-      "description": "Rendered as JAVA_TOOL_OPTIONS. fbx.guard refuses a value that mentions a refused property (datasource, flyway, liquibase, r2dbc, jdbc, ssl, spring.config, spring.profiles, fintechbankx.tls, application.json, security.protocol, endpoint.identification, kafka, mongodb, java.security.properties, jdk.tls, hostname verification; also with every character other than [a-z0-9] removed), contains a character outside printable ASCII, '$(' or '${', or reads options from a file ('@', -XX:VMOptionsFile, -XX:Flags)."
+      "description": "Rendered as JAVA_TOOL_OPTIONS. fbx.guard refuses a value that mentions a refused property (datasource, flyway, liquibase, r2dbc, jdbc, ssl, spring.config, spring.profiles, fintechbankx.tls, application.json, security.protocol, endpoint.identification, kafka, mongodb, spring.main, sasl, jaas, java.security.auth, java.security.properties, jdk.tls, hostname verification; also with every character other than [a-z0-9] removed), contains a character outside printable ASCII, '$(' or '${', or reads options from a file ('@', -XX:VMOptionsFile, -XX:Flags)."
     },
     "extraEnv": {
       "type": "array",

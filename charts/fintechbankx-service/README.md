@@ -13,7 +13,7 @@ follows the platform contract (ports, labels, ExternalSecret store, IRSA).
 | Security | non-root UID 10001, read-only root FS, all capabilities dropped, `RuntimeDefault` seccomp, image by digest, `latest` rejected |
 | Secrets | `ExternalSecret` against `ClusterSecretStore/aws-secrets-manager` |
 | Database TLS | ConfigMap `rds-ca-bundle` (key `global-bundle.pem`, published in every service namespace by the mesh repo's trust-manager Bundle) mounted read-only at `/etc/fintechbankx/rds-ca` and exported as `DB_SSL_ROOT_CERT`; not optional, so a missing bundle stops the pod instead of connecting unverified. While `databaseCa.enabled` the guard (`fbx.validateDatabaseCa`) pins `mountPath`, `key` and `configMapName`, so any other or missing value fails rendering (a key a values file sets to `null` is deleted by Helm and refused as missing). `config.DB_URL` is the one JDBC URL route and must pass the strict parse (exactly one `sslmode=verify-full`, exactly one `sslrootcert=<mountPath>/<key>`); every name and value the pod's environment can get from values goes through `fbx.guard`, see [Datasource and TLS guard](#datasource-and-tls-guard). A datasource set by a profile or config file inside the image is the service's own startup check (see [Service-side TLS assertion](#service-side-tls-assertion)); `databaseCa.enabled: false` for services without a relational database |
-| Kafka TLS and profile | `kafka.runtime` (`""`, `msk` or `strimzi`; default `""`) renders the only Spring profile: `msk` sets `SPRING_PROFILES_ACTIVE=kafka-msk` (Amazon MSK IAM over `SASL_SSL`), `strimzi` sets `kafka-strimzi` (Strimzi mutual TLS over `SSL`), `""` sets none and is for services without Kafka; the profile names follow the Kafka repo's client guide. A `config` key or `extraEnv` name matching `(?i)(^\|[._-])security[._-]?protocol$` (`KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_PRODUCER_SECURITY_PROTOCOL`, `SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL`, `spring.kafka.streams.security.protocol`, ...) must hold `SASL_SSL` or `SSL` (case-insensitive, trimmed; `PLAINTEXT`, `SASL_PLAINTEXT` and empty are rejected), one matching `(?i)endpoint[._-]?identification[._-]?algorithm` must hold `https`; both name rules are also checked against the two Spring relaxed-binding readings of the name (lower case, characters other than `[a-z0-9]` inside an element ignored, `foo[bar]` read as `foo.bar`, `_` read as `.` in the environment reading and ignored in the property reading), so `spring.kafka.secu-rity.protocol`, `spring.kafka.security.pro_tocol` and `spring.kafka.properties[security.protocol]` are covered too (`fbx.kafkaTlsName`); a protocol name needs `kafka.runtime` `msk` or `strimzi` (with `""` the service would get no auth profile); with `kafka.runtime: msk` every such protocol must be `SASL_SSL`, with `strimzi` `SSL`; these names need a literal `extraEnv` `value` (no `valueFrom`) and may not come from the ExternalSecret (`fbx.validateKafkaTls`). The client's TLS material is not a values setting: every `spring.kafka[.<client>].ssl.*` and `spring.kafka[.<client>].properties.ssl.*` name other than `ssl.endpoint.identification.algorithm` is refused on every route whatever `kafka.runtime` is, and `KAFKA_TLS_CERT`, `KAFKA_TLS_KEY` and `KAFKA_TLS_CA` (read by the `kafka-strimzi` profile) come only from a Secret (name rule 7) |
+| Kafka TLS and profile | `kafka.runtime` (`""`, `msk` or `strimzi`; default `""`) renders the only Spring profile: `msk` sets `SPRING_PROFILES_ACTIVE=kafka-msk` (Amazon MSK IAM over `SASL_SSL`), `strimzi` sets `kafka-strimzi` (Strimzi mutual TLS over `SSL`), `""` sets none and is for services without Kafka; the profile names follow the Kafka repo's client guide. A `config` key or `extraEnv` name matching `(?i)(^\|[._-])security[._-]?protocol$` (`KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_PRODUCER_SECURITY_PROTOCOL`, `SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL`, `spring.kafka.streams.security.protocol`, ...) must hold `SASL_SSL` or `SSL` (case-insensitive, trimmed; `PLAINTEXT`, `SASL_PLAINTEXT` and empty are rejected), one matching `(?i)endpoint[._-]?identification[._-]?algorithm` must hold `https`; both name rules are also checked against the two Spring relaxed-binding readings of the name (lower case, characters other than `[a-z0-9]` inside an element ignored, `foo[bar]` read as `foo.bar`, `_` read as `.` in the environment reading and ignored in the property reading), so `spring.kafka.secu-rity.protocol`, `spring.kafka.security.pro_tocol` and `spring.kafka.properties[security.protocol]` are covered too (`fbx.kafkaTlsName`); a protocol name needs `kafka.runtime` `msk` or `strimzi` (with `""` the service would get no auth profile); with `kafka.runtime: msk` every such protocol must be `SASL_SSL`, with `strimzi` `SSL`; these names need a literal `extraEnv` `value` (no `valueFrom`) and may not come from the ExternalSecret (`fbx.validateKafkaTls`). The client's TLS material and SASL login are not values settings: every `spring.kafka[.<client>].ssl.*` and `spring.kafka[.<client>].properties.ssl.*` name other than `ssl.endpoint.identification.algorithm`, and every `spring.kafka[.<client>].properties.sasl.*` and `spring.kafka.jaas.*` name, is refused on every route whatever `kafka.runtime` is, and `KAFKA_TLS_CERT`, `KAFKA_TLS_KEY` and `KAFKA_TLS_CA` (read by the `kafka-strimzi` profile) come only from a Secret (name rule 7) |
 | Identity | ServiceAccount annotated with the IRSA role (`serviceAccount.roleArn`) |
 | Observability | pod label `fintechbankx.io/service-id` and `prometheus.io/scrape|port|path` annotations, so the observability repo's PodMonitor `fintechbankx-services` (`fintechbankx-platform-observability-sre-operations`, `deploy/kustomize/base/monitors/podmonitor-fintechbankx-services.yaml`) is the single scrape path (Istio merged metrics on 15020); OTLP env to the platform collector. `observability.serviceMonitor.enabled: true` is an opt-in for clusters without that PodMonitor and drops the annotations to avoid double scraping |
 | Network | none by default: `NetworkPolicy` is owned by the service-mesh platform repo (`fintechbankx-platform-mesh-security-service-mesh`, `k8s/istio/security/network-policies.yaml`), like AuthorizationPolicy. `networkPolicy.enabled: true` renders an opt-in policy (own namespace, ingress gateway, observability, DNS, istiod, `egressCidrs`) for clusters the mesh repo does not cover; `egressCidrs` defaults to `[]` and the schema accepts only IPv4 prefixes `/8`-`/32` and IPv6 prefixes `/32`-`/128` (so `0.0.0.0/0`, `::/0` and halves such as `0.0.0.0/1` + `128.0.0.0/1` are rejected); the template (`fbx.validateEgressCidrs`) narrows this to the "VPC or VPC endpoint subnets" intent: an IPv4 range wider than `/16` only inside RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) or `100.64.0.0/10` (an AWS VPC CIDR block is `/16` at most, so a VPC in public space still fits), no IPv6 range that overlaps the IPv4-mapped block `::ffff:0:0/96` or the NAT64 prefixes `64:ff9b::/96` and `64:ff9b:1::/48`, and no IPv6 range broader than `/48` unless it lies fully inside the unique local block `fc00::/7` (an Amazon-provided VPC IPv6 block is `/56`, a subnet `/64`) |
@@ -66,7 +66,20 @@ inside a name element:
    forms), and `spring.profiles.*` by prefix, `(?i)^spring[._-]?profiles([._-]|$)`
    (active, include, default, `group.*`, indexed forms). The chart renders no
    config import, and `SPRING_PROFILES_ACTIVE` from `kafka.runtime` is the only
-   profile.
+   profile. `spring.main.*` by prefix, `(?i)^spring[._-]?main([._-]|$)`
+   (`lazy-initialization`, `sources`, `allow-bean-definition-overriding`,
+   `allow-circular-references`, `web-application-type`, `banner-mode`,
+   `cloud-platform`, `keep-alive`, indexed forms such as
+   `SPRING_MAIN_SOURCES_0_`): Spring Boot 3.3.6 binds it onto the
+   `SpringApplication` after the environment is prepared, over what the
+   service's code set, in every relaxed spelling (`SPRING_MAIN_LAZYINITIALIZATION`,
+   `SPRING_MAIN_LAZY_INITIALIZATION`, `spring.main.lazyInitialization`,
+   `spring.ma_in.lazy-initialization` and `spring[main].lazy-initialization`
+   all set `lazy-initialization`). `lazy-initialization` moves a check made
+   when a bean is created (a TLS assertion on the connection pool) from
+   startup to first use, `sources` loads further bean definitions (a class,
+   a package or an XML file) and `allow-bean-definition-overriding` lets them
+   replace the service's datasource or Kafka beans. The chart sets none.
 2. JVM options (`fbx.isJvmOptionsName`: `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`,
    `_JAVA_OPTIONS`, and the chart's `javaToolOptions`; `fbx.validateJvmOptions`):
    the value must not mention `datasource`, `flyway`, `liquibase`, `r2dbc`,
@@ -77,6 +90,10 @@ inside a name element:
    `${KAFKA_TLS_CA}` before the environment does), `mongodb`
    (`-Dspring.data.mongodb.*`, and `-DMONGODB_URI` would resolve the
    DocumentDB services' `${MONGODB_URI}` before the Secret does),
+   `spring.main` (`-Dspring.main.lazy-initialization`, `-Dspring.main.sources`),
+   `sasl`, `jaas`, `java.security.auth` (`-Djava.security.auth.login.config`
+   names a JVM-wide JAAS file; the Kafka client uses its `KafkaClient` entry
+   when a client has no `sasl.jaas.config`),
    `java.security.properties`, `jdk.tls` or `hostname verification`, also
    once every character other than `[a-z0-9]` is removed (with and without
    white space), so `-Dspring..config.import`, `-Dspring.[profiles].active`,
@@ -139,14 +156,31 @@ inside a name element:
    and `spring.kafka[.<client>].properties.ssl.*` (the raw client properties
    `ssl.truststore.location`, `ssl.keystore.type`, ...). The one name under
    these prefixes that stays allowed is `ssl.endpoint.identification.algorithm`
-   (value-checked above); `security.protocol` is not under `ssl`, and other
-   `spring.kafka[.<client>].properties.*` names (`sasl.*` for MSK IAM) are
-   not refused. With Spring Boot 3.3.6, `SPRING_KAFKA_SSL_TRUST_STORE_LOCATION`,
+   (value-checked above); `security.protocol` is not under `ssl`. With
+   Spring Boot 3.3.6, `SPRING_KAFKA_SSL_TRUST_STORE_LOCATION`,
    `SPRING_KAFKA_SSL_TRUSTSTORELOCATION`, `spring.kafka.s-sl.trust-store-location`,
    `spring.kafka.s_sl.trust-store-location` and
    `SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION` all reach the
    client's `ssl.truststore.location` (`SPRING_KAFKA_SSL_TRUSTSTORE_LOCATION`
    binds nothing; it is refused with the rest).
+   SASL and JAAS names (`fbx.overrideNameReason`), refused on every route
+   whatever `kafka.runtime` is: names that match `(?i)^spring[._-]?kafka[._-]`
+   and continue with an optional `<client>` element, an optional
+   `properties` element and `sasl`, or with `jaas`, with no boundary after
+   either word, that is `spring.kafka[.<client>].properties.sasl.*`
+   (`sasl.jaas.config`, `sasl.mechanism`, `sasl.client.callback.handler.class`,
+   `sasl.login.callback.handler.class`, ...), which reach the consumer,
+   producer, admin and streams client config and can replace the client's
+   login module, mechanism or callback handlers, and `spring.kafka.jaas.*`
+   (`enabled`, `login-module`, `control-flag`, `options.*`), with which
+   Spring Boot installs a JVM-wide `KafkaClient` JAAS login module. The
+   services take all of them from the `kafka-msk` profile in the image
+   (Amazon MSK IAM), so no `sasl.*` name stays allowed; with no boundary
+   after `sasl`, a concatenated name such as
+   `SPRING_KAFKA_PROPERTIES_SASLJAASCONFIG` (which Spring passes to the
+   client as the unknown key `sasljaasconfig`) is refused too. Other
+   `spring.kafka[.<client>].properties.*` names (outside `ssl.*` and
+   `sasl.*`) are not refused.
    Secret-only names (`fbx.validateSecretNames`, `fbx.secretOnlyName`):
    `KAFKA_TLS_CERT`, `KAFKA_TLS_KEY` and `KAFKA_TLS_CA` hold the PEM client
    certificate, key and cluster CA that the `kafka-strimzi` profile reads as
@@ -346,12 +380,13 @@ editing it:
    the `set:` paths: helm-unittest suites `database_ca_test.yaml`,
    `database_override_names_test.yaml`, `datasource_tls_names_test.yaml`,
    `db_url_test.yaml`, `spring_config_profiles_test.yaml`,
-   `relaxed_binding_names_test.yaml`, `property_reading_names_test.yaml`,
-   `ssl_bundle_names_test.yaml`,
+   `spring_main_names_test.yaml`, `relaxed_binding_names_test.yaml`,
+   `property_reading_names_test.yaml`, `ssl_bundle_names_test.yaml`,
    `tls_enforce_switch_test.yaml`, `jvm_options_test.yaml`,
    `env_sources_test.yaml`, `key_injection_test.yaml`,
    `variable_references_test.yaml`, `kafka_protocol_test.yaml`,
-   `kafka_client_tls_names_test.yaml`, `kafka_runtime_profiles_test.yaml`,
+   `kafka_client_tls_names_test.yaml`, `kafka_sasl_names_test.yaml`,
+   `kafka_runtime_profiles_test.yaml`,
    `kafka_runtime_required_test.yaml` and `documentdb_names_test.yaml`
    (`template_interpolation_test.yaml` covers this chart's own templates; a
    service chart writes the same cases for its templates); and the
@@ -360,7 +395,8 @@ editing it:
    (DB_URL, datasource, config and profile names, SSL
    bundle, `DB_SSL_ROOT_CERT`, JVM options, `$(VAR)` and `${...}`,
    `extraEnvFrom`, the off switch, Kafka protocol and Kafka client TLS
-   names, DocumentDB names, `_` inside an element, the database CA mount),
+   names, DocumentDB names, `_` inside an element, `spring.main.*` and Kafka
+   SASL / JAAS names, the database CA mount),
    keeping each case's `--expect`
    pattern so that a case cannot pass because the render failed for another
    reason. The digest and the checks of step 1 prove the copy and the call
@@ -436,10 +472,14 @@ in any spelling, as a `config` key, an `extraEnv` name (`value` or
 is refused by name, whatever it carries. The chart also refuses every
 `spring.profiles.*` name it does not render itself, so `local` (or a
 `spring.profiles.default` / `spring.profiles.group.*` that leads to it) cannot
-be switched on through the chart. For customer, risk and compliance, whose
-guards require `DB_SSL_ROOT_CERT` and compare `sslrootcert` with it, the chart
-refuses that name (and every `ssl[._-]?root[._-]?cert` name) on every route,
-so an `extraEnv` entry cannot replace the chart's own value.
+be switched on through the chart, and every `spring.main.*` name and
+`-Dspring.main.*` option: `spring.main.lazy-initialization` would move a
+check made when a bean is created, such as the `HikariPoolTlsAssertion` on
+the connection pool, from startup to the moment the pool is first needed.
+For customer, risk and compliance, whose guards require `DB_SSL_ROOT_CERT`
+and compare `sslrootcert` with it, the chart refuses that name (and every
+`ssl[._-]?root[._-]?cert` name) on every route, so an `extraEnv` entry cannot
+replace the chart's own value.
 
 That covers this chart and every service chart that vendors its guard. A
 service chart vendors `fbx.guard` from a commit of this repository that its CI
@@ -462,7 +502,10 @@ Jobs and the products-catalog history guard CronJob and Job call the guard
 first, as every Deployment does), and pass `databaseCa.configMapName` from the
 value their templates mount wherever their adapter enables `databaseCa` (the
 twelve charts with a PostgreSQL database; corporate-data, banking-metadata and
-retail-data, on DocumentDB, pass `enabled: false`).
+retail-data, on DocumentDB, pass `enabled: false`). The guard here has
+since added the `spring.main.*` and Kafka SASL / JAAS refusals (name rules 1
+and 7, and the `spring.main`, `sasl`, `jaas` and `java.security.auth` JVM
+option words); the service charts run them from their next re-vendor on.
 
 JVM options: the chart checks `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and
 `_JAVA_OPTIONS`, the variables the JVM reads itself (`fbx.isJvmOptionsName`).

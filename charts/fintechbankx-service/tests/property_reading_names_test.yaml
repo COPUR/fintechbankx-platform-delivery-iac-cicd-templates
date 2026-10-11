@@ -239,7 +239,7 @@ tests:
       config:
         app.feature_flags.new_ui: "true"
         logging.level.com_example_loan: DEBUG
-        spring.kafka.properties.sasl.mechanism: AWS_MSK_IAM
+        spring.kafka.consumer.max_poll_records: "100"
       extraEnv:
         - name: SPRING_DATASOURCE_USERNAME
           value: loan_lifecycle_app

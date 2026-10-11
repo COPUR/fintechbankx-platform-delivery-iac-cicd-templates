@@ -15,9 +15,9 @@ tests:
   # fbx.validateJvmOptions refuses a value that mentions any refused name
   # (other suites cover datasource, spring.config, spring.profiles,
   # fintechbankx.tls, application.json, ssl, security.protocol,
-  # endpoint.identification) or reads options or security properties from a
-  # file, and the names need a literal extraEnv value and may not come from
-  # the ExternalSecret.
+  # endpoint.identification, spring.main, sasl, jaas and java.security.auth)
+  # or reads options or security properties from a file, and the names need
+  # a literal extraEnv value and may not come from the ExternalSecret.
   - it: rejects JDK_JAVA_OPTIONS with a quoted '@' argument file
     template: templates/deployment.yaml
     set:

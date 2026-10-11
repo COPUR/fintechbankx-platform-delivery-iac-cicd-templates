@@ -174,6 +174,28 @@ must_fail "externalSecret.extraData spring.data.mongo_db.host ('_' inside an ele
   --set-string 'externalSecret.extraData[0].property=host'
 must_fail "config spring.pro_files.active ('_' inside an element binds as profiles)" \
   --expect 'config.spring.pro_files.active is not allowed' --set-string 'config.spring\.pro_files\.active=local'
+# spring.main.* is bound onto the SpringApplication (lazy-initialization moves
+# a check made when a bean is created from startup to first use, sources and
+# allow-bean-definition-overriding load and replace beans), and Kafka SASL /
+# JAAS names replace the client's login module; both families are refused by
+# prefix on every route, -Djava.security.auth.login.config in JVM options.
+must_fail "config SPRING_MAIN_LAZY_INITIALIZATION (spring.main.* by prefix)" \
+  --expect 'config.SPRING_MAIN_LAZY_INITIALIZATION is not allowed: a spring.main.\* property' \
+  --set-string 'config.SPRING_MAIN_LAZY_INITIALIZATION=true'
+must_fail "extraEnv spring.main.sources from valueFrom" --expect 'extraEnv must not set spring.main.sources' \
+  --set 'extraEnv[0].name=spring.main.sources' --set-string 'extraEnv[0].valueFrom.configMapKeyRef.name=other' \
+  --set-string 'extraEnv[0].valueFrom.configMapKeyRef.key=sources'
+must_fail "javaToolOptions with -Dspring.main.lazy-initialization" --expect 'javaToolOptions must not mention .*spring.main' \
+  --set-string 'javaToolOptions=-Dspring.main.lazy-initialization=true'
+must_fail "config SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG (Kafka SASL login module)" \
+  --expect 'config.SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG is not allowed: a Kafka SASL or JAAS setting' \
+  --set-string 'config.SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG=x.LoginModule required;'
+must_fail "externalSecret.data SPRING_KAFKA_JAAS_ENABLED (JVM-wide JAAS login module)" \
+  --expect 'externalSecret.data must not materialise SPRING_KAFKA_JAAS_ENABLED' \
+  --set-string 'externalSecret.data[0].secretKey=SPRING_KAFKA_JAAS_ENABLED' --set-string 'externalSecret.data[0].property=jaas'
+must_fail "javaToolOptions with -Djava.security.auth.login.config (JVM-wide JAAS file)" \
+  --expect 'javaToolOptions must not mention .*java.security.auth' \
+  --set-string 'javaToolOptions=-Djava.security.auth.login.config=/tmp/client.conf'
 # The database CA mount is pinned (fbx.validateDatabaseCa): /app is the image
 # WORKDIR and Spring Boot loads optional:file:./config/application.yml, and
 # another ConfigMap or key replaces the database trust anchor.
@@ -262,6 +284,38 @@ vendored_must_fail "additionalEnv spring.kafka.consumer.s_sl.trust-store-type fr
   --expect 'extraEnv must not set spring.kafka.consumer.s_sl.trust-store-type' \
   --set 'additionalEnv[0].name=spring.kafka.consumer.s_sl.trust-store-type' \
   --set-string 'additionalEnv[0].valueFrom.secretKeyRef.name=other' --set-string 'additionalEnv[0].valueFrom.secretKeyRef.key=type'
+vendored_must_fail "env SPRING_MAIN_LAZYINITIALIZATION (spring.main.*)" \
+  --expect 'config.SPRING_MAIN_LAZYINITIALIZATION is not allowed: a spring.main.\* property' \
+  --set-string 'env.SPRING_MAIN_LAZYINITIALIZATION=true'
+vendored_must_fail "env spring.main.sources (an XML file of bean definitions)" \
+  --expect 'config.spring.main.sources is not allowed: a spring.main.\* property' \
+  --set-string 'env.spring\.main\.sources=file:/tmp/beans.xml'
+vendored_must_fail "additionalEnv spring.ma_in.allow-bean-definition-overriding from valueFrom ('_' inside an element)" \
+  --expect 'extraEnv must not set spring.ma_in.allow-bean-definition-overriding' \
+  --set 'additionalEnv[0].name=spring.ma_in.allow-bean-definition-overriding' \
+  --set-string 'additionalEnv[0].valueFrom.secretKeyRef.name=other' --set-string 'additionalEnv[0].valueFrom.secretKeyRef.key=abdo'
+vendored_must_fail "secret key SPRING_MAIN_SOURCES_0_ (indexed spring.main.sources)" \
+  --expect 'externalSecret.data must not materialise SPRING_MAIN_SOURCES_0_' \
+  --set 'secrets.keys[0].secretKey=SPRING_DATASOURCE_PASSWORD' --set-string 'secrets.keys[0].property=password' \
+  --set 'secrets.keys[1].secretKey=SPRING_MAIN_SOURCES_0_' --set-string 'secrets.keys[1].property=sources'
+vendored_must_fail "jvmOptions with -Dspring[main].lazy-initialization" --expect 'javaToolOptions must not mention .*mongodb, spring.main' \
+  --set-string 'jvmOptions=-Dspring[main].lazy-initialization=true'
+vendored_must_fail "env SPRING_KAFKA_PROPERTIES_SASL_MECHANISM (Kafka SASL)" \
+  --expect 'config.SPRING_KAFKA_PROPERTIES_SASL_MECHANISM is not allowed: a Kafka SASL or JAAS setting' \
+  --set-string 'env.SPRING_KAFKA_PROPERTIES_SASL_MECHANISM=PLAIN'
+vendored_must_fail "env SPRING_KAFKA_PROPERTIES_SASLJAASCONFIG (no boundary after sasl)" \
+  --expect 'config.SPRING_KAFKA_PROPERTIES_SASLJAASCONFIG is not allowed: a Kafka SASL or JAAS setting' \
+  --set-string 'env.SPRING_KAFKA_PROPERTIES_SASLJAASCONFIG=x'
+vendored_must_fail "additionalEnv spring.kafka.consumer.properties[sasl.jaas.config] (value)" \
+  --expect 'extraEnv must not set spring.kafka.consumer.properties\[sasl.jaas.config\]' \
+  --set-json 'additionalEnv=[{"name": "spring.kafka.consumer.properties[sasl.jaas.config]", "value": "x.LoginModule required;"}]'
+vendored_must_fail "secret key spring.kafka.jaas.options.password (JAAS login module option)" \
+  --expect 'externalSecret.data must not materialise spring.kafka.jaas.options.password' \
+  --set 'secrets.keys[0].secretKey=SPRING_DATASOURCE_PASSWORD' --set-string 'secrets.keys[0].property=password' \
+  --set 'secrets.keys[1].secretKey=spring.kafka.jaas.options.password' --set-string 'secrets.keys[1].property=kafka_password'
+vendored_must_fail "jvmOptions with -Djava.security.auth.login.config (JVM-wide JAAS file)" \
+  --expect 'javaToolOptions must not mention .*java.security.auth' \
+  --set-string 'jvmOptions=-Djava.security.auth.login.config=/tmp/client.conf'
 vendored_must_fail "databaseCaBundle.mountPath /app/config with key application.yml (a Spring Boot config file)" \
   --expect 'databaseCa.mountPath must be /etc/fintechbankx/rds-ca' \
   --set-string 'databaseCaBundle.mountPath=/app/config' --set-string 'databaseCaBundle.key=application.yml' \
