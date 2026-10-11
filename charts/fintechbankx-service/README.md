@@ -107,8 +107,8 @@ inside a name element:
    `spring.datasource.hikari.data-source-properties.*`, `REPORTING_JDBCURL`,
    `PGJDBC_SSL_FACTORY`, `PGSSLROOTCERT`, `OPF_DB_SSL_MODE`). `DB_SSL_ROOT_CERT`
    is rendered by the chart from `databaseCa`; an `extraEnv` entry of that name
-   comes later in the env list and would replace it (an empty value turns the
-   customer, risk and compliance guards off).
+   comes later in the env list and would replace it (customer, risk and
+   compliance check every `sslrootcert` against it).
 6. `DB_URL` (`fbx.isDbUrlName`: `dburl` once lower-cased and stripped of every
    character other than `[a-z0-9]`) only as the `config` key `DB_URL`; a
    non-empty `config.DB_URL` must be a `jdbc:[<wrapper>:]postgresql:` URL, and
@@ -394,69 +394,69 @@ What guardrail 4a asks the assertion to cover:
 - Kafka: the clients use `security.protocol` `SASL_SSL` (Amazon MSK IAM,
   profile `kafka-msk`) or `SSL` (Strimzi mutual TLS, profile `kafka-strimzi`);
   `PLAINTEXT`, `SASL_PLAINTEXT` and an unset protocol stop startup, and
-  `ssl.endpoint.identification.algorithm` stays `https` (the Kafka client
-  default; no service turns it off, none checks it explicitly yet).
+  `ssl.endpoint.identification.algorithm` stays `https`, the Kafka client
+  default (an empty or `none` value turns broker host name verification off).
 - A test starts the context, or runs the check, with a non-verifying value
   (`sslmode=require`, `security.protocol=PLAINTEXT`) and expects the failure,
   so the assertion itself is proven red first.
 
-**Status**, as checked against the services' open pull request branches in
-October 2026 (what each one checks in detail is in its own repository):
+A new service adds the assertion in the shape of the first row below:
+`fintechbankx.tls.enforce: true` in `application.yml`, `false` only in
+`application-local.yml` (profile `local`) and in tests, and the Kafka profiles
+in `application-kafka-msk.yml` and `application-kafka-strimzi.yml`.
+
+**Status** on 2026-10-11, checked against the services' open pull request
+heads (what each one checks in detail is in its own repository):
 
 | Service repositories | Assertion | Off switch | Kafka profiles |
 |---|---|---|---|
-| `fintechbankx-lendingpayments-loan-lifecycle-core`, `fintechbankx-lendingpayments-payment-orchestration-initiation-settlement`, `-bulk-orchestration`, `-recurring-mandates`, `-request-to-pay` | startup check before any datasource or Kafka bean, on by default (`fintechbankx.tls.enforce: true` in `application.yml`): datasource `sslmode=verify-full` and, with Kafka configured, `SASL_SSL` or `SSL` | `fintechbankx.tls.enforce: false`, set only by `application-local.yml` (profile `local`) and the test resources | `application-kafka-msk.yml`, `application-kafka-strimzi.yml` |
-| `fintechbankx-customer-profile-kyc-core`, `fintechbankx-riskcompliance-risk-decisioning-core`, `fintechbankx-riskcompliance-compliance-evidence-core` | `DatabaseTlsGuard` and `KafkaTlsGuard`, both registered whenever `DB_SSL_ROOT_CERT` is set (this chart always sets it while `databaseCa.enabled`), whether the outbox relay is on or off: the relay flag gates publishing, not the checks. `KafkaTlsGuard` reads the producer's effective `security.protocol` and accepts `SASL_SSL` or `SSL` in all three services, so `kafka.runtime: msk` and `strimzi` both start them | none: the guards skip when `DB_SSL_ROOT_CERT` is unset (local runs, tests); no `fintechbankx.tls.enforce`, no `local` profile file | `kafka-msk`, `kafka-strimzi` (profile files in customer, profile documents in `application.yml` in risk and compliance) |
-| `fintechbankx-openfinance-*` (consent-auth-service, corporate-data-business-financial, open-data-atm-directory, open-data-products-catalog, payee-metadata-banking-metadata, payee-metadata-payee-verification, retail-data-personal-financial) | `AwsTransportSecurityConfiguration` (products-catalog: `DatabaseTlsEnvironmentPostProcessor`), active under the `aws` profile that the services' own charts render (corporate-data, banking-metadata and retail-data also under `kafka-msk` / `kafka-strimzi`); `SASL_SSL` or `SSL` | none: not activating `aws` (local runs, tests) | `application-kafka-msk.yml`, `application-kafka-strimzi.yml` where the service uses Kafka |
+| `fintechbankx-lendingpayments-loan-lifecycle-core`, `fintechbankx-lendingpayments-payment-orchestration-initiation-settlement`, `-bulk-orchestration`, `-recurring-mandates`, `-request-to-pay` | startup check before any datasource or Kafka bean, on by default (`fintechbankx.tls.enforce: true` in `application.yml`): datasource `sslmode=verify-full` and, with Kafka configured, `SASL_SSL` or `SSL` | `fintechbankx.tls.enforce: false`, set only by `application-local.yml` (profile `local`) and tests | `application-kafka-msk.yml`, `application-kafka-strimzi.yml` |
+| `fintechbankx-customer-profile-kyc-core`, `fintechbankx-riskcompliance-risk-decisioning-core`, `fintechbankx-riskcompliance-compliance-evidence-core` | `DatabaseTlsGuard` and `KafkaTlsGuard`, on by default (in code; `application.yml` sets no switch), before any datasource, Flyway or Kafka bean: while on, `DB_SSL_ROOT_CERT` is required (this chart sets it while `databaseCa.enabled`), the datasource URL, and the Hikari and Flyway URLs when set, carry `sslmode=verify-full` with `sslrootcert` equal to it, and the producer's effective `security.protocol` is `SASL_SSL` or `SSL`, outbox relay on or off | the Spring profile `local` by its name (no `application-local.yml` is shipped) or `fintechbankx.tls.enforce=false`, set in test code only | `kafka-msk`, `kafka-strimzi` (profile files in customer, profile documents in `application.yml` in risk and compliance) |
+| `fintechbankx-openfinance-*` (consent-auth-service, corporate-data-business-financial, open-data-atm-directory, open-data-products-catalog, payee-metadata-banking-metadata, payee-metadata-payee-verification, retail-data-personal-financial) | `AwsTransportSecurityConfiguration` (products-catalog: `DatabaseTlsEnvironmentPostProcessor`; consent-auth-service, atm-directory, payee-verification and products-catalog add `HikariPoolTlsAssertion` for the pool's URL), on by default whatever the profiles (`fintechbankx.tls.enforce: true` in `application.yml`): PostgreSQL URLs `sslmode=verify-full`, DocumentDB (corporate-data, banking-metadata, retail-data) over TLS with the vendored Amazon RDS CAs, and `SASL_SSL` or `SSL` where the service uses Kafka; consent-auth-service and payee-verification also refuse an empty or `none` `ssl.endpoint.identification.algorithm` | `fintechbankx.tls.enforce: false`, set only by `application-local.yml` (profile `local`) and test resources | `application-kafka-msk.yml`, `application-kafka-strimzi.yml` in the five that use Kafka (atm-directory and products-catalog do not) |
 
-Every other service, and every new one, is to add the assertion in the first
-shape (`fintechbankx.tls.enforce`, `application-local.yml`,
-`application-kafka-msk.yml`, `application-kafka-strimzi.yml`). Moving the services
-in the second and third rows to it is proposed, not started: none of their
-branches has it, so for them the off switch is the absence of
-`DB_SSL_ROOT_CERT` or of the `aws` profile. Consequences on this chart today:
-
-- It renders only the `kafka-*` profile, never `aws`, so an open-finance
-  assertion gated on `aws` alone does not run here.
-- It sets `DB_SSL_ROOT_CERT` only while `databaseCa.enabled`; with
-  `databaseCa.enabled: false` customer, risk and compliance register neither
-  guard. Those three keep the default `true`.
+So on those heads every assertion runs whatever profile this chart renders
+(`kafka-msk` or `kafka-strimzi`, never `local`), and the open-finance services
+have the first row's shape under their own class names. This chart sets
+`DB_SSL_ROOT_CERT` only while `databaseCa.enabled`: with `databaseCa.enabled:
+false` customer, risk and compliance refuse to start, so they, like every
+service with a PostgreSQL database, keep the default `true`.
 
 The assertion's off switch is the property `fintechbankx.tls.enforce` (env
-`FINTECHBANKX_TLS_ENFORCE`), set by the `local` profile and test resources
-only. This chart refuses it, and every other `fintechbankx.tls.*` name
+`FINTECHBANKX_TLS_ENFORCE`) set to `false`, which only the `local` profile and
+tests do (in customer, risk and compliance the profile name itself turns the
+guards off). This chart refuses it, and every other `fintechbankx.tls.*` name
 in any spelling, as a `config` key, an `extraEnv` name (`value` or
 `valueFrom`), an ExternalSecret key or inside JVM options; `SPRING_APPLICATION_JSON`
 is refused by name, whatever it carries. The chart also refuses every
 `spring.profiles.*` name it does not render itself, so `local` (or a
 `spring.profiles.default` / `spring.profiles.group.*` that leads to it) cannot
 be switched on through the chart. For customer, risk and compliance, whose
-guards run while `DB_SSL_ROOT_CERT` is set, the chart refuses that name (and
-every `ssl[._-]?root[._-]?cert` name) on every route, so an `extraEnv` entry
-cannot replace the chart's own value with an empty one.
+guards require `DB_SSL_ROOT_CERT` and compare `sslrootcert` with it, the chart
+refuses that name (and every `ssl[._-]?root[._-]?cert` name) on every route,
+so an `extraEnv` entry cannot replace the chart's own value.
 
-That covers this chart and every service chart that vendors its guard. As
-checked in October 2026, all 15 service charts (customer, risk, compliance,
-the seven open-finance services, loan-lifecycle and the four payment services)
-vendor `fbx.guard` from commit `a4f0072` of this repository byte for byte
-(sha256 `1fd684735383301baf3052c5d8978dd86edee1ac1c66ebfb944a8a6a166f4c92`; in
-the customer, risk, compliance and open-finance charts below a provenance
-header) and run it through an adapter, an inline dict or a define of the chart,
-before their Deployment renders. A service chart that does not vendor the guard
-depends on its own chart's checks. Each service's CI is to run
-[`scripts/ci/verify-vendored-guard.sh`](../../scripts/ci/verify-vendored-guard.sh)
-with its pinned digest ([Vendoring the guard](#vendoring-the-guard), step 1):
-with the `a4f0072` digest the loan-lifecycle and payment charts pass every
-check; the ten others fail check (a) until the header moves out of the file
-into the CI step, and the consent migration Job and the products history guard
-CronJob and Job do not call the guard yet (check (c)). When this chart's guard
-changes, as it has since `a4f0072` (Kafka client TLS names, `KAFKA_TLS_*` and
-`MONGODB_URI` only from a Secret, `spring.data.mongodb.*`, `kafka` and
-`mongodb` in JVM options, the property reading of names with `_` inside an
-element, the database CA mount pinned to `rds-ca-bundle`,
-`global-bundle.pem` and `/etc/fintechbankx/rds-ca`), every service re-vendors
-the file, passes `databaseCa.configMapName` from its adapter (required from
-this change on while `databaseCa.enabled`) and re-pins its digest and commit; until then it runs the `a4f0072` rules.
+That covers this chart and every service chart that vendors its guard. A
+service chart vendors `fbx.guard` from a commit of this repository that its CI
+pins ([Vendoring the guard](#vendoring-the-guard)): the file copied whole and
+without a header, called through an adapter, an inline dict or a define of the
+chart before any workload template writes anything, and its CI runs
+[`scripts/ci/verify-vendored-guard.sh`](../../scripts/ci/verify-vendored-guard.sh),
+copied from the same commit, with the pinned sha256. When this chart's guard
+changes, every service re-vendors the file, re-pins the commit and the digest
+and ports the new negative cases (step 4); until it has, its chart runs the
+rules of the commit it pins, so a guard change here protects a service only
+from its next re-pin on. A service chart that does not vendor the guard depends
+on its own chart's checks. As checked on 2026-10-11 at their open pull request
+heads, all 15 service charts (customer, risk, compliance, the seven
+open-finance services, loan-lifecycle and the four payment services) vendor the
+file from commit `6b6c317` (sha256
+`8ba2e4a11ead019c25bf0a01e4fe4bbabb6fef0e1980e5fa828ccb9f5673f8ba`) without a
+header, pass checks (a) to (c) of the script with that digest (the migration
+Jobs and the products-catalog history guard CronJob and Job call the guard
+first, as every Deployment does), and pass `databaseCa.configMapName` from the
+value their templates mount wherever their adapter enables `databaseCa` (the
+twelve charts with a PostgreSQL database; corporate-data, banking-metadata and
+retail-data, on DocumentDB, pass `enabled: false`).
 
 JVM options: the chart checks `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and
 `_JAVA_OPTIONS`, the variables the JVM reads itself (`fbx.isJvmOptionsName`).
