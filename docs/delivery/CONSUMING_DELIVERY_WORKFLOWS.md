@@ -120,8 +120,9 @@ Pinning (supply chain):
     with that service's own role in its own database and schema), then
     `seed-command`, then `test-command`, all with the same `FBX_*` variables.
   - `service-env`: `<service>__<VAR>=<value>` lines (e.g.
-    `payment-initiation-settlement-service__ACCOUNTS_ADAPTER=in-memory`);
-    credential-like and identity/database wiring names are rejected.
+    `payment-initiation-settlement-service__OUTBOX_RELAY_ENABLED=true`);
+    credential-like and identity/datastore wiring names are rejected
+    (including `MONGODB_*`, `FLYWAY_*`, `SERVICE_CLIENT_*`, `REDIS_URL`).
 - `container-image`: `boot-jar-task` for Dockerfiles that copy `build/libs`;
   leave empty for multi-stage Dockerfiles (all five extracted services).
   `trivy-severity` defaults to `CRITICAL,HIGH` with `ignore-unfixed`; reviewed

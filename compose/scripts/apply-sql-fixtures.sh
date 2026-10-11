@@ -7,9 +7,10 @@
 # healthy, so Flyway in the service has created the schema's tables.
 #
 # Fixture list lines: <service>=<path>; <service> is a services.tsv key or
-# service id, <path> is relative to --base-dir (the caller workspace) and must
-# stay inside it. Blank lines and # comments are ignored. Lines are applied in
-# order. --check validates the list without connecting.
+# service id of a postgresql row (a MongoDB service is refused), <path> is
+# relative to --base-dir (the caller workspace) and must stay inside it.
+# Blank lines and # comments are ignored. Lines are applied in order. --check
+# validates the list without connecting.
 #
 # Connection: FBX_PG_HOST (default 127.0.0.1) / FBX_PG_PORT (default 15432,
 # the compose port). Without a psql client on PATH, it runs psql inside the
@@ -40,11 +41,13 @@ die() { echo "[sql-fixtures] ERROR: $*" >&2; exit 1; }
 [ -r "$services" ] || die "services registry not found: $services"
 base_real="$(cd "$base_dir" && pwd -P)" || die "base dir not found: $base_dir"
 
-declare -A row=()
-while IFS=$'\t' read -r key service_id _ database schema role cred_var _ _; do
+declare -A row=() store_of=()
+while IFS=$'\t' read -r key service_id _ database schema role cred_var _ _ store _; do
   [[ -z "$key" || "$key" == \#* ]] && continue
   row["$key"]="$key"$'\t'"$database"$'\t'"$schema"$'\t'"$role"$'\t'"$cred_var"
   row["$service_id"]="${row[$key]}"
+  store_of["$key"]="$store"
+  store_of["$service_id"]="$store"
 done < "$services"
 
 plan=()
@@ -56,6 +59,8 @@ while IFS= read -r line || [ -n "$line" ]; do
   [[ "$line" =~ ^([a-z0-9-]+)=(.+)$ ]] || die "line $n: expected <service>=<path>: $line"
   svc="${BASH_REMATCH[1]}"; rel="${BASH_REMATCH[2]}"
   [ -n "${row[$svc]+set}" ] || die "line $n: service $svc is not in services.tsv"
+  [ "${store_of[$svc]}" = postgresql ] \
+    || die "line $n: service $svc is not a PostgreSQL service (store ${store_of[$svc]:-unset}; MongoDB services take no SQL fixtures)"
   [[ "$rel" != /* ]] || die "line $n: path must be relative to the caller workspace: $rel"
   [[ "/$rel/" != */../* ]] || die "line $n: fixture must stay inside the caller workspace: $rel"
   [ -f "$base_real/$rel" ] || die "line $n: fixture not found: $rel"

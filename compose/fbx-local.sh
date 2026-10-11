@@ -12,13 +12,14 @@
 #   compose/fbx-local.sh down                  stop and delete containers and volumes
 #   compose/fbx-local.sh reset                 lighter reset between parity runs: delete every container
 #                                              except the Kafka broker, and the PostgreSQL volume (Keycloak
-#                                              realm and users, service databases); keeps .env, .cache and
-#                                              Kafka topics; then run `up` again
+#                                              realm and users, service databases; MongoDB data goes with
+#                                              its container); keeps .env, .cache and Kafka topics; then
+#                                              run `up` again
 #   compose/fbx-local.sh config [profile ...]  docker compose config -q
 #   compose/fbx-local.sh compose [args ...]    any docker compose command with the right files
 #
-# Profiles: lending, payments, customer, riskcompliance, services, monolith, observability,
-# parity-fixtures (needs `init --parity-fixtures`).
+# Profiles: lending, payments, customer, riskcompliance, openfinance, services, monolith,
+# observability, parity-fixtures (needs `init --parity-fixtures`).
 # Service images default to fintechbankx/<service>:local; override with the
 # FBX_IMAGE_* / FBX_MONOLITH_IMAGE variables (see compose/services.tsv).
 set -euo pipefail
@@ -26,7 +27,7 @@ set -euo pipefail
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cmd="${1:-help}"; shift || true
 service_env_override="$dir/.cache/service-env.override.json"
-all_profiles="lending payments customer riskcompliance services monolith observability parity-fixtures"
+all_profiles="lending payments customer riskcompliance openfinance services monolith observability parity-fixtures"
 
 dc() {
   local args=(compose --project-directory "$dir" --env-file "$dir/.env" -f "$dir/docker-compose.yml")
@@ -74,5 +75,5 @@ case "$cmd" in
     if [[ " $* " == *" parity-fixtures "* ]]; then ensure_env --parity-fixtures; else ensure_env; fi
     FBX_PROFILES="$*" dc config -q ;;
   compose) dc "$@" ;;
-  *) sed -n '2,23p' "$0"; [ "$cmd" = help ] ;;
+  *) sed -n '2,24p' "$0"; [ "$cmd" = help ] ;;
 esac

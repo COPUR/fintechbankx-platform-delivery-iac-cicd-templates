@@ -219,7 +219,18 @@ test("service-env rejects unknown services, bad names and credential overrides",
     ["payment-initiation-settlement-service__OIDC_ISSUER_URI=http://evil", /credential/],
     ["customer-profile-kyc-service__DB_USERNAME=postgres", /credential/],
     ["risk-decisioning-service__API_TOKEN=x", /credential/],
-    ["risk-decisioning-service__SIGNING_KEY=x", /credential/]
+    ["risk-decisioning-service__SIGNING_KEY=x", /credential/],
+    // datastore, migration and outbound-client wiring
+    ["customer-profile-kyc-service__MONGODB_URI=mongodb://evil:27017/x", /credential/],
+    ["customer-profile-kyc-service__MONGODB_DATABASE=x", /credential/],
+    ["customer-profile-kyc-service__SPRING_DATA_MONGODB_URI=mongodb://evil:27017/x", /credential/],
+    ["risk-decisioning-service__FLYWAY_URL=jdbc:postgresql://evil:5432/x", /credential/],
+    ["risk-decisioning-service__SPRING_FLYWAY_URL=jdbc:postgresql://evil:5432/x", /credential/],
+    ["loan-lifecycle-service__SERVICE_CLIENT_ID=svc-other", /credential/],
+    ["payment-initiation-settlement-service__SERVICE_CLIENT_REGISTRATION=x", /credential/],
+    ["compliance-evidence-service__REDIS_URL=redis://evil:6379", /credential/],
+    ["compliance-evidence-service__SPRING_DATA_REDIS_HOST=evil", /credential/],
+    ["customer-profile-kyc-service__DATABASE_CA_BUNDLE=ca-bundle.pem", /credential/]
   ]) {
     const { res } = renderServiceEnv([line]);
     assert.notEqual(res.status, 0, `${line} must be rejected`);
@@ -229,13 +240,15 @@ test("service-env rejects unknown services, bad names and credential overrides",
 
 test("docker compose config applies the service-env override and the parity profile", { skip: !dockerCompose && "docker compose not available" }, () => {
   const { out } = generate(["--parity-fixtures"]);
-  const { res: r, out: override } = renderServiceEnv(["payment-initiation-settlement-service__ACCOUNTS_ADAPTER=in-memory"]);
+  const { res: r, out: override } = renderServiceEnv(["payment-initiation-settlement-service__OUTBOX_RELAY_ENABLED=true"]);
   assert.equal(r.status, 0, r.stderr);
   const base = ["compose", "--project-directory", composeDir, "--env-file", path.join(out, ".env"), "-f", composeFile];
   const env = { ...process.env, FBX_REALM_ENV_FILE: path.join(out, "realm.env") };
   let res = run("docker", [...base, "-f", override, "--profile", "payments", "--profile", "parity-fixtures", "config", "--format", "json"], { env });
   assert.equal(res.status, 0, res.stderr);
   const cfg = JSON.parse(res.stdout);
+  assert.equal(cfg.services["payment-initiation-settlement-service"].environment.OUTBOX_RELAY_ENABLED, "true");
+  // the compose defaults the override does not name stay
   assert.equal(cfg.services["payment-initiation-settlement-service"].environment.ACCOUNTS_ADAPTER, "in-memory");
   assert.ok(cfg.services["parity-fixtures-import"]);
   // Without the profile the optional dependency is dropped and config still validates.

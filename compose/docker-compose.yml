@@ -6,20 +6,25 @@
 #                   kafka (single-broker KRaft) + topic-init from the Kafka repo's catalog,
 #                   keycloak 26 + realm-import of the identity repo's realm
 #                   + admin-permissions (its fine-grained admin permissions step)
-#   profiles:       lending, payments, customer, riskcompliance, services (all five),
-#                   monolith (ELMS / monolith-oracle side by side, with redis), observability (otel-collector + jaeger),
+#   profiles:       lending (loan + customer), payments (initiation + risk + compliance + customer),
+#                   customer, riskcompliance, openfinance (mongo + mongo-init so far),
+#                   services (all five + mongo), monolith (ELMS / monolith-oracle side by side,
+#                   with redis), observability (otel-collector + jaeger),
 #                   parity-fixtures (regression parity test actors layered onto the realm, plus
 #                   parity-suite's admin permission on /customers; ephemeral/local only)
+#   one-shots:      topic-init, realm-import, admin-permissions, mongo-init and
+#                   <service>-migrate (customer, risk, compliance: Flyway before the service)
 #
 # Never start it directly: compose/fbx-local.sh fetches the platform assets into
 # .cache/, generates .env and realm.env (random dev-only credentials, git-ignored)
 # and then calls docker compose. Every credential below is `${VAR:?...}` so the
 # file cannot run with a committed default.
 #
-# Host ports bind to 127.0.0.1 only: postgres 15432, kafka 29092, keycloak 8180,
-# jaeger UI 16686, services 18010-18050, monolith 18000.
+# Host ports bind to 127.0.0.1 only: postgres 15432, mongo 37017, kafka 29092,
+# keycloak 8180, jaeger UI 16686, services 18010-18050 (services.tsv host_port),
+# monolith 18000.
 #
-# Extra per-service environment (e.g. ACCOUNTS_ADAPTER=in-memory) comes from
+# Extra per-service environment (e.g. OUTBOX_RELAY_ENABLED=true) comes from
 # the override rendered by `fbx-local.sh service-env FILE` (scripts/service-env.mjs).
 name: fintechbankx-local
 
@@ -255,6 +260,50 @@ services:
     ports:
       - "127.0.0.1:16686:16686"
 
+  # --- openfinance profile: MongoDB -------------------------------------------------
+  # Store of the services.tsv rows with store=mongodb (decision D10): MongoDB 7.0,
+  # the line the open-finance services' own CI runs (mongo:7 / mongo:7.0, no
+  # digest pinned there), so pinned here by full version tag. Root login only
+  # for mongo-init; the services get one user each, limited to their own
+  # database. No named volume: down and reset (rm -v) drop its anonymous volume
+  # with the container, like the PostgreSQL data.
+  mongo:
+    image: mongo:7.0.41
+    profiles: [openfinance, services]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: fbx-local-root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_CRED:?run compose/fbx-local.sh init}
+    ports:
+      - "127.0.0.1:37017:27017"
+    # Through the service name, not 127.0.0.1: the image's first-start init
+    # runs a temporary mongod bound to 127.0.0.1 only, which must not count.
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--host", "mongo", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  # One user per mongodb row of services.tsv with readWrite on its own
+  # database only (credential FBX_DB_CRED_* of the row); re-runnable, like
+  # topic-init. Services with store=mongodb wait for it. Lists the credential
+  # of every mongodb row (none yet).
+  mongo-init:
+    image: mongo:7.0.41
+    profiles: [openfinance, services]
+    depends_on:
+      mongo: {condition: service_healthy}
+    environment:
+      FBX_SERVICES_TSV: /fbx/services.tsv
+      FBX_MONGO_URI: mongodb://mongo:27017/admin
+      MONGO_ROOT_USER: fbx-local-root
+      MONGO_ROOT_CRED: ${MONGO_ROOT_CRED:?run compose/fbx-local.sh init}
+    volumes:
+      - ./services.tsv:/fbx/services.tsv:ro
+      - ./mongo/init:/fbx/mongo-init:ro
+    entrypoint: ["bash", "/fbx/mongo-init/10-service-databases.sh"]
+    restart: "no"
+
   # --- monolith profile -----------------------------------------------------------
   redis:
     image: redis:7.4.1-alpine
@@ -268,9 +317,23 @@ services:
       timeout: 3s
       retries: 20
 
+  # --- service profiles ---------------------------------------------------------------
+  # Wiring checked against each service's application.yml at its current head.
+  # Common to every service:
+  #   SPRING_PROFILES_ACTIVE=local and no other profile: the only switch that turns
+  #     off the startup TLS assertion (loan, initiation: application-local.yml;
+  #     customer, risk, compliance: by the profile name, StartupAssertions), which
+  #     refuses the stack's PLAINTEXT Kafka and PostgreSQL without TLS. Never a
+  #     FINTECHBANKX_TLS_* variable, never DB_SSL_ROOT_CERT (no CA bundle here).
+  #   mem_limit (decision D11): FBX_SERVICE_MEM_LIMIT, default 768m, the smallest
+  #     memory limit in the services' Helm values; the images size the heap at
+  #     75 % of it (MaxRAMPercentage=75) instead of 75 % of the host.
+  #   No OTEL_* variables: Spring Boot 3.3.6 reads none and none of these five
+  #     services maps one or ships an OTLP exporter.
   loan-lifecycle-service:
     image: ${FBX_IMAGE_LN_LOAN_LIFECYCLE:-fintechbankx/loan-lifecycle-service:local}
     profiles: [lending, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
     depends_on:
       postgres: {condition: service_healthy}
       realm-import: {condition: service_completed_successfully}
@@ -290,11 +353,18 @@ services:
       KAFKA_SECURITY_PROTOCOL: PLAINTEXT
       OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
       OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
-      OIDC_CLIENT_ID: svc-ln-loan-lifecycle
-      OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_LN_LOAN_LIFECYCLE:?run compose/fbx-local.sh init}
-      OTEL_SERVICE_NAME: svc-ln-loan-lifecycle
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # Outbound client-credentials token (registration customer-service, client
+      # id SERVICE_CLIENT_ID, default svc-ln-loan-lifecycle): the secret realm-import
+      # gives that client, fetched in-network (the default is localhost:8180).
+      SERVICE_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_LN_LOAN_LIFECYCLE:?run compose/fbx-local.sh init}
+      OIDC_TOKEN_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/token
       MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+      # No default in the service: an empty adapter creates no CustomerCreditService
+      # and the service does not start. http = customer-profile-kyc-service, which
+      # every profile that starts loan also starts. The ledger currency (used when a
+      # credit response names none) is that of the customer service's parity seed.
+      CUSTOMER_CREDIT_ADAPTER: http
+      CUSTOMER_CREDIT_LEDGER_CURRENCY: USD
       CUSTOMER_SERVICE_BASE_URL: http://customer-profile-kyc-service:8080
     ports:
       - "127.0.0.1:18010:8080"
@@ -308,6 +378,7 @@ services:
   payment-initiation-settlement-service:
     image: ${FBX_IMAGE_PAY_INITIATION_SETTLEMENT:-fintechbankx/payment-initiation-settlement-service:local}
     profiles: [payments, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
     depends_on:
       postgres: {condition: service_healthy}
       realm-import: {condition: service_completed_successfully}
@@ -327,11 +398,23 @@ services:
       KAFKA_SECURITY_PROTOCOL: PLAINTEXT
       OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
       OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
-      OIDC_CLIENT_ID: svc-pay-initiation-settlement
-      OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_PAY_INITIATION_SETTLEMENT:?run compose/fbx-local.sh init}
-      OTEL_SERVICE_NAME: svc-pay-initiation-settlement
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # Outbound client-credentials token (registration fintechbankx-service, client
+      # id SERVICE_CLIENT_ID, default svc-pay-initiation-settlement) for risk,
+      # compliance and the customer KYC read.
+      SERVICE_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_PAY_INITIATION_SETTLEMENT:?run compose/fbx-local.sh init}
+      OIDC_TOKEN_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/token
       MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+      # Required, no default in the service; the same currency as loan's ledger.
+      PAYMENT_DEFAULT_CURRENCY: USD
+      # Decision D3: no accounts service exists; the default (http) needs
+      # ACCOUNTS_SERVICE_BASE_URL and fails at start-up without it. The in-memory
+      # demo accounts hold PAYMENT_DEFAULT_CURRENCY.
+      ACCOUNTS_ADAPTER: in-memory
+      # Defaults are cluster DNS names. The KYC read runs before every payment
+      # (fail closed), so the payments profile starts customer too.
+      RISK_SERVICE_BASE_URL: http://risk-decisioning-service:8080
+      COMPLIANCE_SERVICE_BASE_URL: http://compliance-evidence-service:8080
+      CUSTOMER_SERVICE_BASE_URL: http://customer-profile-kyc-service:8080
     ports:
       - "127.0.0.1:18020:8080"
     healthcheck:
@@ -341,11 +424,35 @@ services:
       retries: 30
       start_period: 60s
 
-  customer-profile-kyc-service:
+  # Customer, risk and compliance only validate their Flyway history at start-up
+  # (<context>.database.flyway=validate) and refuse an empty database. Their
+  # image migrates when its first argument is "migrate" (DatabaseMigration: the
+  # datasource and Flyway only, with the db-migrate profile added to local, then
+  # exit); the chart runs that as a pre-install Job, compose as a one-shot of the
+  # same image that the service waits for. Locally the app role owns its schema,
+  # so it is also the schema owner Flyway migrates as (no DB_MIGRATION_*).
+  customer-profile-kyc-service-migrate:
     image: ${FBX_IMAGE_CUS_PROFILE_KYC:-fintechbankx/customer-profile-kyc-service:local}
-    profiles: [lending, customer, services]
+    profiles: [lending, customer, payments, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    command: ["migrate"]
     depends_on:
       postgres: {condition: service_healthy}
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      DB_URL: jdbc:postgresql://postgres:5432/db_cus_profile_kyc_local
+      DB_USERNAME: customer_profile_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_CUS_PROFILE_KYC:?run compose/fbx-local.sh init}
+    restart: "no"
+
+  customer-profile-kyc-service:
+    image: ${FBX_IMAGE_CUS_PROFILE_KYC:-fintechbankx/customer-profile-kyc-service:local}
+    # payments: initiation reads the KYC status before every payment
+    profiles: [lending, customer, payments, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    depends_on:
+      postgres: {condition: service_healthy}
+      customer-profile-kyc-service-migrate: {condition: service_completed_successfully}
       realm-import: {condition: service_completed_successfully}
       # identity link (PUT .../identity-link) needs its admin permission on /customers
       admin-permissions: {condition: service_completed_successfully}
@@ -355,7 +462,7 @@ services:
       topic-init: {condition: service_completed_successfully}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-cus-profile-kyc
-      # no local profile file in this service; its TLS guards skip because DB_SSL_ROOT_CERT is not set
+      # local: no application-local.yml; the TLS guards are off by the profile name (StartupAssertions)
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
       MANAGEMENT_SERVER_PORT: "8081"
@@ -366,12 +473,17 @@ services:
       KAFKA_SECURITY_PROTOCOL: PLAINTEXT
       OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
       OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
-      OIDC_CLIENT_ID: svc-cus-profile-kyc
-      # token azp values allowed to call (read by the service as SERVICE_CALLERS)
+      # token azp values allowed to call (read by the service as SERVICE_CALLERS;
+      # the KYC read's SERVICE_CALLERS_KYC defaults to svc-pay-initiation-settlement)
       SERVICE_CALLERS: svc-ln-loan-lifecycle
-      OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_CUS_PROFILE_KYC:?run compose/fbx-local.sh init}
-      OTEL_SERVICE_NAME: svc-cus-profile-kyc
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # Identity link through the Keycloak admin API (off by default: 503), as
+      # the service's own realm client (IDENTITY_ADMIN_CLIENT_ID default
+      # svc-cus-profile-kyc, realm default fintechbankx): client credentials
+      # with the secret realm-import gives it; its service account holds the
+      # FGAP permission on /customers that admin-permissions applies.
+      IDENTITY_ADMIN_ENABLED: "true"
+      KEYCLOAK_BASE_URL: http://keycloak:8080
+      IDENTITY_ADMIN_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_CUS_PROFILE_KYC:?run compose/fbx-local.sh init}
       MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
     ports:
       - "127.0.0.1:18030:8080"
@@ -382,31 +494,47 @@ services:
       retries: 30
       start_period: 60s
 
+  risk-decisioning-service-migrate:
+    image: ${FBX_IMAGE_RSK_DECISIONING:-fintechbankx/risk-decisioning-service:local}
+    profiles: [payments, riskcompliance, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    command: ["migrate"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      DB_URL: jdbc:postgresql://postgres:5432/db_rsk_decisioning_local
+      DB_USERNAME: risk_decisioning_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_RSK_DECISIONING:?run compose/fbx-local.sh init}
+    restart: "no"
+
   risk-decisioning-service:
     image: ${FBX_IMAGE_RSK_DECISIONING:-fintechbankx/risk-decisioning-service:local}
     profiles: [payments, riskcompliance, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
     depends_on:
       postgres: {condition: service_healthy}
+      risk-decisioning-service-migrate: {condition: service_completed_successfully}
       realm-import: {condition: service_completed_successfully}
       # waits for the parity actors only when the parity-fixtures profile is on
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-rsk-decisioning
-      # no local profile file in this service; its TLS guards skip because DB_SSL_ROOT_CERT is not set
+      # local: no application-local.yml; the TLS guards are off by the profile name (StartupAssertions)
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
       MANAGEMENT_SERVER_PORT: "8081"
       DB_URL: jdbc:postgresql://postgres:5432/db_rsk_decisioning_local
       DB_USERNAME: risk_decisioning_app
       SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_RSK_DECISIONING:?run compose/fbx-local.sh init}
+      # the outbox relay (OUTBOX_RELAY_ENABLED, off by default) publishes here
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
       OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
       OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
-      OIDC_CLIENT_ID: svc-rsk-decisioning
       # token azp values allowed to call (read by the service as SERVICE_CALLERS)
       SERVICE_CALLERS: svc-pay-initiation-settlement
-      OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_RSK_DECISIONING:?run compose/fbx-local.sh init}
-      OTEL_SERVICE_NAME: svc-rsk-decisioning
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
     ports:
       - "127.0.0.1:18040:8080"
@@ -417,31 +545,48 @@ services:
       retries: 30
       start_period: 60s
 
+  compliance-evidence-service-migrate:
+    image: ${FBX_IMAGE_CMP_EVIDENCE:-fintechbankx/compliance-evidence-service:local}
+    profiles: [payments, riskcompliance, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    command: ["migrate"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      DB_URL: jdbc:postgresql://postgres:5432/db_cmp_evidence_local
+      DB_USERNAME: compliance_evidence_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_CMP_EVIDENCE:?run compose/fbx-local.sh init}
+    restart: "no"
+
   compliance-evidence-service:
     image: ${FBX_IMAGE_CMP_EVIDENCE:-fintechbankx/compliance-evidence-service:local}
     profiles: [payments, riskcompliance, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
     depends_on:
       postgres: {condition: service_healthy}
+      compliance-evidence-service-migrate: {condition: service_completed_successfully}
       realm-import: {condition: service_completed_successfully}
       # waits for the parity actors only when the parity-fixtures profile is on
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
     environment:
       FINTECHBANKX_SERVICE_ID: svc-cmp-evidence
-      # no local profile file in this service; its TLS guards skip because DB_SSL_ROOT_CERT is not set
+      # local: no application-local.yml; the profile name turns off the TLS guards
+      # and the runtime role guard (one role owns and uses the schema here)
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
       MANAGEMENT_SERVER_PORT: "8081"
       DB_URL: jdbc:postgresql://postgres:5432/db_cmp_evidence_local
       DB_USERNAME: compliance_evidence_app
       SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_CMP_EVIDENCE:?run compose/fbx-local.sh init}
+      # the outbox relay (OUTBOX_RELAY_ENABLED, off by default) publishes here
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
       OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
       OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
-      OIDC_CLIENT_ID: svc-cmp-evidence
       # token azp values allowed to call (read by the service as SERVICE_CALLERS)
       SERVICE_CALLERS: svc-pay-initiation-settlement
-      OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_CMP_EVIDENCE:?run compose/fbx-local.sh init}
-      OTEL_SERVICE_NAME: svc-cmp-evidence
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
     ports:
       - "127.0.0.1:18050:8080"

@@ -95,3 +95,29 @@ test("ephemeral-env: monolith from a pinned image or built from the caller's con
   assert.match(steps[build].run, /FBX_MONOLITH_IMAGE=/);
   assert.ok(build < stepIndex(steps, /Start stack/));
 });
+
+test("ephemeral-env: the exported base URLs carry each service's host port (services.tsv column 9, not the store column after it)", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const os = await import("node:os");
+  const steps = workflow().jobs.ephemeral.steps;
+  const step = steps[stepIndex(steps, /Export test environment/)];
+  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fbx-export-")), "github.env");
+  const composeDir = path.join(repo, "compose");
+  const res = spawnSync("bash", ["-c", step.run], { encoding: "utf8", env: { ...process.env, FBX_COMPOSE: composeDir, GITHUB_ENV: out } });
+  assert.equal(res.status, 0, res.stderr);
+  const exported = Object.fromEntries(fs.readFileSync(out, "utf8").trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+  const rows = fs.readFileSync(path.join(composeDir, "services.tsv"), "utf8").split("\n").filter((l) => l && !l.startsWith("#")).map((l) => l.split("\t"));
+  for (const [key, serviceId, , , , , , , port] of rows) {
+    const name = key === "monolith" ? "FBX_MONOLITH_BASE_URL" : `FBX_BASE_URL_${serviceId.replace(/^svc-/, "").toUpperCase().replaceAll("-", "_")}`;
+    assert.equal(exported[name], `http://127.0.0.1:${port}`, name);
+  }
+  assert.equal(exported.FBX_BASE_URL_LN_LOAN_LIFECYCLE, "http://127.0.0.1:18010");
+  for (const v of Object.values(exported)) assert.doesNotMatch(v, /\t|postgresql|mongodb/);
+});
+
+test("ephemeral-env: the profiles input names every service profile of the compose runtime", () => {
+  const description = workflow().on.workflow_call.inputs.profiles.description;
+  for (const p of ["lending", "payments", "customer", "riskcompliance", "openfinance", "services", "observability"]) {
+    assert.match(description, new RegExp(`\\b${p}\\b`), p);
+  }
+});

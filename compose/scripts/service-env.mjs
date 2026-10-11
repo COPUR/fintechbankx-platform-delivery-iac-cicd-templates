@@ -8,8 +8,10 @@
 // (payment-initiation-settlement-service) or service id (svc-pay-initiation-settlement).
 // Blank lines and # comments are ignored. Rejected: unknown services, names
 // that are not UPPER_SNAKE_CASE, and anything that looks like it overrides a
-// credential or the identity/database wiring (passwords, secrets, tokens, keys,
-// usernames, OIDC_*, DB_*, SPRING_DATASOURCE_*, SPRING_SECURITY_*, KEYCLOAK*).
+// credential or the identity/datastore wiring (passwords, secrets, tokens, keys,
+// usernames, OIDC_*, DB_*, SPRING_DATASOURCE_*, SPRING_SECURITY_*, KEYCLOAK*,
+// MONGODB_*, SPRING_DATA_MONGODB_*, FLYWAY_*, SPRING_FLYWAY_*, SERVICE_CLIENT_*,
+// REDIS_URL, SPRING_DATA_REDIS_*, DATABASE_CA_BUNDLE).
 // `$` in values is escaped so compose does not interpolate it.
 //
 // usage: service-env.mjs --in FILE --out FILE [--services services.tsv]
@@ -34,7 +36,12 @@ for (const line of fs.readFileSync(servicesFile, "utf8").split("\n")) {
 }
 
 const CREDENTIAL = /(PASS|PWD|SECRET|CRED|TOKEN|PRIVATE|KEY|CERT|USERNAME|(^|_)USER($|_)|(^|_)AUTH($|_))/;
-const WIRING = /^(OIDC_|DB_|SPRING_DATASOURCE_|SPRING_SECURITY_|KEYCLOAK|KC_|FINTECHBANKX_SERVICE_ID$)/;
+const WIRING = new RegExp("^(" + [
+  "OIDC_", "DB_", "SPRING_DATASOURCE_", "SPRING_SECURITY_", "KEYCLOAK", "KC_", "FINTECHBANKX_SERVICE_ID$",
+  // datastores, migrations and the outbound client-credentials registration
+  "MONGODB_", "SPRING_DATA_MONGODB_", "FLYWAY_", "SPRING_FLYWAY_", "SERVICE_CLIENT_",
+  "REDIS_URL$", "SPRING_DATA_REDIS_", "DATABASE_CA_BUNDLE$"
+].join("|") + ")");
 
 const services = {};
 const errors = [];

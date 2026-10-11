@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Generates the git-ignored env files for the local/ephemeral runtime:
-#   <out-dir>/.env       compose interpolation: superuser, Keycloak admin, Redis,
-#                        one database credential per service (services.tsv) and
-#                        the OIDC client credentials
+#   <out-dir>/.env       compose interpolation: PostgreSQL superuser, Keycloak admin,
+#                        Redis, MongoDB root, one database credential per service
+#                        (services.tsv, either store) and the OIDC client credentials
 #   <out-dir>/realm.env  keycloak-config-cli settings plus every $(env:NAME)
 #                        placeholder of the identity repo's realm
 # With --parity-fixtures (regression parity runs, local/ephemeral only) also:
@@ -125,6 +125,7 @@ secret POSTGRES_SUPERUSER_CRED
 put KC_ADMIN_USER fbx-local-admin
 secret KC_ADMIN_CRED
 secret REDIS_CRED
+secret MONGO_ROOT_CRED
 oidc_names=()
 while IFS=$'\t' read -r key service_id _ _ _ _ cred_var _ _; do
   [[ -z "$key" || "$key" == \#* ]] && continue

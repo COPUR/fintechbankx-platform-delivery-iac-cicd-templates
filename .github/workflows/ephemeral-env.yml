@@ -32,7 +32,7 @@ name: ephemeral-env
 #       sql-fixtures: |
 #         customer-profile-kyc-service=db/fixtures/parity_seed_customers.sql
 #       service-env: |
-#         payment-initiation-settlement-service__ACCOUNTS_ADAPTER=in-memory
+#         payment-initiation-settlement-service__OUTBOX_RELAY_ENABLED=true
 #       seed-command: ./scripts/seed.sh
 #       test-command: regression-parity/scripts/compare-monolith.sh
 #       aws-role-to-assume: arn:aws:iam::<account>:role/<ci-ecr-pull-role>
@@ -61,7 +61,7 @@ on:
         type: string
         default: compose
       profiles:
-        description: Space separated compose profiles (lending, payments, customer, riskcompliance, services, observability).
+        description: Space separated compose profiles (lending, payments, customer, riskcompliance, openfinance, services, observability).
         type: string
         default: services
       service-images:
@@ -306,7 +306,8 @@ jobs:
         run: |
           set -euo pipefail
           {
-            while IFS=$'\t' read -r key service_id _ _ _ _ _ _ port; do
+            # port is column 9; the trailing _ takes the store column and any later one.
+            while IFS=$'\t' read -r key service_id _ _ _ _ _ _ port _; do
               [[ -z "$key" || "$key" == \#* ]] && continue
               if [ "$key" = monolith ]; then
                 echo "FBX_MONOLITH_BASE_URL=http://127.0.0.1:$port"

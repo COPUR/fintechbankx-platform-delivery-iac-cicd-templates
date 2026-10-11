@@ -6,11 +6,12 @@ monolith's `docker-compose.yml`, `docker-compose.open-finance-eventing.yml` and
 
 | Part | What runs | Source of truth |
 |---|---|---|
-| PostgreSQL 16 | one database, schema and LOGIN role per service; no role can connect to another service's database | [services.tsv](services.tsv) (matches each service repo's `application.yml`), [postgres/init](postgres/init/10-service-databases.sh) |
+| PostgreSQL 16 | one database, schema and LOGIN role per `postgresql` row of services.tsv; no role can connect to another service's database | [services.tsv](services.tsv) (matches each service repo's `application.yml`), [postgres/init](postgres/init/10-service-databases.sh) |
+| MongoDB 7.0 (`openfinance`, `services`) | `mongo` plus the `mongo-init` one-shot: one user per `mongodb` row of services.tsv, readWrite on its own database only; no `mongodb` row yet | [mongo/init](mongo/init/10-service-databases.sh) |
 | Kafka | single-broker KRaft (no ZooKeeper), auto-create off, catalog topics at RF 1 | topic catalog and `create-topics.sh` fetched from fintechbankx-platform-event-streaming-kafka |
 | Keycloak 26 + realm import | dev-mode Keycloak, realm `fintechbankx` applied by keycloak-config-cli, then `admin-permissions` (the identity repo's second import step: fine-grained admin permissions, e.g. the customer service's view/manage-members on `/customers`, and scope-mapping narrowing); the customer service waits for it | `realm/fintechbankx-realm.json`, `realm/admin-permissions.json` and `scripts/realm/apply-admin-permissions.mjs` fetched from fintechbankx-platform-identity-iam-keycloak-ldap |
 | `observability` profile | OTel collector + Jaeger (UI on 127.0.0.1:16686) | [otel/collector.yaml](otel/collector.yaml) |
-| service profiles | `lending` (loan + customer), `payments` (initiation-settlement + risk + compliance), `customer`, `riskcompliance`, `services` (all five) | images `fintechbankx/<service>:local` or `FBX_IMAGE_*` |
+| service profiles | `lending` (loan + customer), `payments` (initiation-settlement + risk + compliance + customer), `customer`, `riskcompliance`, `openfinance` (MongoDB so far), `services` (all five + MongoDB); customer, risk and compliance each with a `<service>-migrate` one-shot | images `fintechbankx/<service>:local` or `FBX_IMAGE_*` |
 | `monolith` profile | comparison target side by side (+ Redis): the monolith-oracle app by default, or the full ELMS image | `FBX_MONOLITH_IMAGE` |
 | `parity-fixtures` profile | regression parity test actors layered onto the realm, and parity-suite's admin permission on `/customers` (local/ephemeral only) | [keycloak/parity-fixtures.template.json](keycloak/parity-fixtures.template.json), [keycloak/parity-admin-permissions.json](keycloak/parity-admin-permissions.json) |
 
@@ -24,14 +25,17 @@ compose/fbx-local.sh reset                       # lighter reset between parity 
 ```
 
 Issuer for tokens: `http://localhost:8180/realms/fintechbankx`. Service ports on
-127.0.0.1: loan 18010, payment 18020, customer 18030, risk 18040, compliance 18050, monolith 18000.
+127.0.0.1 (services.tsv `host_port`): loan 18010, payment 18020, customer 18030,
+risk 18040, compliance 18050, monolith 18000; PostgreSQL 15432, MongoDB 37017.
 
 ## Secrets
 
 `compose/scripts/init-env.sh` writes `compose/.env` and `compose/realm.env`
 (mode 600, git-ignored) with random values from `openssl rand`: the PostgreSQL
-superuser, one credential per service database, the Keycloak admin, Redis, one
-OIDC client credential per service and every `$(env:NAME)` placeholder of the
+superuser, the MongoDB root (`MONGO_ROOT_CRED`, user `fbx-local-root`, used by
+`mongo-init` only), one credential per service database (either store), the
+Keycloak admin, Redis, one OIDC client credential per service and every
+`$(env:NAME)` placeholder of the
 realm (LDAP and channel URLs get fixed dev values: customer web
 `http://localhost:3000`, staff web (`fintechbankx-staff-web`)
 `http://localhost:3002`, Grafana `http://localhost:3001`). Nothing secret is
@@ -48,6 +52,71 @@ directory realm-import reads) and fails if the identity ref lacks them. The
 `admin-permissions` service (Node 22, same pinned image as the identity Job)
 logs in as the local bootstrap admin (`KEYCLOAK_GRANTTYPE=password`, `admin-cli`,
 master realm) and gets only that login.
+
+## Service registry and wiring
+
+[services.tsv](services.tsv) has one row per service: key (the compose
+service), service id, profiles, database, schema, app role, credential
+variable, image variable, host port and **store** (`postgresql` or
+`mongodb`; decision D1: an explicit column rather than reading Mongo from a
+`-` schema). Every reader takes the column it needs and ends its `read` with
+`_`, so a column appended later never lands in another one:
+`postgres/init` creates `postgresql` rows only, `mongo/init` `mongodb` rows
+only (both stop on any other store value), `init-env.sh` generates a
+credential for every row, `apply-sql-fixtures.sh` refuses a `mongodb`
+service, and the `ephemeral-env.yml` export step reads `host_port` as column 9.
+
+**MongoDB** (decision D10): `mongo:7.0.41`, the 7.0 line the open-finance
+services' own CI runs (`mongo:7` and `mongo:7.0` there, no digest pinned), so
+pinned here by full version tag. It is healthy only once it answers on the
+compose network (`mongosh --host mongo`): the image's first start runs a
+temporary `mongod` on 127.0.0.1 that must not count. `mongo-init` (same image,
+re-runnable like `topic-init`) then creates or updates, for each `mongodb`
+row, the user `<app_role>` in `<database>` with `readWrite` on that database
+only; a service connects with
+`mongodb://<app_role>:${<credential_var>}@mongo:27017/<database>`. Root
+login and user credentials reach `mongosh` through the environment, never its
+command line. Its data has no named volume: `down` and `reset` drop it with
+the container.
+
+**Migrations.** Loan and initiation run Flyway in-process. Customer, risk and
+compliance only validate their Flyway history at start-up and refuse an
+empty database; their image migrates when its first argument is `migrate`
+(datasource and Flyway only, the `db-migrate` profile added to `local`, then
+exit). Compose runs that as `<service>-migrate`, a one-shot of the same image
+with the same database settings, and the service waits for it
+(`service_completed_successfully`). The app role owns its schema here, so it
+is also the role Flyway migrates as (no `DB_MIGRATION_*`).
+
+What each service gets beyond the common database, Kafka (`kafka:9092`,
+`PLAINTEXT`, after `topic-init`) and JWT settings, checked against its
+`application.yml`:
+
+| Service | Settings | Why |
+|---|---|---|
+| loan | `CUSTOMER_CREDIT_ADAPTER=http`, `CUSTOMER_CREDIT_LEDGER_CURRENCY=USD`, `CUSTOMER_SERVICE_BASE_URL=http://customer-profile-kyc-service:8080` | the adapter has an empty default that creates no adapter bean, so the service does not start; the ledger currency has none and is the currency of the customer service's parity seed |
+| initiation | `PAYMENT_DEFAULT_CURRENCY=USD`, `ACCOUNTS_ADAPTER=in-memory` (decision D3), `RISK_SERVICE_BASE_URL`, `COMPLIANCE_SERVICE_BASE_URL`, `CUSTOMER_SERVICE_BASE_URL` on the compose service names | the currency is required; the http accounts adapter needs a URL no service provides and fails at start-up; the URLs default to cluster DNS names. The in-memory demo accounts hold the default currency |
+| loan, initiation | `SERVICE_CLIENT_SECRET` (the secret realm-import gives `svc-ln-loan-lifecycle` / `svc-pay-initiation-settlement`), `OIDC_TOKEN_URI=http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/token` | their outbound client-credentials registration; the token URI defaults to `localhost:8180`, which a container cannot reach. The client id keeps its default (the service id) |
+| customer | `IDENTITY_ADMIN_ENABLED=true`, `KEYCLOAK_BASE_URL=http://keycloak:8080`, `IDENTITY_ADMIN_CLIENT_SECRET` (the secret of `svc-cus-profile-kyc`) | identity link (`PUT /api/v1/customers/{id}/identity-link`) through the Keycloak admin API; off it answers 503. The realm's `svc-cus-profile-kyc` client has a service account, and `admin-permissions` gives it view and manage members of `/customers` before customer starts |
+| risk, compliance | Kafka settings like the others | their outbox relay (`OUTBOX_RELAY_ENABLED`, off by default) would otherwise publish to `localhost:9092` |
+
+`payments` starts customer too: initiation reads the KYC status before every
+payment and refuses the payment when it cannot. A test checks that every
+compose-network URL a service gets names a service that each of the caller's
+profiles also starts.
+
+No service gets `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` (none reads them) or
+`OTEL_*` variables: Spring Boot 3.3.6 reads none, none of the five services
+maps one, and none ships an OTLP exporter. `MANAGEMENT_TRACING_ENABLED`
+(`FBX_TRACING_ENABLED`, default false) stays; it only switches in-process
+tracing.
+
+**Memory** (decision D11): every service container and migrate one-shot has
+`mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}`, the smallest memory limit in the
+fifteen services' Helm values (atm and products; the others have 896Mi or
+1Gi). The images size the heap at 75 % of the container limit
+(`MaxRAMPercentage=75`) instead of 75 % of the runner's memory, so fifteen
+JVMs fit on one runner. Raise it per run with `FBX_SERVICE_MEM_LIMIT`.
 
 ## Regression parity support
 
@@ -200,20 +269,27 @@ repositories.
 `.cache/service-env.override.json`, which `fbx-local.sh` merges after the
 compose file, so a line can also replace a default. Names must be
 `UPPER_SNAKE_CASE`; anything credential-like (`PASS`, `SECRET`, `CRED`,
-`TOKEN`, `KEY`, `CERT`, `USER`, `AUTH`, ...) or identity/database wiring
+`TOKEN`, `KEY`, `CERT`, `USER`, `AUTH`, ...) or identity/datastore wiring
 (`OIDC_*`, `DB_*`, `SPRING_DATASOURCE_*`, `SPRING_SECURITY_*`, `KEYCLOAK*`,
-`KC_*`) is rejected. Example: `payment-initiation-settlement-service__ACCOUNTS_ADAPTER=in-memory`.
+`KC_*`, `MONGODB_*`, `SPRING_DATA_MONGODB_*`, `FLYWAY_*`, `SPRING_FLYWAY_*`,
+`SERVICE_CLIENT_*`, `REDIS_URL`, `SPRING_DATA_REDIS_*`, `DATABASE_CA_BUNDLE`)
+is rejected. `CRED` also matches loan's `CUSTOMER_CREDIT_*`: change those in
+the compose file. Example: `payment-initiation-settlement-service__OUTBOX_RELAY_ENABLED=true`
+(initiation already runs with `ACCOUNTS_ADAPTER=in-memory`).
 
-**Spring profile**: the five services run with `SPRING_PROFILES_ACTIVE=local`.
-The stack uses Kafka over `PLAINTEXT` on `kafka:9092` and PostgreSQL without
-TLS, which the service-side TLS assertion refuses outside local runs
+**Spring profile**: the five services and the migrate one-shots run with
+`SPRING_PROFILES_ACTIVE=local` and no other profile. The stack uses Kafka over
+`PLAINTEXT` on `kafka:9092` and PostgreSQL without TLS, which the service-side
+TLS assertion refuses unless that profile is active
 (fintechbankx-platform-event-streaming-kafka
 `docs/guides/SERVICE_CLIENT_CONFIGURATION.md`, and the chart README section
 "Service-side TLS assertion"). Loan and payment initiation-settlement switch it
-off through their `local` profile (`fintechbankx.tls.enforce: false` in
-`application-local.yml`); customer, risk and compliance skip their TLS guards
-because compose sets no `DB_SSL_ROOT_CERT`. Compose sets no
-`FINTECHBANKX_TLS_*` variable; the off switch comes from the profile.
+off in their `application-local.yml` (`fintechbankx.tls.enforce: false`);
+customer, risk and compliance ship no local profile file and turn their TLS
+guards off by the profile name (compliance its runtime role guard too, since
+one role owns and uses the schema here). Compose sets no `FINTECHBANKX_TLS_*`
+variable and no `DB_SSL_ROOT_CERT` (the database CA bundle those guards
+require while they are on; there is none here).
 
 **Caller allow-lists**: customer `SERVICE_CALLERS=svc-ln-loan-lifecycle`; risk
 and compliance `SERVICE_CALLERS=svc-pay-initiation-settlement` (comma separated
@@ -264,7 +340,8 @@ compose/fbx-local.sh up <profiles> parity-fixtures
 ```
 
 It deletes every container except the Kafka broker (`docker compose rm -s -f -v`
-over all profiles) and the PostgreSQL volume, and skips the asset fetch and
+over all profiles, which also drops MongoDB's anonymous volume) and the
+PostgreSQL volume, and skips the asset fetch and
 secret generation. It saves the broker start and topic creation; databases,
 the realm, the parity layer and both admin-permission steps are rebuilt as
 with `down`. What it keeps: Kafka topics with the previous run's events and
@@ -276,15 +353,25 @@ otherwise use `down`. Pulled or locally built images are kept by both.
 ## Tests
 
 `node --test compose/test/*.test.mjs` (part of `npm test`): secret generation,
-asset fetching, compose wiring and credential hygiene, `docker compose config -q`
-for every profile, parity actors and their rendered realm layer, service-env
-validation, the workflow structure, and the PostgreSQL init and SQL fixtures
-against a real server (local PostgreSQL 16 binaries or `FBX_TEST_PGHOST`).
+asset fetching, the services.tsv columns and compose wiring per row (database,
+role, credential, image, profiles, port, `local` profile, memory limit),
+the five services' settings above and the migrate one-shots, credential
+hygiene, `docker compose config -q` for every profile, parity actors and their
+rendered realm layer, service-env validation, the workflow structure and its
+exported base URLs, the PostgreSQL init and SQL fixtures against a real server
+(local PostgreSQL 16 binaries or `FBX_TEST_PGHOST`), and the store split of
+the init scripts with recording stand-ins for `psql` and `mongosh` (the
+MongoDB user script runs in a Node VM against a stand-in `db`).
 
 ## Known gaps
 
 - Not started end to end here (no Docker daemon in the authoring environment);
-  `docker compose config` and the database init were exercised.
+  `docker compose config` and the database init were exercised, and the
+  services' effective Spring settings under the rendered compose environment
+  were read with a Spring Boot 3.3.6 probe over each service's own
+  `application*.yml`. `mongo`, its healthcheck and `mongo-init` have not run
+  against a live MongoDB; services.tsv has no `mongodb` row until the
+  open-finance services join.
 - LDAP federation in the realm points at `ldap://openldap:389`, which this stack
   does not run; interactive staff logins (client `fintechbankx-staff-web`; the
   customer clients `fintechbankx-web` and `fintechbankx-mobile` map only the
