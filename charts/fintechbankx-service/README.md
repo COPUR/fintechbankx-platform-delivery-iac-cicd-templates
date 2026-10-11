@@ -129,9 +129,11 @@ inside a name element:
    above): a `security.protocol` name must hold `SASL_SSL` or `SSL` (as a
    literal value), an `endpoint.identification.algorithm` name `https`.
    Client TLS names (`fbx.overrideNameReason`), refused on every route
-   whatever `kafka.runtime` is (`msk`, `strimzi` or `""`):
-   `(?i)^spring[._-]?kafka[._-](<client>[._-])?(properties[._-])?ssl([._-]|$)`,
-   that is `spring.kafka.ssl.*` and `spring.kafka.<client>.ssl.*` (trust
+   whatever `kafka.runtime` is (`msk`, `strimzi` or `""`): names that
+   match `(?i)^spring[._-]?kafka[._-]` and continue with an optional
+   `<client>` element, an optional `properties` element and an `ssl`
+   element (case-insensitive; each element followed by `.`, `_` or `-`,
+   and `ssl` may also end the name), that is `spring.kafka.ssl.*` and `spring.kafka.<client>.ssl.*` (trust
    store, key store, PEM certificates, key password, TLS protocol; `<client>`
    is `producer`, `consumer`, `admin`, `streams` or any other one element)
    and `spring.kafka[.<client>].properties.ssl.*` (the raw client properties
