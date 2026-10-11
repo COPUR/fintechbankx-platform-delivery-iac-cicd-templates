@@ -229,14 +229,14 @@ env:
   "LOG_LEVEL: \"INFO\"\n  SPRING_CONFIG_IMPORT": "optional:file:/tmp/x.yml"
 VALUES
 vendored_must_fail "env key with a newline (injects SPRING_CONFIG_IMPORT)" --expect 'is not a ConfigMap key' -f "$work/vg-config-key-newline.yaml"
-cat > "$work/vg-secret-key-newline.yaml" <<'VALUES'
+cat > "$work/vg-es-key-newline.yaml" <<'VALUES'
 secrets:
   enabled: true
   keys:
     - secretKey: "DB_PASSWORD\n      remoteRef: {key: x, property: password}\n    - secretKey: SPRING_DATASOURCE_URL"
       property: url
 VALUES
-vendored_must_fail "secret key with a newline (injects SPRING_DATASOURCE_URL)" --expect 'is not a Secret key' -f "$work/vg-secret-key-newline.yaml"
+vendored_must_fail "secret key with a newline (injects SPRING_DATASOURCE_URL)" --expect 'is not a Secret key' -f "$work/vg-es-key-newline.yaml"
 vendored_must_fail "jvmOptions reading a variable through \$(VAR)" --expect 'javaToolOptions must not contain' --set-string 'jvmOptions=-XX:MaxRAMPercentage=75 $(FBX_X)'
 vendored_must_fail "secrets.dataFrom (every key of a remote secret)" --expect 'externalSecret.dataFrom is not supported' \
   --set-string 'secrets.dataFrom[0].extract.key=dev/example-service/app'
