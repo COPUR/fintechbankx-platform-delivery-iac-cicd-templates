@@ -1,0 +1,306 @@
+name: java-service-ci
+
+# Reusable Java 23 service CI for FinTechBankX service repositories.
+#
+# Usage (caller job):
+#   ci:
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/java-service-ci.yml@main
+#     permissions:
+#       contents: read
+#     with:
+#       postgres-enabled: true
+#       postgres-db: db_ln_loan_lifecycle_test
+#
+# What it enforces:
+#   - JDK 23 (Temurin), Gradle wrapper when committed, otherwise the runner's Gradle.
+#   - `gradle assemble -x test`, then `gradle check` so jacocoTestCoverageVerification is a gate.
+#     Set gradle-tasks: test only for repos without a coverage gate yet (documented debt).
+#   - Optional PostgreSQL service container exported as TEST_DB_URL / TEST_DB_USERNAME / TEST_DB_PASSWORD.
+#   - Optional MongoDB service container (DocumentDB read models) exported as TEST_MONGO_URI.
+#   - No Map<String,Object> in any *Controller.java under any module's src/main/java.
+#   - ArchUnit gate (ADR-028): the four hexagonal rules from this repository's
+#     tools/archunit-gate run against the service's compiled main classes after
+#     `check`, regardless of the ArchUnit tests the service repo has itself, plus
+#     rule 5 (one package root per repository). package-root is required: the
+#     gate fails when it is empty (unless archunit-report-only).
+#   - Test and coverage reports uploaded as an artifact.
+# The `.ci/allow-gradle-fail` marker is deliberately NOT honoured here.
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        description: JDK version (Temurin).
+        type: string
+        default: "23"
+      gradle-version:
+        description: Gradle version to provision when the repo has no wrapper (empty = runner default).
+        type: string
+        default: ""
+      gradle-tasks:
+        description: Verification tasks. `check` runs tests plus the jacoco coverage gate; fall back to `test` only with a recorded reason.
+        type: string
+        default: check
+      gradle-args:
+        description: Extra Gradle arguments (e.g. --scan, -PskipIT).
+        type: string
+        default: ""
+      working-directory:
+        description: Directory containing the Gradle root build.
+        type: string
+        default: "."
+      postgres-enabled:
+        description: Start a PostgreSQL service container and export TEST_DB_URL.
+        type: boolean
+        default: false
+      postgres-image:
+        description: PostgreSQL image for the service container.
+        type: string
+        default: postgres:16-alpine
+      postgres-db:
+        description: Test database name (db_<ctx>_<cap>_test by convention).
+        type: string
+        default: app_test
+      postgres-user:
+        description: Test database role. The throwaway credential equals the role name; the container only lives for this job.
+        type: string
+        default: app_test
+      mongo-enabled:
+        description: Start a MongoDB service container and export TEST_MONGO_URI (services with DocumentDB read models).
+        type: boolean
+        default: false
+      mongo-image:
+        description: MongoDB image for the service container. 5.0 matches the DocumentDB 5.0 API.
+        type: string
+        default: mongo:5.0
+      mongo-db:
+        description: Test database name in TEST_MONGO_URI.
+        type: string
+        default: app_test
+      controller-map-guardrail:
+        description: Fail when a *Controller.java uses Map<String,Object>.
+        type: boolean
+        default: true
+      package-root:
+        description: >-
+          Required. The repository's one package root (rule 5, FINTECHBANKX_SERVICE_GUARDRAILS.md section 2):
+          com.bank.<context>, com.enterprise.openfinance.<capability> or com.fintechbankx.<context>.<capability>.
+          Rules 1-4 run on this root only and every compiled main class outside it (shared kernel
+          com.bank.shared.kernel excepted) and every other package owning a .domain package fails rule 5. Empty
+          fails the ArchUnit gate (only a warning with archunit-report-only), so a second root cannot pass unseen
+          when auto-detection misses it.
+        type: string
+        default: ""
+      archunit-base-packages:
+        description: >-
+          Space separated package roots (e.g. com.bank.loan or com.enterprise.openfinance.consent).
+          Empty = every package that owns a .domain sub-package. With package-root set, leave empty or equal to it.
+        type: string
+        default: ""
+      archunit-layout:
+        description: >-
+          Where compiled classes are found: multi-module (<module>/build/classes/java/main, com.bank.<context> cores),
+          single-module (build/classes/java/main, com.enterprise.openfinance.<capability> services) or auto (both).
+        type: string
+        default: auto
+      archunit-generated-packages:
+        description: >-
+          Comma separated packages of generated code outside package-root (e.g. org.openapitools.client,
+          com.example.avro). Excluded from rule 5 and listed in the gate report; rules 1-4 are unchanged. Prefer
+          configuring generators to emit into <package-root>.infrastructure.generated, which needs no entry here.
+        type: string
+        default: ""
+      archunit-report-only:
+        description: >-
+          Temporary escape hatch: report ArchUnit violations without failing. Visible in the caller; remove once
+          the repository's conformance row (FINTECHBANKX_SERVICE_GUARDRAILS.md section 7) is fixed.
+        type: boolean
+        default: false
+      platform-repository:
+        description: Repository providing tools/archunit-gate.
+        type: string
+        default: COPUR/fintechbankx-platform-delivery-iac-cicd-templates
+      platform-ref:
+        description: Ref of platform-repository (pin a tag once released).
+        type: string
+        default: main
+      timeout-minutes:
+        description: Job timeout.
+        type: number
+        default: 30
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ci/build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    concurrency:
+      group: java-service-ci-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    services:
+      postgres:
+        # An empty image skips the service container.
+        image: ${{ inputs.postgres-enabled && inputs.postgres-image || '' }}
+        env:
+          POSTGRES_DB: ${{ inputs.postgres-db }}
+          POSTGRES_USER: ${{ inputs.postgres-user }}
+          POSTGRES_PASSWORD: ${{ inputs.postgres-user }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ${{ inputs.postgres-user }} -d ${{ inputs.postgres-db }}"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      mongo:
+        # An empty image skips the service container. No auth: the container only lives for this job.
+        image: ${{ inputs.mongo-enabled && inputs.mongo-image || '' }}
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongo --quiet --eval 'db.runCommand({ ping: 1 }).ok' || mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DB_URL: ${{ inputs.postgres-enabled && format('jdbc:postgresql://localhost:5432/{0}', inputs.postgres-db) || '' }}
+      TEST_DB_USERNAME: ${{ inputs.postgres-enabled && inputs.postgres-user || '' }}
+      TEST_DB_PASSWORD: ${{ inputs.postgres-enabled && inputs.postgres-user || '' }}
+      TEST_MONGO_URI: ${{ inputs.mongo-enabled && format('mongodb://localhost:27017/{0}', inputs.mongo-db) || '' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+
+      - name: Set up Gradle (cache + wrapper validation)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ inputs.gradle-version != '' && inputs.gradle-version || 'wrapper' }}
+          validate-wrappers: true
+
+      - name: Resolve Gradle command
+        id: gradle
+        run: |
+          set -euo pipefail
+          if [ -x ./gradlew ]; then
+            echo "cmd=./gradlew" >> "$GITHUB_OUTPUT"
+          elif command -v gradle >/dev/null 2>&1; then
+            echo "No Gradle wrapper committed; using $(gradle --version | sed -n 's/^Gradle //p') from the runner."
+            echo "cmd=gradle" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No ./gradlew and no gradle on PATH"
+            exit 1
+          fi
+
+      - name: Build (assemble, no tests)
+        env:
+          GRADLE_CMD: ${{ steps.gradle.outputs.cmd }}
+          GRADLE_ARGS: ${{ inputs.gradle-args }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          $GRADLE_CMD --no-daemon clean assemble -x test $GRADLE_ARGS
+
+      - name: Verify (${{ inputs.gradle-tasks }})
+        env:
+          GRADLE_CMD: ${{ steps.gradle.outputs.cmd }}
+          GRADLE_TASKS: ${{ inputs.gradle-tasks }}
+          GRADLE_ARGS: ${{ inputs.gradle-args }}
+        run: |
+          set -euo pipefail
+          if [ -n "${TEST_DB_URL}" ]; then
+            echo "Integration tests use ${TEST_DB_URL}"
+          fi
+          # shellcheck disable=SC2086
+          $GRADLE_CMD --no-daemon $GRADLE_TASKS $GRADLE_ARGS
+
+      - name: Checkout ArchUnit gate
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.platform-repository }}
+          ref: ${{ inputs.platform-ref }}
+          path: .fbx-platform
+          sparse-checkout: tools/archunit-gate
+
+      - name: ArchUnit gate (ADR-028 hexagonal rules)
+        env:
+          ROOTS: ${{ inputs.archunit-base-packages }}
+          PACKAGE_ROOT: ${{ inputs.package-root }}
+          LAYOUT: ${{ inputs.archunit-layout }}
+          REPORT_ONLY: ${{ inputs.archunit-report-only }}
+          GENERATED_PACKAGES: ${{ inputs.archunit-generated-packages }}
+          GATE_DIR: ${{ github.workspace }}/.fbx-platform/tools/archunit-gate
+        run: |
+          set -euo pipefail
+          if [ -z "$PACKAGE_ROOT" ]; then
+            msg="package-root is required (rule 5, one package root per repository): set it to the repository's root, e.g. com.bank.<context>, com.enterprise.openfinance.<capability> or com.fintechbankx.<context>.<capability>"
+            if [ "$REPORT_ONLY" != "true" ]; then
+              echo "::error::$msg"
+              exit 1
+            fi
+            echo "::warning::$msg (archunit-report-only: rule 5 runs without it)"
+          fi
+          "$GATE_DIR/gradlew" -p "$GATE_DIR" --no-daemon -q installDist
+          case "$LAYOUT" in
+            multi-module) pattern='*/build/classes/java/main' ;;
+            single-module) pattern='./build/classes/java/main' ;;
+            auto) pattern='*build/classes/java/main' ;;
+            *) echo "::error::archunit-layout must be auto, multi-module or single-module"; exit 1 ;;
+          esac
+          args=()
+          while IFS= read -r dir; do args+=(--classes "$dir"); done \
+            < <(find . -path ./.fbx-platform -prune -o -type d -path "$pattern" -print | sort)
+          for root in $ROOTS; do args+=(--root "$root"); done
+          if [ -n "$PACKAGE_ROOT" ]; then args+=(--package-root "$PACKAGE_ROOT"); fi
+          if [ -n "$GENERATED_PACKAGES" ]; then args+=(--generated-packages "$GENERATED_PACKAGES"); fi
+          set +e
+          "$GATE_DIR/build/install/archunit-gate/bin/archunit-gate" "${args[@]}"
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$REPORT_ONLY" = "true" ]; then
+            echo "::warning::ArchUnit gate failed (exit $code) but archunit-report-only is true"
+            exit 0
+          fi
+          exit "$code"
+
+      - name: Guardrail - no Map<String,Object> in controllers
+        if: ${{ inputs.controller-map-guardrail }}
+        run: |
+          set -euo pipefail
+          mapfile -t controllers < <(git ls-files '*Controller.java' | grep '/src/main/java/\|^src/main/java/' || true)
+          if [ "${#controllers[@]}" -eq 0 ]; then
+            echo "No *Controller.java sources; guardrail not applicable."
+            exit 0
+          fi
+          if grep -nE 'Map<\s*String\s*,\s*Object\s*>' "${controllers[@]}"; then
+            echo "::error::Generic Map<String,Object> payloads are disallowed in controllers; use typed request/response DTOs."
+            exit 1
+          fi
+          echo "Checked ${#controllers[@]} controller(s)."
+
+      - name: Upload test and coverage reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-service-ci-reports-${{ github.run_attempt }}
+          path: |
+            ${{ inputs.working-directory }}/**/build/reports/**
+            ${{ inputs.working-directory }}/**/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14

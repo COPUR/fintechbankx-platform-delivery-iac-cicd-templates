@@ -1,0 +1,130 @@
+suite: variable references and placeholders resolved after the guard has checked the text
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # Kubernetes expands $(VAR) in env[].value from earlier env entries and from
+  # envFrom keys ("Variable references $(VAR_NAME) are expanded using the
+  # previously defined environment variables in the container", core/v1
+  # EnvVar.Value), so a JVM options value or a JDBC URL could be assembled
+  # from a valueFrom secret, a config key or harmless-looking literals. Spring
+  # resolves ${...} placeholders in property values, so a placeholder in
+  # DB_URL could append sslmode=disable. The guard refuses '$(' in every
+  # extraEnv value and in JVM options, and '$(' or '${' in JVM options and
+  # in every value it parses as a JDBC URL.
+  - it: rejects JDK_JAVA_OPTIONS taken from a valueFrom secret through $(VAR)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: EXTRA_FLAGS
+          valueFrom:
+            secretKeyRef: {name: some-secret, key: flags}
+        - name: JDK_JAVA_OPTIONS
+          value: "$(EXTRA_FLAGS)"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not contain '\\$\\('"
+  - it: rejects JDK_JAVA_OPTIONS assembled from split literals
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: PART_A
+          value: "-Dspring.con"
+        - name: PART_B
+          value: "s.enforce=false"
+        - name: JDK_JAVA_OPTIONS
+          value: "$(PART_A)fig.import=optional:file:/tmp/x.yml -Dfintechbankx.tl$(PART_B)"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not contain '\\$\\('"
+  - it: rejects javaToolOptions that reads a config key through $(VAR)
+    template: templates/deployment.yaml
+    set:
+      config:
+        EXTRA_FLAGS: "-Dspring.profiles.active=local -Dspring.datasource.url=jdbc:postgresql://evil/db?sslmode=disable"
+      javaToolOptions: "$(EXTRA_FLAGS)"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not contain '\\$\\(' or '\\$\\{'"
+  - it: rejects javaToolOptions with a harmless prefix and $(VAR)
+    template: templates/deployment.yaml
+    set:
+      config:
+        FBX_X: "-Dfintechbankx.tls.enforce=false -Dspring.profiles.active=local"
+      javaToolOptions: "-XX:MaxRAMPercentage=75 $(FBX_X)"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not contain '\\$\\(' or '\\$\\{'"
+  - it: rejects _JAVA_OPTIONS that reads an extraEnv literal through $(VAR)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: FBX_Z
+          value: "-Dfintechbankx.tls.enforce=false"
+        - name: _JAVA_OPTIONS
+          value: "$(FBX_Z)"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv._JAVA_OPTIONS must not contain '\\$\\('"
+  - it: rejects JDK_JAVA_OPTIONS that reads an ExternalSecret key through $(VAR)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: FBX_Y
+          remoteSecretName: staging/loan-lifecycle-service/db-app
+          property: anything
+      extraEnv:
+        - name: JDK_JAVA_OPTIONS
+          value: "$(FBX_Y)"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not contain '\\$\\('"
+  - it: rejects config JAVA_TOOL_OPTIONS with a Spring placeholder
+    template: templates/deployment.yaml
+    set:
+      config:
+        JAVA_TOOL_OPTIONS: "-Dlogging.level.root=${FBX_LEVEL}"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.JAVA_TOOL_OPTIONS must not contain '\\$\\(' or '\\$\\{'"
+  - it: rejects an extraEnv JDBC URL with $(VAR) in the path
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: REPORTING_SOURCE
+          value: "jdbc:postgresql://db.example.internal:5432/$(FBX_TAIL)?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.REPORTING_SOURCE must not contain '\\$\\('"
+  - it: rejects any extraEnv value with $(VAR)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: FEATURE_FLAGS
+          value: "$(OTHER)"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.FEATURE_FLAGS must not contain '\\$\\('"
+  - it: rejects config.DB_URL with a Spring placeholder that can add sslmode=disable
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: "jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&x=${FBX_TAIL}"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must not contain '\\$\\{' or '\\$\\('"
+  - it: accepts '$' without a reference and valueFrom fieldRef (control)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: GREETING
+          value: "costs $5"
+        - name: POD_IP
+          valueFrom:
+            fieldRef: {fieldPath: status.podIP}
+    asserts:
+      - notFailedTemplate: {}

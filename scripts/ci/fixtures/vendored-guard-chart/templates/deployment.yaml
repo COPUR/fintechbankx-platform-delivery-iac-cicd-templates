@@ -1,0 +1,42 @@
+{{- include "vendored-guard-example.guard" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name | quote }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name | quote }}
+    spec:
+      containers:
+        - name: app
+          image: example.invalid/vendored-guard-example:0.1.0
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name | quote }}
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: {{ .Values.jvmOptions | quote }}
+            {{- with .Values.additionalEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.databaseCaBundle.enabled }}
+          volumeMounts:
+            - name: database-ca
+              mountPath: {{ .Values.databaseCaBundle.mountPath | quote }}
+              readOnly: true
+          {{- end }}
+      {{- if .Values.databaseCaBundle.enabled }}
+      volumes:
+        - name: database-ca
+          configMap:
+            name: {{ .Values.databaseCaBundle.configMapName | quote }}
+            items:
+              - key: {{ .Values.databaseCaBundle.key | quote }}
+                path: {{ .Values.databaseCaBundle.key | quote }}
+      {{- end }}

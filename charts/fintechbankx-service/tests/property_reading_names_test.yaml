@@ -1,0 +1,250 @@
+suite: property reading of names ('_' inside a dotted element)
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # Spring Boot 3.3.6 maps an environment variable through two property
+  # mappers: the environment one splits the name on '_' (SPRING_PROFILES_ACTIVE)
+  # and the default one splits it on '.' only and skips every character other
+  # than [a-z0-9] inside an element, '_' included. So the env names
+  # spring.kafka.s_sl.trust-store-type, spring.data.mongo_db.host and
+  # spring.pro_files.active (all of them ConfigMap keys and env names that
+  # Kubernetes accepts) bind spring.kafka.ssl.trust-store-type,
+  # spring.data.mongodb.host and spring.profiles.active. Every name rule is
+  # therefore also checked against the property reading of the name
+  # (fbx.propertyName: '_' dropped, not read as '.'), next to the environment
+  # reading (fbx.canonicalName: '_' read as '.').
+  #
+  # Kafka client TLS names.
+  - it: rejects config spring.kafka.s_sl.trust-store-type (kafka.runtime strimzi)
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config:
+        KAFKA_SECURITY_PROTOCOL: SSL
+        spring.kafka.s_sl.trust-store-type: PKCS12
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.s_sl.trust-store-type is not allowed: a Kafka client TLS setting"
+  - it: rejects extraEnv spring.kafka.consumer.s_sl.trust-store-type from valueFrom.secretKeyRef
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.consumer.s_sl.trust-store-type
+          valueFrom:
+            secretKeyRef: {name: other, key: type}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.kafka.consumer.s_sl.trust-store-type \\(value or valueFrom\\): a Kafka client TLS setting"
+  - it: rejects externalSecret.extraData materialising spring.kafka.s_sl.trust-store-location
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring.kafka.s_sl.trust-store-location
+          remoteSecretName: staging/loan-lifecycle-service/kafka
+          property: location
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring.kafka.s_sl.trust-store-location .*a Kafka client TLS setting"
+  - it: rejects config spring.kafka.con_sumer.ssl.trust-store-type ('_' inside the client element)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.con_sumer.ssl.trust-store-type: PKCS12
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.con_sumer.ssl.trust-store-type is not allowed: a Kafka client TLS setting"
+  - it: rejects config spring.kafka.streams.pro_perties.ssl.truststore.location ('_' inside properties)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.streams.pro_perties.ssl.truststore.location: /etc/other/any.jks
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.streams.pro_perties.ssl.truststore.location is not allowed: a Kafka client TLS setting"
+  - it: rejects config spring.kafka.security.pro_tocol PLAINTEXT (value check)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.security.pro_tocol: PLAINTEXT
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.security.pro_tocol must be SASL_SSL or SSL"
+  - it: rejects extraEnv spring.kafka.secu_rity.protocol from valueFrom (the value cannot be checked)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.secu_rity.protocol
+          valueFrom:
+            configMapKeyRef: {name: other, key: protocol}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv spring.kafka.secu_rity.protocol must set a literal value"
+  - it: accepts spring.kafka.properties.ssl.endpoint_identification.algorithm https (control)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.properties.ssl.endpoint_identification.algorithm: https
+    asserts:
+      - notFailedTemplate: {}
+  # DocumentDB names.
+  - it: rejects config spring.data.mongo_db.host
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.data.mongo_db.host: placeholder-host
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.data.mongo_db.host is not allowed: a spring.data.mongodb.\\* property"
+  - it: rejects externalSecret.extraData materialising spring.data.mongo_db.host
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring.data.mongo_db.host
+          remoteSecretName: staging/loan-lifecycle-service/docdb
+          property: host
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring.data.mongo_db.host .*a spring.data.mongodb.\\* property"
+  - it: rejects extraEnv spring.data.mongo_db.uri from valueFrom.secretKeyRef
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.data.mongo_db.uri
+          valueFrom:
+            secretKeyRef: {name: other, key: uri}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.data.mongo_db.uri \\(value or valueFrom\\): a spring.data.mongodb.\\* property"
+  - it: rejects config spring.da_ta.mongodb.port ('_' inside data)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.da_ta.mongodb.port: "27018"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.da_ta.mongodb.port is not allowed: a spring.data.mongodb.\\* property"
+  # Profiles, config import, application.json, SSL bundles, the TLS off
+  # switch and datasource overrides.
+  - it: rejects config spring.pro_files.active
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.pro_files.active: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.pro_files.active is not allowed: a profile can activate"
+  - it: rejects extraEnv spring.pro_files.default
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.pro_files.default
+          value: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.pro_files.default \\(value or valueFrom\\): a profile can activate"
+  - it: rejects externalSecret.data materialising spring.pro_files.include
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: spring.pro_files.include
+          property: profile
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise spring.pro_files.include .*a profile can activate"
+  - it: rejects extraEnv s_pring.profiles.active ('_' inside the first element)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: s_pring.profiles.active
+          value: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set s_pring.profiles.active \\(value or valueFrom\\): a profile can activate"
+  - it: rejects config spring.con_fig.import
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.con_fig.import: optional:file:/etc/other/override.yml
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.con_fig.import is not allowed: a spring.config.\\* property"
+  - it: rejects extraEnv spring.applica_tion.json
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.applica_tion.json
+          value: '{"spring":{"datasource":{"url":"jdbc:h2:mem:x"}}}'
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.applica_tion.json \\(value or valueFrom\\): it can redirect or override the datasource"
+  - it: rejects config spring.s_sl.bundle.pem.documentdb.truststore.certificate
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.s_sl.bundle.pem.documentdb.truststore.certificate: file:/etc/other/any-ca.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.s_sl.bundle.pem.documentdb.truststore.certificate is not allowed: an SSL bundle property"
+  - it: rejects config fintech_bankx.tls.enforce
+    template: templates/deployment.yaml
+    set:
+      config:
+        fintech_bankx.tls.enforce: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.fintech_bankx.tls.enforce is not allowed: it can switch off the service's startup TLS assertion"
+  - it: rejects extraEnv fintechbankx.t_ls.enforce from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: fintechbankx.t_ls.enforce
+          valueFrom:
+            configMapKeyRef: {name: other, key: enforce}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set fintechbankx.t_ls.enforce \\(value or valueFrom\\): it can switch off"
+  - it: rejects config spring.data_source.url with a non-PostgreSQL URL (no JDBC parse applies)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.data_source.url: jdbc:h2:mem:x
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.data_source.url is not allowed: it can redirect or override the datasource"
+  - it: rejects config spring.data_source.driver-class-name
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.data_source.driver-class-name: org.h2.Driver
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.data_source.driver-class-name is not allowed: it can redirect or override the datasource"
+  - it: rejects config spring.fly_way.url
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.fly_way.url: jdbc:h2:mem:x
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.fly_way.url is not allowed: it can redirect or override the datasource"
+  - it: accepts other names with '_' inside an element and the credential names (control)
+    template: templates/deployment.yaml
+    set:
+      config:
+        app.feature_flags.new_ui: "true"
+        logging.level.com_example_loan: DEBUG
+        spring.kafka.properties.sasl.mechanism: AWS_MSK_IAM
+      extraEnv:
+        - name: SPRING_DATASOURCE_USERNAME
+          value: loan_lifecycle_app
+        - name: SPRING_DATA_MONGODB_PASSWORD
+          valueFrom:
+            secretKeyRef: {name: docdb, key: password}
+    asserts:
+      - notFailedTemplate: {}

@@ -1,0 +1,234 @@
+suite: DocumentDB names (spring.data.mongodb.*, MONGODB_URI only from a Secret; mongodb and kafka in JVM options)
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # spring.data.mongodb.* (uri, host, ssl.enabled, ssl.bundle, replica set,
+  # ...) can point a DocumentDB client at another server or switch its TLS
+  # off. fbx.overrideNameReason refuses every such name on every route
+  # (config, extraEnv value and valueFrom, externalSecret data/extraData) in
+  # every relaxed-binding spelling, except the credentials
+  # SPRING_DATA_MONGODB_USERNAME and SPRING_DATA_MONGODB_PASSWORD, which are
+  # allowed where SPRING_DATASOURCE_USERNAME and _PASSWORD are.
+  - it: rejects config SPRING_DATA_MONGODB_URI
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_DATA_MONGODB_URI: mongodb://docdb.example.internal:27017/db?tls=false
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_DATA_MONGODB_URI is not allowed: a spring.data.mongodb.\\* property"
+  - it: rejects config spring.data.mongodb.uri (dotted)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.data.mongodb.uri: mongodb://docdb.example.internal:27017/db?tls=false
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.data.mongodb.uri is not allowed: a spring.data.mongodb.\\* property"
+  - it: rejects config spring.data.mongo-db.uri (relaxed binding)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.data.mongo-db.uri: mongodb://docdb.example.internal:27017/db?tls=false
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.data.mongo-db.uri is not allowed: a spring.data.mongodb.\\* property"
+  - it: rejects config spring.data[mongodb].uri (bracket form)
+    template: templates/deployment.yaml
+    set:
+      config:
+        "spring.data[mongodb].uri": mongodb://docdb.example.internal:27017/db?tls=false
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.data\\[mongodb\\].uri is not allowed: a spring.data.mongodb.\\* property"
+  - it: rejects config SPRING_DATA_MONGODB_SSL_ENABLED=false
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_DATA_MONGODB_SSL_ENABLED: "false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_DATA_MONGODB_SSL_ENABLED is not allowed: a spring.data.mongodb.\\* property"
+  - it: rejects extraEnv spring.data.mongodb.host
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.data.mongodb.host
+          value: other.example.internal
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.data.mongodb.host \\(value or valueFrom\\): a spring.data.mongodb.\\* property"
+  - it: rejects extraEnv SPRING_DATA_MONGODB_REPLICA_SET_NAME from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_DATA_MONGODB_REPLICA_SET_NAME
+          valueFrom:
+            configMapKeyRef: {name: other, key: rs}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_DATA_MONGODB_REPLICA_SET_NAME \\(value or valueFrom\\): a spring.data.mongodb.\\* property"
+  - it: rejects externalSecret.data materialising SPRING_DATA_MONGODB_URI
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_DATASOURCE_PASSWORD
+          property: password
+        - secretKey: SPRING_DATA_MONGODB_URI
+          property: uri
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_DATA_MONGODB_URI .*: a spring.data.mongodb.\\* property"
+  - it: rejects externalSecret.extraData materialising spring.data.mongodb.database
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring.data.mongodb.database
+          remoteSecretName: staging/loan-lifecycle-service/docdb-app
+          property: database
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring.data.mongodb.database"
+  - it: rejects config spring.data.mongodb.password (credentials only in the env spelling, like the datasource)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.data.mongodb.password: x
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.data.mongodb.password is not allowed: a spring.data.mongodb.\\* property"
+  - it: accepts the DocumentDB credentials in config, extraEnv and the secret (control)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_DATA_MONGODB_USERNAME: of_app
+      extraEnv:
+        - name: spring_data_mongodb_username
+          value: of_app
+      externalSecret.data:
+        - secretKey: SPRING_DATASOURCE_PASSWORD
+          property: password
+        - secretKey: SPRING_DATA_MONGODB_PASSWORD
+          property: docdb_password
+    asserts:
+      - notFailedTemplate: {}
+  # MONGODB_URI is the DocumentDB connection string the open-finance services
+  # read as ${MONGODB_URI} (credentials and TLS options); it reaches the pod
+  # only from a Secret: an externalSecret key or an extraEnv
+  # valueFrom.secretKeyRef, never under config, as a literal value, from a
+  # ConfigMap or a field reference, and in no other spelling (only the env
+  # name MONGODB_URI resolves the placeholder).
+  - it: accepts MONGODB_URI as an externalSecret extraData key
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: MONGODB_URI
+          remoteSecretName: staging/loan-lifecycle-service/docdb-app
+          property: uri
+    asserts:
+      - notFailedTemplate: {}
+  - it: renders MONGODB_URI from extraEnv valueFrom.secretKeyRef
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: MONGODB_URI
+          valueFrom:
+            secretKeyRef: {name: docdb-app, key: uri}
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_URI
+            valueFrom:
+              secretKeyRef: {name: docdb-app, key: uri}
+  - it: rejects config MONGODB_URI
+    template: templates/deployment.yaml
+    set:
+      config.MONGODB_URI: mongodb://docdb.example.internal:27017/db?tls=false
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.MONGODB_URI is not allowed: MONGODB_URI is the DocumentDB connection string"
+  - it: rejects extraEnv MONGODB_URI with a literal value
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: MONGODB_URI
+          value: mongodb://docdb.example.internal:27017/db?tlsAllowInvalidCertificates=true
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv MONGODB_URI must come from valueFrom.secretKeyRef"
+  - it: rejects extraEnv MONGODB_URI from configMapKeyRef
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: MONGODB_URI
+          valueFrom:
+            configMapKeyRef: {name: other, key: uri}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv MONGODB_URI must come from valueFrom.secretKeyRef"
+  - it: rejects extraEnv mongodb.uri (another spelling) even from secretKeyRef
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: mongodb.uri
+          valueFrom:
+            secretKeyRef: {name: docdb-app, key: uri}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv mongodb.uri is not allowed: MONGODB_URI is the DocumentDB connection string"
+  - it: rejects externalSecret.data key mongodb-uri (another spelling)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_DATASOURCE_PASSWORD
+          property: password
+        - secretKey: mongodb-uri
+          property: uri
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data mongodb-uri is not allowed: MONGODB_URI is the DocumentDB connection string"
+  # JVM options: a -D system property wins over the environment and the
+  # Secret (-DMONGODB_URI, -Dspring.data.mongodb.uri, -Dspring.kafka.*), so a
+  # value that mentions mongodb or kafka, in any of the spellings the JVM
+  # option check normalises, is refused.
+  - it: rejects javaToolOptions with -DMONGODB_URI
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-DMONGODB_URI=mongodb://other.example.internal:27017/db"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention .*mongodb"
+  - it: rejects javaToolOptions with -Dspring.data.mongo-db.uri (separator inside the word)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.data.mongo-db.uri=mongodb://other.example.internal:27017/db"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention .*mongodb"
+  - it: rejects javaToolOptions with -Dspring.kafka.bootstrap-servers
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.kafka.bootstrap-servers=other.example.internal:9092"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention .*kafka"
+  - it: rejects config JDK_JAVA_OPTIONS with -Dspring.Kaf_ka.producer.acks (case and separators)
+    template: templates/deployment.yaml
+    set:
+      config.JDK_JAVA_OPTIONS: "-Dspring.Kaf_ka.producer.acks=0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.JDK_JAVA_OPTIONS must not mention .*kafka"
+  - it: rejects extraEnv _JAVA_OPTIONS with -Dlogging.level.org.apache.kafka
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _JAVA_OPTIONS
+          value: "-Dlogging.level.org.apache.kafka=DEBUG"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv._JAVA_OPTIONS must not mention .*kafka"

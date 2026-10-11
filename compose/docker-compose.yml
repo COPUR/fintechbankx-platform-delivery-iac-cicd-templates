@@ -1,0 +1,500 @@
+# FinTechBankX shared local / ephemeral runtime (Proposed).
+#
+# Split-world replacement for the monolith's docker-compose.yml,
+# docker-compose.open-finance-eventing.yml and docker/init-scripts:
+#   core (always):  postgres 16 (one database + schema + role per service),
+#                   kafka (single-broker KRaft) + topic-init from the Kafka repo's catalog,
+#                   keycloak 26 + realm-import of the identity repo's realm
+#                   + admin-permissions (its fine-grained admin permissions step)
+#   profiles:       lending, payments, customer, riskcompliance, services (all five),
+#                   monolith (ELMS / monolith-oracle side by side, with redis), observability (otel-collector + jaeger),
+#                   parity-fixtures (regression parity test actors layered onto the realm, plus
+#                   parity-suite's admin permission on /customers; ephemeral/local only)
+#
+# Never start it directly: compose/fbx-local.sh fetches the platform assets into
+# .cache/, generates .env and realm.env (random dev-only credentials, git-ignored)
+# and then calls docker compose. Every credential below is `${VAR:?...}` so the
+# file cannot run with a committed default.
+#
+# Host ports bind to 127.0.0.1 only: postgres 15432, kafka 29092, keycloak 8180,
+# jaeger UI 16686, services 18010-18050, monolith 18000.
+#
+# Extra per-service environment (e.g. ACCOUNTS_ADAPTER=in-memory) comes from
+# the override rendered by `fbx-local.sh service-env FILE` (scripts/service-env.mjs).
+name: fintechbankx-local
+
+services:
+  postgres:
+    image: postgres:16.6-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_CRED:?run compose/fbx-local.sh init}
+      POSTGRES_DB: postgres
+      FBX_SERVICES_TSV: /fbx/services.tsv
+      FBX_DB_CRED_LN_LOAN_LIFECYCLE: ${FBX_DB_CRED_LN_LOAN_LIFECYCLE:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_PAY_INITIATION_SETTLEMENT: ${FBX_DB_CRED_PAY_INITIATION_SETTLEMENT:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_CUS_PROFILE_KYC: ${FBX_DB_CRED_CUS_PROFILE_KYC:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_RSK_DECISIONING: ${FBX_DB_CRED_RSK_DECISIONING:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_CMP_EVIDENCE: ${FBX_DB_CRED_CMP_EVIDENCE:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_ELMS_MONOLITH: ${FBX_DB_CRED_ELMS_MONOLITH:?run compose/fbx-local.sh init}
+    volumes:
+      - ./services.tsv:/fbx/services.tsv:ro
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # Same broker definition as fintechbankx-platform-event-streaming-kafka deploy/local.
+  kafka:
+    image: confluentinc/cp-kafka:7.9.8
+    hostname: kafka
+    environment:
+      CLUSTER_ID: T-ELaTAgUxm_j7DpuTtlaQ
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+    ports:
+      - "127.0.0.1:29092:29092"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  # Topics from the Kafka repo catalog (topics/generated/topics.tsv), RF 1 locally.
+  topic-init:
+    image: confluentinc/cp-kafka:7.9.8
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER: kafka:9092
+      REPLICATION_FACTOR: "1"
+      MIN_INSYNC_REPLICAS: "1"
+      TOPICS_FILE: /opt/fbx/topics/generated/topics.tsv
+      CREATE_LEGACY_TOPICS: ${FBX_CREATE_LEGACY_TOPICS:-false}
+    volumes:
+      - ./.cache/kafka/scripts/kafka:/opt/fbx/scripts/kafka:ro
+      - ./.cache/kafka/topics/generated:/opt/fbx/topics/generated:ro
+    entrypoint: ["bash", "/opt/fbx/scripts/kafka/create-topics.sh"]
+    restart: "no"
+
+  # Dev-mode Keycloak, same major as the identity repo (26.7.5). Issuer as seen
+  # from the host: http://localhost:8180/realms/fintechbankx.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.5
+    command: ["start-dev", "--http-port=8080"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN_USER:?run compose/fbx-local.sh init}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_CRED:?run compose/fbx-local.sh init}
+      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+    ports:
+      - "127.0.0.1:8180:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Applies the identity repo's realm (fetched into .cache/identity) with the
+  # same keycloak-config-cli image the identity repo pins; placeholders come
+  # from the generated realm.env.
+  realm-import:
+    image: docker.io/adorsys/keycloak-config-cli:6.5.1-26.5.5@sha256:0955d98c8a341898b7aa177477edf8a1e90569ae50bbe7598141c1270b773274
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    env_file: ${FBX_REALM_ENV_FILE:-realm.env}
+    volumes:
+      - ./.cache/identity:/config:ro
+    restart: "no"
+
+  # Second step of the identity repo's realm import (its realm-import Job runs
+  # the same script): fine-grained admin permissions (Keycloak 26 FGAP v2) from
+  # realm/admin-permissions.json, e.g. the customer service's view/manage-members
+  # permission on /customers, which keycloak-config-cli cannot import. Also
+  # narrows client scope mappings to the realm file. Spec and script are fetched
+  # into .cache/identity-admin (outside the realm-import glob). Logs in as the
+  # local Keycloak bootstrap admin (password grant on admin-cli, master realm);
+  # gets only that login, not the other realm.env values. Idempotent.
+  admin-permissions:
+    image: docker.io/library/node:22.22.0-alpine3.22@sha256:7aa86fa052f6e4b101557ccb56717cb4311be1334381f526fe013418fe157384
+    depends_on:
+      realm-import:
+        condition: service_completed_successfully
+    environment:
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_LOGINREALM: master
+      KEYCLOAK_GRANTTYPE: password
+      KEYCLOAK_USER: ${KC_ADMIN_USER:?run compose/fbx-local.sh init}
+      KEYCLOAK_PASSWORD: ${KC_ADMIN_CRED:?run compose/fbx-local.sh init}
+    volumes:
+      - ./.cache/identity:/config:ro
+      - ./.cache/identity-admin:/opt/fbx:ro
+    command:
+      - sh
+      - -c
+      - |
+        if [ -f /opt/fbx/admin-permissions.json ]; then
+          exec node /opt/fbx/apply-admin-permissions.mjs --spec /opt/fbx/admin-permissions.json --realm /config/fintechbankx-realm.json
+        fi
+        if grep -Eq '"adminPermissionsEnabled"[[:space:]]*:[[:space:]]*true' /config/fintechbankx-realm.json; then
+          echo "admin-permissions: FAILED: the realm enables admin permissions but .cache/identity-admin is empty; run compose/fbx-local.sh fetch" >&2
+          exit 1
+        fi
+        echo "admin-permissions: the realm does not enable admin permissions; nothing to apply"
+    restart: "no"
+
+  # --- parity-fixtures profile -------------------------------------------------------
+  # Regression parity test actors (users banker, admin, loan_officer,
+  # compliance_officer, auditor, customer, other-customer, customer-owner, the
+  # confidential parity-suite client, the key-bound TPP-001, TPP-002 and
+  # parity-channel clients and their parity-psu-* scopes) layered onto the
+  # imported realm. Rendered by
+  # `init-env.sh --parity-fixtures` into .cache/parity from
+  # keycloak/parity-fixtures.template.json; credentials come from realm.env.
+  # Ephemeral/local only: never part of the identity repo's realm. Runs without
+  # remote state and with every managed resource type on no-delete, so it only
+  # adds to what realm-import created.
+  parity-fixtures-import:
+    image: docker.io/adorsys/keycloak-config-cli:6.5.1-26.5.5@sha256:0955d98c8a341898b7aa177477edf8a1e90569ae50bbe7598141c1270b773274
+    profiles: [parity-fixtures]
+    depends_on:
+      realm-import:
+        condition: service_completed_successfully
+    env_file: ${FBX_REALM_ENV_FILE:-realm.env}
+    environment:
+      IMPORT_FILES_LOCATIONS: file:/config/*.json
+      IMPORT_REMOTESTATE_ENABLED: "false"
+      IMPORT_MANAGED_CLIENT: no-delete
+      IMPORT_MANAGED_ROLE: no-delete
+      IMPORT_MANAGED_GROUP: no-delete
+      IMPORT_MANAGED_COMPONENT: no-delete
+      IMPORT_MANAGED_SUBCOMPONENT: no-delete
+      IMPORT_MANAGED_CLIENTSCOPE: no-delete
+      IMPORT_MANAGED_SCOPEMAPPING: no-delete
+      IMPORT_MANAGED_REQUIREDACTION: no-delete
+      IMPORT_MANAGED_AUTHENTICATIONFLOW: no-delete
+      IMPORT_MANAGED_IDENTITYPROVIDER: no-delete
+      IMPORT_MANAGED_IDENTITYPROVIDERMAPPER: no-delete
+      IMPORT_MANAGED_CLIENTAUTHORIZATIONRESOURCES: no-delete
+      IMPORT_MANAGED_MESSAGEBUNDLES: no-delete
+    volumes:
+      - ./.cache/parity:/config:ro
+    restart: "no"
+
+  # parity-suite's fine-grained admin permission (FGAP v2): view-members and
+  # manage-members on /customers, like the customer service's, so the suite can
+  # read and link /customers users in Keycloak mode. keycloak/parity-admin-permissions.json
+  # (own permission and policy names) applied with the identity repo's script
+  # from .cache/identity-admin; no --realm, so scope-mapping reconciliation stays
+  # with the identity step. Same login as admin-permissions. Idempotent.
+  parity-admin-permissions:
+    image: docker.io/library/node:22.22.0-alpine3.22@sha256:7aa86fa052f6e4b101557ccb56717cb4311be1334381f526fe013418fe157384
+    profiles: [parity-fixtures]
+    depends_on:
+      admin-permissions:
+        condition: service_completed_successfully
+      parity-fixtures-import:
+        condition: service_completed_successfully
+    environment:
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_LOGINREALM: master
+      KEYCLOAK_GRANTTYPE: password
+      KEYCLOAK_USER: ${KC_ADMIN_USER:?run compose/fbx-local.sh init}
+      KEYCLOAK_PASSWORD: ${KC_ADMIN_CRED:?run compose/fbx-local.sh init}
+    volumes:
+      - ./.cache/identity-admin:/opt/fbx:ro
+      - ./keycloak/parity-admin-permissions.json:/opt/parity/admin-permissions.json:ro
+    command:
+      - sh
+      - -c
+      - |
+        if [ ! -f /opt/fbx/apply-admin-permissions.mjs ]; then
+          echo "parity-admin-permissions: FAILED: .cache/identity-admin has no apply-admin-permissions.mjs; run compose/fbx-local.sh fetch with an identity ref whose realm enables admin permissions" >&2
+          exit 1
+        fi
+        exec node /opt/fbx/apply-admin-permissions.mjs --spec /opt/parity/admin-permissions.json
+    restart: "no"
+
+  # --- observability profile --------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.130.0
+    profiles: [observability]
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel/collector.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    profiles: [observability]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"
+
+  # --- monolith profile -----------------------------------------------------------
+  redis:
+    image: redis:7.4.1-alpine
+    profiles: [monolith]
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_AUTH\" --save '' --appendonly no"]
+    environment:
+      REDIS_AUTH: ${REDIS_CRED:?run compose/fbx-local.sh init}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_AUTH\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  loan-lifecycle-service:
+    image: ${FBX_IMAGE_LN_LOAN_LIFECYCLE:-fintechbankx/loan-lifecycle-service:local}
+    profiles: [lending, services]
+    depends_on:
+      postgres: {condition: service_healthy}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-ln-loan-lifecycle
+      # local: application-local.yml sets fintechbankx.tls.enforce: false, so PLAINTEXT Kafka and PostgreSQL without TLS are allowed
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://postgres:5432/db_ln_loan_lifecycle_local
+      DB_USERNAME: loan_lifecycle_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_LN_LOAN_LIFECYCLE:?run compose/fbx-local.sh init}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      OIDC_CLIENT_ID: svc-ln-loan-lifecycle
+      OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_LN_LOAN_LIFECYCLE:?run compose/fbx-local.sh init}
+      OTEL_SERVICE_NAME: svc-ln-loan-lifecycle
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+      CUSTOMER_SERVICE_BASE_URL: http://customer-profile-kyc-service:8080
+    ports:
+      - "127.0.0.1:18010:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  payment-initiation-settlement-service:
+    image: ${FBX_IMAGE_PAY_INITIATION_SETTLEMENT:-fintechbankx/payment-initiation-settlement-service:local}
+    profiles: [payments, services]
+    depends_on:
+      postgres: {condition: service_healthy}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-pay-initiation-settlement
+      # local: application-local.yml sets fintechbankx.tls.enforce: false, so PLAINTEXT Kafka and PostgreSQL without TLS are allowed
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://postgres:5432/db_pay_initiation_settlement_local
+      DB_USERNAME: payment_initiation_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_PAY_INITIATION_SETTLEMENT:?run compose/fbx-local.sh init}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      OIDC_CLIENT_ID: svc-pay-initiation-settlement
+      OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_PAY_INITIATION_SETTLEMENT:?run compose/fbx-local.sh init}
+      OTEL_SERVICE_NAME: svc-pay-initiation-settlement
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+    ports:
+      - "127.0.0.1:18020:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  customer-profile-kyc-service:
+    image: ${FBX_IMAGE_CUS_PROFILE_KYC:-fintechbankx/customer-profile-kyc-service:local}
+    profiles: [lending, customer, services]
+    depends_on:
+      postgres: {condition: service_healthy}
+      realm-import: {condition: service_completed_successfully}
+      # identity link (PUT .../identity-link) needs its admin permission on /customers
+      admin-permissions: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      parity-admin-permissions: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-cus-profile-kyc
+      # no local profile file in this service; its TLS guards skip because DB_SSL_ROOT_CERT is not set
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://postgres:5432/db_cus_profile_kyc_local
+      DB_USERNAME: customer_profile_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_CUS_PROFILE_KYC:?run compose/fbx-local.sh init}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      OIDC_CLIENT_ID: svc-cus-profile-kyc
+      # token azp values allowed to call (read by the service as SERVICE_CALLERS)
+      SERVICE_CALLERS: svc-ln-loan-lifecycle
+      OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_CUS_PROFILE_KYC:?run compose/fbx-local.sh init}
+      OTEL_SERVICE_NAME: svc-cus-profile-kyc
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+    ports:
+      - "127.0.0.1:18030:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  risk-decisioning-service:
+    image: ${FBX_IMAGE_RSK_DECISIONING:-fintechbankx/risk-decisioning-service:local}
+    profiles: [payments, riskcompliance, services]
+    depends_on:
+      postgres: {condition: service_healthy}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-rsk-decisioning
+      # no local profile file in this service; its TLS guards skip because DB_SSL_ROOT_CERT is not set
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://postgres:5432/db_rsk_decisioning_local
+      DB_USERNAME: risk_decisioning_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_RSK_DECISIONING:?run compose/fbx-local.sh init}
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      OIDC_CLIENT_ID: svc-rsk-decisioning
+      # token azp values allowed to call (read by the service as SERVICE_CALLERS)
+      SERVICE_CALLERS: svc-pay-initiation-settlement
+      OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_RSK_DECISIONING:?run compose/fbx-local.sh init}
+      OTEL_SERVICE_NAME: svc-rsk-decisioning
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+    ports:
+      - "127.0.0.1:18040:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  compliance-evidence-service:
+    image: ${FBX_IMAGE_CMP_EVIDENCE:-fintechbankx/compliance-evidence-service:local}
+    profiles: [payments, riskcompliance, services]
+    depends_on:
+      postgres: {condition: service_healthy}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-cmp-evidence
+      # no local profile file in this service; its TLS guards skip because DB_SSL_ROOT_CERT is not set
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://postgres:5432/db_cmp_evidence_local
+      DB_USERNAME: compliance_evidence_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_CMP_EVIDENCE:?run compose/fbx-local.sh init}
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      OIDC_CLIENT_ID: svc-cmp-evidence
+      # token azp values allowed to call (read by the service as SERVICE_CALLERS)
+      SERVICE_CALLERS: svc-pay-initiation-settlement
+      OIDC_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_CMP_EVIDENCE:?run compose/fbx-local.sh init}
+      OTEL_SERVICE_NAME: svc-cmp-evidence
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+    ports:
+      - "127.0.0.1:18050:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # Comparison target for the regression parity suite, side by side. Default
+  # wiring is for the monolith-oracle app (enterprise-loan-management-system
+  # regression-parity/monolith-oracle): ORACLE_PORT, OIDC_ISSUER_URI (the
+  # in-stack Keycloak issuer as tokens carry it), OIDC_JWK_SET_URI (in-network),
+  # Spring profile `local` (its in-memory repositories) and /actuator/health.
+  # For the full ELMS image set FBX_MONOLITH_SPRING_PROFILES=docker and
+  # FBX_MONOLITH_HEALTH_PATH=/api/actuator/health; the datasource, Redis and
+  # Kafka settings below are for that image and ignored by the oracle.
+  monolith:
+    image: ${FBX_MONOLITH_IMAGE:-enterprise-loan-system:1.0.0}
+    profiles: [monolith]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      parity-admin-permissions: {condition: service_completed_successfully, required: false}
+    environment:
+      SPRING_PROFILES_ACTIVE: ${FBX_MONOLITH_SPRING_PROFILES:-local}
+      ORACLE_PORT: "8080"
+      SERVER_PORT: "8080"
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/db_elms_monolith_local
+      SPRING_DATASOURCE_USERNAME: elms_monolith_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_ELMS_MONOLITH:?run compose/fbx-local.sh init}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_CRED:?run compose/fbx-local.sh init}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    ports:
+      - "127.0.0.1:18000:8080"
+    # curl, wget or bash (the oracle's eclipse-temurin JRE base has bash).
+    healthcheck:
+      test: ["CMD-SHELL", "url=http://127.0.0.1:8080${FBX_MONOLITH_HEALTH_PATH:-/actuator/health}; curl -fsS \"$$url\" >/dev/null 2>&1 || wget -qO- \"$$url\" >/dev/null 2>&1 || FBX_HC_PATH=\"${FBX_MONOLITH_HEALTH_PATH:-/actuator/health}\" bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf \"GET %s HTTP/1.0\\r\\n\\r\\n\" \"$$FBX_HC_PATH\" >&3 && grep -q UP <&3'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+volumes:
+  postgres-data:

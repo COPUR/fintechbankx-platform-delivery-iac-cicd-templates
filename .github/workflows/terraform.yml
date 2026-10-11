@@ -1,0 +1,295 @@
+name: terraform
+
+# Reusable Terraform pipeline for a service's deploy/terraform root.
+#
+#   static: fmt -check, init -backend=false, validate (no cloud access)
+#   plan:   AWS OIDC, init against the S3 backend, plan -out, plan uploaded as artifact
+#   comment (optional, pull requests): plan text as a PR comment
+#   apply (optional): runs the saved plan, gated by the GitHub environment
+#
+# Backend: either a committed backend file (backend-config-file, default
+# environments/<env>.backend.hcl) or the state-bucket/state-key/lock-table inputs.
+# Apply only happens when apply: true AND the plan has changes AND the GitHub
+# environment's protection rules (required reviewers for staging/prod) pass.
+#
+# Callers must grant: contents: read, id-token: write, pull-requests: write
+# (GitHub checks a called workflow's permissions statically, so the comment job
+# needs pull-requests: write even when comment-on-pr is false).
+#
+# Usage (caller job):
+#   infra-dev:
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/terraform.yml@<release-sha> # v1.0.0 (pin a SHA; Renovate/Dependabot bump it)
+#     permissions:
+#       contents: read
+#       id-token: write
+#       pull-requests: write
+#     with:
+#       environment: dev
+#       working-directory: deploy/terraform
+#       aws-role-to-assume: arn:aws:iam::<account>:role/<ci-terraform-plan-role-dev>
+#       apply: ${{ github.ref == 'refs/heads/main' }}
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Target environment (dev, staging, prod); also the GitHub environment used for apply.
+        type: string
+        required: true
+      working-directory:
+        type: string
+        default: deploy/terraform
+      terraform-version:
+        type: string
+        default: 1.9.8
+      aws-region:
+        type: string
+        default: me-central-1
+      aws-role-to-assume:
+        description: Role used for plan (read-mostly).
+        type: string
+        required: true
+      apply-role-to-assume:
+        description: Role used for apply. Empty = aws-role-to-assume.
+        type: string
+        default: ""
+      backend-config-file:
+        description: Backend config file relative to working-directory. Empty = environments/<env>.backend.hcl when present.
+        type: string
+        default: ""
+      state-bucket:
+        description: S3 state bucket (used when no backend file is found).
+        type: string
+        default: ""
+      state-key:
+        description: S3 state key, e.g. lending/loan-lifecycle-service/terraform.tfstate.
+        type: string
+        default: ""
+      lock-table:
+        description: DynamoDB lock table.
+        type: string
+        default: ""
+      var-file:
+        description: tfvars file relative to working-directory. Empty = environments/<env>.tfvars when present.
+        type: string
+        default: ""
+      apply:
+        description: Apply the saved plan after environment approval.
+        type: boolean
+        default: false
+      comment-on-pr:
+        description: Post the plan as a pull request comment.
+        type: boolean
+        default: false
+      timeout-minutes:
+        type: number
+        default: 30
+    outputs:
+      has-changes:
+        description: "true when the plan contains changes."
+        value: ${{ jobs.plan.outputs.has-changes }}
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: terraform/static
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  plan:
+    name: terraform/plan-${{ inputs.environment }}
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: terraform-${{ github.repository }}-${{ inputs.working-directory }}-${{ inputs.environment }}
+      cancel-in-progress: false
+    outputs:
+      has-changes: ${{ steps.plan.outputs.has-changes }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      TARGET_ENV: ${{ inputs.environment }}
+      BACKEND_CONFIG_FILE: ${{ inputs.backend-config-file }}
+      STATE_BUCKET: ${{ inputs.state-bucket }}
+      STATE_KEY: ${{ inputs.state-key }}
+      LOCK_TABLE: ${{ inputs.lock-table }}
+      AWS_REGION_INPUT: ${{ inputs.aws-region }}
+      VAR_FILE: ${{ inputs.var-file }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ inputs.aws-role-to-assume }}
+          role-session-name: gha-tfplan-${{ inputs.environment }}-${{ github.run_id }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: terraform init (S3 backend)
+        run: |
+          set -euo pipefail
+          backend_file="${BACKEND_CONFIG_FILE:-environments/${TARGET_ENV}.backend.hcl}"
+          if [ -f "$backend_file" ]; then
+            terraform init -input=false -backend-config="$backend_file"
+          elif [ -n "$STATE_BUCKET" ] && [ -n "$STATE_KEY" ]; then
+            args=(-backend-config="bucket=$STATE_BUCKET" -backend-config="key=$STATE_KEY"
+                  -backend-config="region=$AWS_REGION_INPUT" -backend-config="encrypt=true")
+            if [ -n "$LOCK_TABLE" ]; then args+=(-backend-config="dynamodb_table=$LOCK_TABLE"); fi
+            terraform init -input=false "${args[@]}"
+          else
+            echo "::error::No backend: commit $backend_file or pass state-bucket and state-key"
+            exit 1
+          fi
+
+      - name: terraform plan
+        id: plan
+        run: |
+          set -euo pipefail
+          var_file="${VAR_FILE:-environments/${TARGET_ENV}.tfvars}"
+          args=(-input=false -lock-timeout=5m -out=tfplan -detailed-exitcode)
+          if [ -f "$var_file" ]; then args+=(-var-file="$var_file"); fi
+          set +e
+          terraform plan "${args[@]}"
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "has-changes=false" >> "$GITHUB_OUTPUT" ;;
+            2) echo "has-changes=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$code" ;;
+          esac
+          terraform show -no-color tfplan > plan.txt
+          {
+            echo "### terraform plan (${TARGET_ENV})"
+            echo '```'
+            grep -E '^(Plan:|No changes)' plan.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          # The binary plan can contain sensitive values; keep retention short.
+          name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+          path: |
+            ${{ inputs.working-directory }}/tfplan
+            ${{ inputs.working-directory }}/plan.txt
+            ${{ inputs.working-directory }}/.terraform.lock.hcl
+          retention-days: 5
+
+  comment:
+    name: terraform/pr-comment-${{ inputs.environment }}
+    needs: plan
+    if: ${{ inputs.comment-on-pr && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+          path: plan
+      - name: Comment plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TARGET_ENV: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          {
+            echo "#### terraform plan: ${TARGET_ENV}"
+            echo '<details><summary>Show plan</summary>'
+            echo
+            echo '```'
+            head -c 60000 plan/plan.txt
+            echo '```'
+            echo '</details>'
+          } > comment.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+
+  apply:
+    name: terraform/apply-${{ inputs.environment }}
+    needs: plan
+    if: ${{ inputs.apply && needs.plan.outputs.has-changes == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: terraform-${{ github.repository }}-${{ inputs.working-directory }}-${{ inputs.environment }}-apply
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      TARGET_ENV: ${{ inputs.environment }}
+      BACKEND_CONFIG_FILE: ${{ inputs.backend-config-file }}
+      STATE_BUCKET: ${{ inputs.state-bucket }}
+      STATE_KEY: ${{ inputs.state-key }}
+      LOCK_TABLE: ${{ inputs.lock-table }}
+      AWS_REGION_INPUT: ${{ inputs.aws-region }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ inputs.apply-role-to-assume != '' && inputs.apply-role-to-assume || inputs.aws-role-to-assume }}
+          role-session-name: gha-tfapply-${{ inputs.environment }}-${{ github.run_id }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ inputs.working-directory }}
+
+      - name: terraform init (S3 backend)
+        run: |
+          set -euo pipefail
+          backend_file="${BACKEND_CONFIG_FILE:-environments/${TARGET_ENV}.backend.hcl}"
+          if [ -f "$backend_file" ]; then
+            terraform init -input=false -lockfile=readonly -backend-config="$backend_file"
+          else
+            args=(-backend-config="bucket=$STATE_BUCKET" -backend-config="key=$STATE_KEY"
+                  -backend-config="region=$AWS_REGION_INPUT" -backend-config="encrypt=true")
+            if [ -n "$LOCK_TABLE" ]; then args+=(-backend-config="dynamodb_table=$LOCK_TABLE"); fi
+            terraform init -input=false -lockfile=readonly "${args[@]}"
+          fi
+
+      - name: terraform apply (saved plan)
+        # Terraform refuses a stale saved plan if state changed after the plan.
+        run: terraform apply -input=false -lock-timeout=5m tfplan

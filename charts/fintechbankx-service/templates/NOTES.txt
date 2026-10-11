@@ -1,0 +1,4 @@
+{{ include "fbx.name" . }} ({{ .Values.serviceId }}) released to namespace {{ .Release.Namespace }}.
+Image: {{ include "fbx.image" . }}
+API:        http://{{ include "fbx.name" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+Management: http://{{ include "fbx.name" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.managementPort }}/actuator/health

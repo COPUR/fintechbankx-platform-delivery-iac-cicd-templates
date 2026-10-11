@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fbx.name" . }}
+  labels:
+    {{- include "fbx.labels" . | nindent 4 }}
+data:
+  SERVER_PORT: {{ .Values.service.port | quote }}
+  MANAGEMENT_SERVER_PORT: {{ .Values.service.managementPort | quote }}
+  {{- range $key, $value := .Values.config }}
+  {{ $key | quote }}: {{ $value | quote }}
+  {{- end }}

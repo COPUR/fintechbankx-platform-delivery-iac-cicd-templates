@@ -1,0 +1,175 @@
+{{- include "fbx.guard" . -}}
+{{- include "fbx.validateEgressCidrs" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fbx.name" . }}
+  labels:
+    {{- include "fbx.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ int .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: {{ int .Values.revisionHistoryLimit }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "fbx.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fbx.podLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.istio.holdApplicationUntilProxyStarts }}
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        {{- end }}
+        {{- if not .Values.observability.serviceMonitor.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.service.managementPort | quote }}
+        prometheus.io/path: /actuator/prometheus
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "fbx.serviceAccountName" . | quote }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      terminationGracePeriodSeconds: {{ int .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: {{ int .Values.topologySpread.maxSkew }}
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: {{ .Values.topologySpread.zoneWhenUnsatisfiable | quote }}
+          labelSelector:
+            matchLabels:
+              {{- include "fbx.selectorLabels" . | nindent 14 }}
+        - maxSkew: {{ int .Values.topologySpread.maxSkew }}
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: {{ .Values.topologySpread.hostWhenUnsatisfiable | quote }}
+          labelSelector:
+            matchLabels:
+              {{- include "fbx.selectorLabels" . | nindent 14 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ include "fbx.name" . }}
+          image: {{ include "fbx.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | quote }}
+          ports:
+            - name: http
+              containerPort: {{ int .Values.service.port }}
+              protocol: TCP
+            - name: management
+              containerPort: {{ int .Values.service.managementPort }}
+              protocol: TCP
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: {{ .Values.javaToolOptions | quote }}
+            - name: FINTECHBANKX_SERVICE_ID
+              value: {{ .Values.serviceId | quote }}
+            {{- with include "fbx.kafkaProfile" . }}
+            - name: SPRING_PROFILES_ACTIVE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.observability.tracing.enabled }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.serviceId | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.observability.tracing.otlpEndpoint | quote }}
+            - name: MANAGEMENT_OTLP_TRACING_ENDPOINT
+              value: {{ printf "%s/v1/traces" .Values.observability.tracing.otlpEndpoint | quote }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ printf "service.namespace=%s,deployment.environment=%s" .Values.boundedContext (default "unset" .Values.environment) | quote }}
+            {{- end }}
+            {{- if .Values.databaseCa.enabled }}
+            - name: DB_SSL_ROOT_CERT
+              value: {{ printf "%s/%s" (trimSuffix "/" .Values.databaseCa.mountPath) .Values.databaseCa.key | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "fbx.name" . }}
+            {{- if .Values.externalSecret.enabled }}
+            - secretRef:
+                name: {{ include "fbx.secretName" . }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.startup.path | quote }}
+              port: management
+            periodSeconds: {{ int .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ int .Values.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path | quote }}
+              port: management
+            periodSeconds: {{ int .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ int .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path | quote }}
+              port: management
+            periodSeconds: {{ int .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ int .Values.probes.readiness.failureThreshold }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ int .Values.preStopSleepSeconds }}"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.databaseCa.enabled }}
+            - name: database-ca
+              mountPath: {{ .Values.databaseCa.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- if .Values.databaseCa.enabled }}
+        - name: database-ca
+          configMap:
+            name: {{ .Values.databaseCa.configMapName | quote }}
+            items:
+              - key: {{ .Values.databaseCa.key | quote }}
+                path: {{ .Values.databaseCa.key | quote }}
+        {{- end }}

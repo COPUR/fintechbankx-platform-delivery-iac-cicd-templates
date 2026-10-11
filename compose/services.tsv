@@ -1,0 +1,9 @@
+# Service registry for the local/ephemeral runtime (tab separated).
+# Database, schema and role match each service repo's application.yml (spring.datasource, spring.flyway.schemas).
+# key	service_id	profiles	database	schema	app_role	credential_var	image_var	host_port
+loan-lifecycle-service	svc-ln-loan-lifecycle	lending,services	db_ln_loan_lifecycle_local	sc_ln_loan_lifecycle	loan_lifecycle_app	FBX_DB_CRED_LN_LOAN_LIFECYCLE	FBX_IMAGE_LN_LOAN_LIFECYCLE	18010
+payment-initiation-settlement-service	svc-pay-initiation-settlement	payments,services	db_pay_initiation_settlement_local	sc_pay_initiation_settlement	payment_initiation_app	FBX_DB_CRED_PAY_INITIATION_SETTLEMENT	FBX_IMAGE_PAY_INITIATION_SETTLEMENT	18020
+customer-profile-kyc-service	svc-cus-profile-kyc	lending,customer,services	db_cus_profile_kyc_local	sc_cus_profile_kyc	customer_profile_app	FBX_DB_CRED_CUS_PROFILE_KYC	FBX_IMAGE_CUS_PROFILE_KYC	18030
+risk-decisioning-service	svc-rsk-decisioning	payments,riskcompliance,services	db_rsk_decisioning_local	sc_rsk_decisioning	risk_decisioning_app	FBX_DB_CRED_RSK_DECISIONING	FBX_IMAGE_RSK_DECISIONING	18040
+compliance-evidence-service	svc-cmp-evidence	payments,riskcompliance,services	db_cmp_evidence_local	sc_cmp_evidence	compliance_evidence_app	FBX_DB_CRED_CMP_EVIDENCE	FBX_IMAGE_CMP_EVIDENCE	18050
+monolith	elms-monolith	monolith	db_elms_monolith_local	public	elms_monolith_app	FBX_DB_CRED_ELMS_MONOLITH	FBX_MONOLITH_IMAGE	18000

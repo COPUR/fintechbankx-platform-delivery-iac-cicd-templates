@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fbx.name" . }}
+  labels:
+    {{- include "fbx.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "fbx.selectorLabels" . | nindent 4 }}
+  ports:
+    # Port names carry the protocol prefix Istio uses for protocol selection.
+    - name: http
+      port: {{ int .Values.service.port }}
+      targetPort: http
+      appProtocol: http
+    - name: http-management
+      port: {{ int .Values.service.managementPort }}
+      targetPort: management
+      appProtocol: http

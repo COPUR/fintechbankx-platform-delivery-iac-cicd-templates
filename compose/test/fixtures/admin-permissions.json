@@ -1,0 +1,13 @@
+{
+  "realm": "fintechbankx",
+  "permissions": [
+    {
+      "name": "fbx-customers-customer-service",
+      "resourceType": "Groups",
+      "groupPaths": ["/customers"],
+      "scopes": ["view-members", "manage-members"],
+      "decisionStrategy": "UNANIMOUS",
+      "policy": { "name": "fbx-customer-service-client", "type": "client", "logic": "POSITIVE", "clients": ["svc-cus-profile-kyc"] }
+    }
+  ]
+}

@@ -1,0 +1,169 @@
+suite: datasource and PgJDBC TLS parameter names on every input route
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # Besides the spring.datasource/flyway/liquibase/r2dbc prefixes
+  # (database_override_names_test.yaml), fbx.overrideNameReason refuses any
+  # name containing jdbc[._-]?url, ssl[._-]?factory,
+  # ssl[._-]?host[._-]?name[._-]?verifier or ssl[._-]?password[._-]?callback
+  # (datasource override), and any name containing ssl[._-]?root[._-]?cert or
+  # ssl[._-]?mode (TLS parameter override). DB_SSL_ROOT_CERT is rendered by the
+  # chart from databaseCa; an extraEnv entry of that name comes later in the
+  # env list and would replace it (an empty value turns off the customer, risk
+  # and compliance startup guards, which are active only while it is set).
+  - it: rejects config spring.datasource.hikari.jdbc-url (kebab)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.datasource.hikari.jdbc-url: jdbc:postgresql://db.example.internal:5432/db?sslmode=disable
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.datasource.hikari.jdbc-url is not allowed"
+  - it: rejects extraEnv spring.datasource.hikari.data-source-properties.sslfactory
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.datasource.hikari.data-source-properties.sslfactory
+          value: org.postgresql.ssl.NonValidatingFactory
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.datasource.hikari.data-source-properties.sslfactory"
+  - it: rejects config reporting.jdbc-url (kebab)
+    template: templates/deployment.yaml
+    set:
+      config:
+        reporting.jdbc-url: jdbc:postgresql://db.example.internal:5432/db
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.reporting.jdbc-url is not allowed"
+  - it: rejects extraEnv REPORTING_JDBCURL from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: REPORTING_JDBCURL
+          valueFrom:
+            secretKeyRef: {name: other, key: url}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set REPORTING_JDBCURL"
+  - it: rejects config PGJDBC_SSL_FACTORY (separator inside sslfactory)
+    template: templates/deployment.yaml
+    set:
+      config.PGJDBC_SSL_FACTORY: org.postgresql.ssl.NonValidatingFactory
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.PGJDBC_SSL_FACTORY is not allowed"
+  - it: rejects extraEnv APP_SSL_HOSTNAME_VERIFIER
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: APP_SSL_HOSTNAME_VERIFIER
+          value: com.example.AllowAll
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set APP_SSL_HOSTNAME_VERIFIER"
+  - it: rejects config SSLPASSWORDCALLBACK
+    template: templates/deployment.yaml
+    set:
+      config.SSLPASSWORDCALLBACK: com.example.Callback
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SSLPASSWORDCALLBACK is not allowed"
+  - it: rejects externalSecret.data materialising db.ssl-password-callback
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: db.ssl-password-callback
+          property: callback
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise db.ssl-password-callback"
+  - it: rejects extraEnv DB_SSL_ROOT_CERT with an empty value (would replace the chart's entry)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: DB_SSL_ROOT_CERT
+          value: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set DB_SSL_ROOT_CERT .*databaseCa"
+  - it: rejects extraEnv db.ssl-root-cert from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: db.ssl-root-cert
+          valueFrom:
+            configMapKeyRef: {name: other, key: ca}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set db.ssl-root-cert"
+  - it: rejects config PGSSLROOTCERT
+    template: templates/deployment.yaml
+    set:
+      config.PGSSLROOTCERT: /tmp/any-ca.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.PGSSLROOTCERT is not allowed"
+  - it: rejects externalSecret.extraData materialising DB_SSL_ROOT_CERT
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: DB_SSL_ROOT_CERT
+          remoteSecretName: staging/loan-lifecycle-service/ca
+          property: path
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise DB_SSL_ROOT_CERT"
+  - it: rejects config OPF_DB_SSL_MODE (sslmode by name)
+    template: templates/deployment.yaml
+    set:
+      config.OPF_DB_SSL_MODE: disable
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.OPF_DB_SSL_MODE is not allowed"
+  - it: rejects extraEnv db.sslmode
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: db.sslmode
+          value: require
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set db.sslmode"
+  # JVM options: any of these as a system property mentions ssl or jdbc.
+  - it: rejects javaToolOptions with -Dsslfactory=
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dsslfactory=org.postgresql.ssl.NonValidatingFactory"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects extraEnv JDK_JAVA_OPTIONS with -DDB_SSL_ROOT_CERT=
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JDK_JAVA_OPTIONS
+          value: "-DDB_SSL_ROOT_CERT="
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not mention"
+  - it: keeps the chart's own DB_SSL_ROOT_CERT and accepts unrelated names (control)
+    template: templates/deployment.yaml
+    set:
+      config.APP_ROOT_CERTIFICATE_NOTE: x
+      config.SSL_NOTE: x
+      extraEnv:
+        - name: REPORTING_URL_LABEL
+          value: x
+    asserts:
+      - notFailedTemplate: {}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DB_SSL_ROOT_CERT, value: /etc/fintechbankx/rds-ca/global-bundle.pem}
+          count: 1

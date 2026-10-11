@@ -1,0 +1,64 @@
+name: tdd-gate
+
+# Reusable "tests travel with code" gate (ADR-029 decision 1.2): a pull request
+# that changes anything under src/main/ must change something in a test source
+# set (src/test/, src/<name>Test/ such as src/integrationTest/, or
+# src/testFixtures/), unless it carries the label `no-behaviour-change`. The logic and its tests
+# live in scripts/ci/tdd-gate.mjs of this repository.
+#
+# Call it from a workflow triggered by pull_request with the label events, so
+# adding or removing the label re-runs the gate:
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, labeled, unlabeled]
+#   jobs:
+#     tdd:
+#       uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/tdd-gate.yml@main
+#       permissions:
+#         contents: read
+
+on:
+  workflow_call:
+    inputs:
+      platform-repository:
+        type: string
+        default: COPUR/fintechbankx-platform-delivery-iac-cicd-templates
+      platform-ref:
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  tdd-gate:
+    name: ci/tdd-gate
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout gate script
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.platform-repository }}
+          ref: ${{ inputs.platform-ref }}
+          path: .fbx-platform
+          sparse-checkout: scripts/ci
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Tests travel with code
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: node .fbx-platform/scripts/ci/tdd-gate.mjs --base "$BASE_SHA" --head "$HEAD_SHA" --labels "$LABELS"

@@ -1,0 +1,370 @@
+suite: database CA bundle - Aurora sslmode=verify-full
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # The mesh repo's trust-manager Bundle rds-ca-bundle publishes ConfigMap
+  # rds-ca-bundle (key global-bundle.pem) in every service namespace; the
+  # terraform-modules aurora-postgresql jdbc_url trusts
+  # /etc/fintechbankx/rds-ca/global-bundle.pem (sslmode=verify-full).
+  - it: mounts ConfigMap rds-ca-bundle read-only at /etc/fintechbankx/rds-ca by default
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: database-ca
+            configMap:
+              name: rds-ca-bundle
+              items:
+                - {key: global-bundle.pem, path: global-bundle.pem}
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: {name: database-ca, mountPath: /etc/fintechbankx/rds-ca, readOnly: true}
+  - it: exposes the bundle path as DB_SSL_ROOT_CERT
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DB_SSL_ROOT_CERT, value: /etc/fintechbankx/rds-ca/global-bundle.pem}
+  - it: fails closed when the ConfigMap is missing (no optional volume)
+    template: templates/deployment.yaml
+    asserts:
+      - notExists: {path: "spec.template.spec.volumes[?(@.name == 'database-ca')].configMap.optional"}
+  - it: can be turned off for services without a relational database
+    template: templates/deployment.yaml
+    set:
+      databaseCa.enabled: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.volumes
+          content: {name: database-ca}
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DB_SSL_ROOT_CERT}
+          any: true
+  # The mount is pinned (fbx.validateDatabaseCa): a values-chosen mountPath
+  # can put a ConfigMap where the service reads files (/app is the image
+  # WORKDIR and Spring Boot loads optional:file:./config/application.yml, which
+  # can activate the local profile or set fintechbankx.tls.enforce=false), and
+  # a values-chosen ConfigMap or key replaces the database trust anchor.
+  - it: rejects a mountPath other than /etc/fintechbankx/rds-ca (e.g. /app/config, where Spring Boot reads config files)
+    template: templates/deployment.yaml
+    set:
+      databaseCa.mountPath: /app/config
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/app/config/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "databaseCa.mountPath must be /etc/fintechbankx/rds-ca \\(got \"/app/config\"\\)"
+  - it: rejects a mountPath with a trailing slash (the pinned path is written once)
+    template: templates/deployment.yaml
+    set:
+      databaseCa.mountPath: /etc/fintechbankx/rds-ca/
+    asserts:
+      - failedTemplate:
+          errorPattern: "databaseCa.mountPath must be /etc/fintechbankx/rds-ca"
+  - it: rejects a key other than global-bundle.pem
+    template: templates/deployment.yaml
+    set:
+      databaseCa.key: other-bundle.pem
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/other-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "databaseCa.key must be global-bundle.pem \\(got \"other-bundle.pem\"\\)"
+  - it: rejects a ConfigMap other than rds-ca-bundle (replaces the database trust anchor)
+    template: templates/deployment.yaml
+    set:
+      databaseCa.configMapName: any-config
+    asserts:
+      - failedTemplate:
+          errorPattern: "databaseCa.configMapName must be rds-ca-bundle \\(got \"any-config\"\\)"
+  # Helm deletes a key a values file sets to null; the guard requires
+  # configMapName while databaseCa.enabled, so a deleted key is refused too.
+  - it: rejects a null configMapName (Helm deletes the key; the volume would name no ConfigMap)
+    template: templates/deployment.yaml
+    set:
+      databaseCa.configMapName: null
+    asserts:
+      - failedTemplate:
+          errorPattern: "databaseCa.configMapName is required while databaseCa.enabled"
+  - it: does not check the mount while databaseCa is disabled (nothing is mounted)
+    template: templates/deployment.yaml
+    set:
+      databaseCa.enabled: false
+      databaseCa.mountPath: /app/config
+      databaseCa.configMapName: any-config
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full
+    asserts:
+      - notFailedTemplate: {}
+      - notContains:
+          path: spec.template.spec.volumes
+          content: {name: database-ca}
+          any: true
+  - it: rejects a DB_URL that does not verify the server certificate
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=require
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must use sslmode=verify-full"
+  # The query string is parsed (split after '?', then '&', key=value) instead
+  # of searched for a substring; one case per known bypass of a substring check.
+  - it: rejects a second sslmode after verify-full (the driver keeps the last one)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslmode=require
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must set sslmode exactly once"
+  - it: rejects verify-full hidden in another key name (xsslmode=verify-full&sslmode=disable)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?xsslmode=verify-full&sslmode=disable&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must use sslmode=verify-full"
+  - it: rejects an sslrootcert other than the mounted CA bundle
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/tmp/attacker.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must set sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem exactly once"
+  - it: rejects a missing sslrootcert while databaseCa is enabled
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must set sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem exactly once"
+  - it: rejects sslfactory (NonValidatingFactory skips certificate checks)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslfactory=org.postgresql.ssl.NonValidatingFactory
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must not set sslfactory"
+  - it: rejects sslhostnameverifier (replaces host name verification)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslhostnameverifier=com.example.AllowAll
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must not set sslhostnameverifier"
+  - it: rejects service= (pg_service.conf can override the TLS settings)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&service=loan
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must not set service"
+  - it: rejects a percent-encoded parameter (sslmode%3Ddisable)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslmode%3Ddisable
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must not percent-encode"
+  - it: rejects a percent sign in a parameter name (ssl%6Dode=disable)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&ssl%6Dode=disable
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL has a query parameter name that is not plain"
+  - it: rejects a TLS key in another case (SSLMODE is ignored by the driver)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?SSLMODE=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must spell SSLMODE in lower case"
+  - it: rejects sslmode outside the query string
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db;sslmode=disable?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must carry TLS parameters only in the query string"
+  - it: rejects a config SPRING_DATASOURCE_URL (DB_URL is the one allowed place)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_DATASOURCE_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=require
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_DATASOURCE_URL is not allowed"
+  - it: rejects extraEnv DB_URL (the URL belongs in config, where it is checked)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: DB_URL
+          value: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=require
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set DB_URL"
+  - it: rejects extraEnv SPRING_DATASOURCE_URL
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_DATASOURCE_URL
+          value: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=require
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_DATASOURCE_URL"
+  - it: checks every extraEnv jdbc:postgresql value under another name
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: REPORTING_DB_JDBC
+          value: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=require
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.REPORTING_DB_JDBC must use sslmode=verify-full"
+  - it: checks wrapped drivers too (jdbc:aws-wrapper:postgresql)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:aws-wrapper:postgresql://db.example.internal:5432/db?sslmode=require
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must use sslmode=verify-full"
+  - it: accepts verify-full with the mounted bundle and other plain parameters
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&ApplicationName=loan&connectTimeout=10
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts verify-full without sslrootcert when databaseCa is disabled
+    template: templates/deployment.yaml
+    set:
+      databaseCa.enabled: false
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full
+    asserts:
+      - notFailedTemplate: {}
+  # A JDBC URL materialised from Secrets Manager is never seen by the chart, so
+  # the env names the URL lives in may not come from the ExternalSecret.
+  - it: rejects externalSecret.data materialising DB_URL
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: DB_URL
+          property: jdbc_url
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise DB_URL"
+  - it: rejects externalSecret.extraData materialising SPRING_DATASOURCE_URL
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: SPRING_DATASOURCE_URL
+          remoteSecretName: staging/loan-lifecycle-service/db-url
+          property: url
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise SPRING_DATASOURCE_URL"
+  - it: rejects a lower-case spring_datasource_url secret key too
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring_datasource_url
+          remoteSecretName: staging/loan-lifecycle-service/db-url
+          property: url
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring_datasource_url"
+  - it: keeps the database password from the secret (control)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_DATASOURCE_PASSWORD
+          property: password
+    asserts:
+      - notFailedTemplate: {}
+  - it: rejects sslpasswordcallback (loads an arbitrary class in the driver)
+    template: templates/deployment.yaml
+    set:
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslpasswordcallback=com.example.Callback
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.DB_URL must not set sslpasswordcallback"
+  - it: rejects extraEnv SPRING_DATASOURCE_HIKARI_JDBC_URL by name (SPRING_DATASOURCE_*URL)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: Spring_Datasource_Hikari_Jdbc_Url
+          value: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set Spring_Datasource_Hikari_Jdbc_Url"
+  - it: rejects extraEnv SPRING_FLYWAY_URL
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_FLYWAY_URL
+          value: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_FLYWAY_URL"
+  - it: rejects extraEnv SPRING_APPLICATION_JSON
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring_application_json
+          value: '{"spring.datasource.url":"x"}'
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring_application_json"
+  - it: rejects config SPRING_FLYWAY_URL
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_FLYWAY_URL: jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_FLYWAY_URL is not allowed"
+  - it: rejects config SPRING_APPLICATION_JSON
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_APPLICATION_JSON: '{"spring.datasource.url":"x"}'
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_APPLICATION_JSON is not allowed"
+  - it: rejects config SPRING_DATASOURCE_HIKARI_JDBC_URL
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_DATASOURCE_HIKARI_JDBC_URL: x
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_DATASOURCE_HIKARI_JDBC_URL is not allowed"
+  - it: rejects externalSecret SPRING_DATASOURCE_HIKARI_JDBC_URL (SPRING_DATASOURCE_*URL, any case)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: Spring_Datasource_Hikari_Jdbc_Url
+          remoteSecretName: staging/loan-lifecycle-service/db-url
+          property: url
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise Spring_Datasource_Hikari_Jdbc_Url"
+  - it: rejects externalSecret SPRING_FLYWAY_URL
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_FLYWAY_URL
+          property: url
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_FLYWAY_URL"
+  - it: rejects externalSecret SPRING_APPLICATION_JSON
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_APPLICATION_JSON
+          property: json
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_APPLICATION_JSON"

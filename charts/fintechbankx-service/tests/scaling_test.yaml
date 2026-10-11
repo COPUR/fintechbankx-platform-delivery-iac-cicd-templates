@@ -1,0 +1,34 @@
+suite: hpa and pdb
+templates:
+  - templates/hpa.yaml
+  - templates/pdb.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+tests:
+  - it: autoscales on CPU and memory between 3 and 12 replicas
+    template: templates/hpa.yaml
+    asserts:
+      - isKind: {of: HorizontalPodAutoscaler}
+      - equal: {path: spec.minReplicas, value: 3}
+      - equal: {path: spec.maxReplicas, value: 12}
+      - equal: {path: "spec.metrics[0].resource.name", value: cpu}
+      - equal: {path: "spec.metrics[1].resource.name", value: memory}
+  - it: keeps two pods available during disruptions
+    template: templates/pdb.yaml
+    asserts:
+      - isKind: {of: PodDisruptionBudget}
+      - equal: {path: spec.minAvailable, value: 2}
+      - equal: {path: "spec.selector.matchLabels[\"app.kubernetes.io/component\"]", value: service}
+  - it: refuses a PDB that would block node drains
+    template: templates/pdb.yaml
+    set:
+      podDisruptionBudget.minAvailable: 3
+    asserts:
+      - failedTemplate:
+          errorPattern: must be lower than the minimum replica count
+  - it: renders no HPA when autoscaling is off
+    template: templates/hpa.yaml
+    set:
+      autoscaling.enabled: false
+    asserts:
+      - hasDocuments: {count: 0}

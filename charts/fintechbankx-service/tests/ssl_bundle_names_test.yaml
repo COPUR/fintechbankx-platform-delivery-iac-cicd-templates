@@ -1,0 +1,136 @@
+suite: SSL bundle and JVM trust-store overrides
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # A spring.ssl.bundle.* property can replace the trust anchor a service's
+  # DocumentDB or PostgreSQL client uses (spring.ssl.bundle.pem.<name>.truststore.certificate),
+  # and a *.ssl.bundle property (spring.data.mongodb.ssl.bundle,
+  # spring.kafka.ssl.bundle, ...) can point a client at another bundle.
+  # fbx.overrideNameReason refuses (?i)^spring[._-]?ssl([._-]|$) and any name
+  # containing ssl[._-]?bundle, for config keys, extraEnv names (value or
+  # valueFrom) and externalSecret data/extraData secretKeys, in every
+  # relaxed-binding spelling.
+  - it: rejects config SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE: file:/tmp/any-ca.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE is not allowed: .*trust"
+  - it: rejects config spring.ssl.bundle.pem.postgres.truststore.certificate (dotted)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.ssl.bundle.pem.postgres.truststore.certificate: file:/tmp/any-ca.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.ssl.bundle.pem.postgres.truststore.certificate is not allowed"
+  - it: rejects extraEnv spring.ssl.bundle.jks.documentdb.truststore.location
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.ssl.bundle.jks.documentdb.truststore.location
+          value: file:/tmp/any.jks
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.ssl.bundle.jks.documentdb.truststore.location"
+  - it: rejects extraEnv SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE
+          valueFrom:
+            configMapKeyRef: {name: other, key: ca}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE"
+  - it: rejects extraEnv spring.ssl[bundle].pem.x (bracket form)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: "spring.ssl[bundle].pem.x.truststore.certificate"
+          value: file:/tmp/any-ca.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.ssl\\[bundle\\].pem.x.truststore.certificate"
+  - it: rejects config spring.s-s-l.bundle.watch.file.quiet-period (dash inside an element)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.s-s-l.bundle.watch.file.quiet-period: 10s
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.s-s-l.bundle.watch.file.quiet-period is not allowed"
+  - it: rejects externalSecret.data materialising SPRING_SSL_BUNDLE_PEM_POSTGRES_TRUSTSTORE_CERTIFICATE
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_SSL_BUNDLE_PEM_POSTGRES_TRUSTSTORE_CERTIFICATE
+          property: ca
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_SSL_BUNDLE_PEM_POSTGRES_TRUSTSTORE_CERTIFICATE"
+  - it: rejects externalSecret.extraData materialising spring.ssl.bundle.jks.documentdb.truststore.password
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring.ssl.bundle.jks.documentdb.truststore.password
+          remoteSecretName: staging/loan-lifecycle-service/truststore
+          property: password
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring.ssl.bundle.jks.documentdb.truststore.password"
+  - it: rejects config SPRING_DATA_MONGODB_SSL_BUNDLE (a client pointed at another bundle)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_DATA_MONGODB_SSL_BUNDLE: other
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_DATA_MONGODB_SSL_BUNDLE is not allowed"
+  - it: rejects extraEnv spring.kafka.ssl.bundle
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.ssl.bundle
+          value: other
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.kafka.ssl.bundle"
+  # JVM options: -Dspring.ssl.bundle.*, -Djavax.net.ssl.* and other trust-store
+  # system properties are refused by the 'ssl' mention rule (fbx.validateJvmOptions).
+  - it: rejects javaToolOptions with -Dspring.ssl.bundle.pem.x.truststore.certificate
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.ssl.bundle.pem.x.truststore.certificate=file:/tmp/any-ca.pem"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects extraEnv JAVA_TOOL_OPTIONS with -Djavax.net.ssl.trustStore
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JAVA_TOOL_OPTIONS
+          value: "-Djavax.net.ssl.trustStore=/tmp/any.jks -Djavax.net.ssl.trustStorePassword=changeit"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JAVA_TOOL_OPTIONS must not mention"
+  - it: rejects config _JAVA_OPTIONS with -Djavax.net.ssl.trustStoreType
+    template: templates/deployment.yaml
+    set:
+      config._JAVA_OPTIONS: "-Djavax.net.ssl.trustStoreType=PKCS12"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config._JAVA_OPTIONS must not mention"
+  - it: accepts names that only contain spring and ssl elsewhere (control)
+    template: templates/deployment.yaml
+    set:
+      config.APP_SPRING_SSL_NOTE: x
+      config.SPRING_SSLX_NOTE: x
+    asserts:
+      - notFailedTemplate: {}

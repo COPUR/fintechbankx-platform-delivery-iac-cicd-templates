@@ -1,0 +1,117 @@
+name: delivery-templates-ci
+
+# Validates this repository's own deliverables: every workflow (actionlint,
+# including the sample callers checked against the local reusable workflows),
+# the generic Helm chart (lint, template, kubeconform, negative cases,
+# strict-mTLS scan of the rendered output, helm-unittest) and the Node tests
+# (strict-mTLS validator, compose runtime incl. `docker compose config` and the
+# per-service database init against PostgreSQL 16, ephemeral-env structure).
+
+on:
+  pull_request:
+    branches: [main, dev, staging]
+  push:
+    branches: [main, dev, staging]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delivery-templates-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  ACTIONLINT_VERSION: 1.7.7
+  HELM_VERSION: v3.16.3
+  KUBECONFORM_VERSION: v0.6.7
+  KUBE_VERSION: 1.30.0
+  HELM_UNITTEST_VERSION: v0.7.2
+
+jobs:
+  actionlint:
+    name: delivery/actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C "$tmpdir" actionlint
+          sudo install "$tmpdir/actionlint" /usr/local/bin/actionlint
+      - name: Lint workflows (shellcheck is preinstalled on the runner)
+        run: bash scripts/ci/lint-workflows.sh
+
+  helm-chart:
+    name: delivery/helm-chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C "$tmpdir"
+          sudo install "$tmpdir/kubeconform" /usr/local/bin/kubeconform
+      - name: Install helm-unittest
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version "${HELM_UNITTEST_VERSION}"
+      - run: npm ci
+      - name: Validate chart (lint, template, kubeconform, negatives, helm-unittest)
+        run: bash scripts/ci/validate-chart.sh
+
+  node-validation:
+    name: delivery/node-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16.6-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-throwaway
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # compose/test runs the per-service database init against this server.
+      FBX_TEST_PGHOST: localhost
+      FBX_TEST_PGPORT: "5432"
+      FBX_TEST_PGUSER: postgres
+      FBX_TEST_PGPASSWORD: ci-only-throwaway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm test
+      - run: npm run validate:strict-mtls
+
+  archunit-gate:
+    name: delivery/archunit-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "23"
+      - uses: gradle/actions/wrapper-validation@v4
+      - name: Test the ArchUnit gate (clean fixtures pass, violating fixture fails each rule)
+        run: tools/archunit-gate/gradlew -p tools/archunit-gate --no-daemon test installDist
+

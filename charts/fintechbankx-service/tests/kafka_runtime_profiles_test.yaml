@@ -1,0 +1,185 @@
+suite: kafka.runtime renders the only Spring profile; user-set profile names are rejected
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # kafka.runtime (enum "", msk, strimzi) selects the Kafka auth profile the
+  # Kafka repo's client guide names: msk -> SPRING_PROFILES_ACTIVE=kafka-msk
+  # (Amazon MSK IAM, SASL_SSL), strimzi -> kafka-strimzi (Strimzi mutual TLS,
+  # SSL). "" renders no profile and is allowed only while no
+  # security.protocol name is set (kafka_runtime_required_test.yaml). Every
+  # user-set spring.profiles.* name is still rejected: (?i)^spring[._-]?profiles([._-]|$), which also covers
+  # spring.profiles.default (activates e.g. local when no profile is active)
+  # and spring.profiles.group.* (can expand kafka-msk into local).
+  - it: renders SPRING_PROFILES_ACTIVE=kafka-msk for kafka.runtime msk
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: msk
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: SPRING_PROFILES_ACTIVE, value: kafka-msk}
+          count: 1
+  - it: renders SPRING_PROFILES_ACTIVE=kafka-strimzi for kafka.runtime strimzi
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: SPRING_PROFILES_ACTIVE, value: kafka-strimzi}
+          count: 1
+  - it: rejects kafka.runtime local (schema enum)
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "kafka.runtime"
+  - it: rejects kafka.runtime "msk,local" (schema enum, no profile list)
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: "msk,local"
+    asserts:
+      - failedTemplate:
+          errorPattern: "kafka.runtime"
+  - it: rejects kafka.runtime true (YAML boolean)
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "kafka.runtime"
+  - it: rejects unknown keys under kafka (e.g. kafka.profile)
+    template: templates/deployment.yaml
+    set:
+      kafka.profile: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "kafka"
+  # Must-fail profile names, local in several spellings and routes.
+  - it: rejects config SPRING_PROFILES_ACTIVE=local
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_PROFILES_ACTIVE: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_PROFILES_ACTIVE is not allowed: .*kafka.runtime"
+  - it: rejects config spring.profiles.active=LOCAL
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.profiles.active: LOCAL
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.profiles.active is not allowed"
+  - it: rejects config SPRING_PROFILES_DEFAULT=local
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_PROFILES_DEFAULT: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_PROFILES_DEFAULT is not allowed"
+  - it: rejects config SPRING_PROFILES_GROUP_KAFKAMSK=local
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_PROFILES_GROUP_KAFKAMSK: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_PROFILES_GROUP_KAFKAMSK is not allowed"
+  - it: rejects config spring.profiles (bare, legacy property)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.profiles: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.profiles is not allowed"
+  - it: rejects extraEnv SPRING_PROFILES_ACTIVE=kafka-msk,local even with kafka.runtime msk
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: msk
+      extraEnv:
+        - name: SPRING_PROFILES_ACTIVE
+          value: kafka-msk,local
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_PROFILES_ACTIVE"
+  - it: rejects extraEnv SPRING_PROFILES_ACTIVE_0_ (indexed list element)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_PROFILES_ACTIVE_0_
+          value: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_PROFILES_ACTIVE_0_"
+  - it: rejects extraEnv SPRING_PROFILES_DEFAULT from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_PROFILES_DEFAULT
+          valueFrom:
+            configMapKeyRef: {name: other, key: profile}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_PROFILES_DEFAULT"
+  - it: rejects extraEnv spring.profiles.group.kafka-msk from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.profiles.group.kafka-msk
+          valueFrom:
+            secretKeyRef: {name: other, key: group}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.profiles.group.kafka-msk"
+  - it: rejects externalSecret.data materialising SPRING_PROFILES_ACTIVE
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_PROFILES_ACTIVE
+          property: profile
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_PROFILES_ACTIVE"
+  - it: rejects externalSecret.extraData materialising spring_profiles_default
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring_profiles_default
+          remoteSecretName: staging/loan-lifecycle-service/profiles
+          property: default
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring_profiles_default"
+  - it: rejects externalSecret.extraData materialising SPRING_PROFILES_GROUP_KAFKAMSK
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: SPRING_PROFILES_GROUP_KAFKAMSK
+          remoteSecretName: staging/loan-lifecycle-service/profiles
+          property: group
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise SPRING_PROFILES_GROUP_KAFKAMSK"
+  - it: rejects javaToolOptions with -Dspring.profiles.default=local
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.profiles.default=local"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: accepts names that only contain spring and profiles elsewhere (control)
+    template: templates/deployment.yaml
+    set:
+      config.APP_SPRING_PROFILES_GROUP_NOTE: x
+      config.SPRING_PROFILESET_NOTE: x
+    asserts:
+      - notFailedTemplate: {}

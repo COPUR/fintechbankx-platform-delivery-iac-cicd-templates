@@ -1,0 +1,536 @@
+suite: values.schema.json rejections
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+tests:
+  - it: accepts the fixture (control case for the rejections below)
+    template: templates/deployment.yaml
+    asserts:
+      - notFailedTemplate: {}
+  - it: rejects a mutable latest tag
+    template: templates/deployment.yaml
+    set:
+      image.digest: ""
+      image.tag: latest
+    asserts:
+      - failedTemplate:
+          errorPattern: "image.tag: Must not validate"
+  - it: rejects a malformed digest
+    template: templates/deployment.yaml
+    set:
+      image.digest: sha256:abc
+    asserts:
+      - failedTemplate:
+          errorPattern: "image.digest: Does not match pattern"
+  - it: rejects a service id outside the naming standard
+    template: templates/deployment.yaml
+    set:
+      serviceId: loan-service
+    asserts:
+      - failedTemplate:
+          errorPattern: "serviceId: Does not match pattern"
+  - it: rejects disabling sidecar injection
+    template: templates/deployment.yaml
+    set:
+      istio.inject: false
+    asserts:
+      - failedTemplate:
+          errorPattern: "istio.inject"
+  - it: rejects the excludeInboundPorts annotation
+    template: templates/deployment.yaml
+    set:
+      podAnnotations:
+        traffic.sidecar.istio.io/excludeInboundPorts: "8081"
+    asserts:
+      - failedTemplate:
+          errorPattern: "podAnnotations: Must not validate"
+  - it: rejects a secret store kind other than ClusterSecretStore/SecretStore
+    template: templates/deployment.yaml
+    set:
+      externalSecret.secretStoreRef.kind: Vault
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.secretStoreRef.kind"
+  - it: rejects an extraData remote secret name outside <env>/<service>/...
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: ANY
+          remoteSecretName: shared-platform-secret
+          property: value
+    asserts:
+      - failedTemplate:
+          errorPattern: "remoteSecretName: Does not match pattern"
+  - it: rejects an IPv4 any-address egress CIDR
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: 0.0.0.0/0
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects an IPv6 any-address egress CIDR
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: ::/0
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR 0.0.0.0/1 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "0.0.0.0/1"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR 128.0.0.0/1 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "128.0.0.0/1"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR 10.0.0.0/7 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "10.0.0.0/7"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR ::/1 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "::/1"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR 2001:db8::/31 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "2001:db8::/31"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR 10.0.0.0 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "10.0.0.0"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: rejects egress CIDR not-a-cidr/16 (IPv4 shorter than /8, IPv6 shorter than /32, or malformed)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "not-a-cidr/16"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egressCidrs.0.cidr: Does not match pattern"
+  - it: accepts egress CIDR 10.0.0.0/8
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "10.0.0.0/8"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR 100.64.0.0/10
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "100.64.0.0/10"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR 10.20.30.40/32
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "10.20.30.40/32"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR 2001:db8:1::/48 (public IPv6 at the /48 floor)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "2001:db8:1::/48"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR fd00::/32 (ULA, inside fc00::/7, wider than /48)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "fd00::/32"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR fc00::/32 (ULA, inside fc00::/7)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "fc00::/32"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR fd00:10::/48
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "fd00:10::/48"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts a narrowed egress CIDR
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: 10.20.0.0/16
+          ports: [5432]
+    asserts:
+      - notFailedTemplate: {}
+  # Template floor (fbx.validateEgressCidrs) on top of the schema pattern:
+  # public IPv4 at most /16 unless inside RFC1918 or 100.64.0.0/10 (an AWS VPC
+  # is /16 or narrower), public IPv6 at most /48 unless inside the ULA block
+  # fc00::/7, and no IPv4-mapped IPv6 (::ffff:0:0/96) or NAT64 prefix.
+  - it: rejects egress CIDR 11.0.0.0/8 (public IPv4 broader than /16)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "11.0.0.0/8"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv4 range broader than /16"
+  - it: rejects egress CIDR 8.8.0.0/15 (public IPv4 broader than /16)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "8.8.0.0/15"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv4 range broader than /16"
+  - it: rejects egress CIDR 172.0.0.0/8 (public IPv4 broader than /16)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "172.0.0.0/8"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv4 range broader than /16"
+  - it: rejects egress CIDR 100.0.0.0/8 (public IPv4 broader than /16)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "100.0.0.0/8"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv4 range broader than /16"
+  - it: rejects egress CIDR 192.0.0.0/8 (public IPv4 broader than /16)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "192.0.0.0/8"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv4 range broader than /16"
+  - it: rejects egress CIDR 172.16.0.0/11 (public IPv4 broader than /16)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "172.16.0.0/11"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv4 range broader than /16"
+  - it: rejects egress CIDR 100.64.0.0/9 (public IPv4 broader than /16)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "100.64.0.0/9"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv4 range broader than /16"
+  - it: rejects egress CIDR ::ffff:0:0/96 (overlaps the IPv4-mapped range ::ffff:0:0/96)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "::ffff:0:0/96"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is IPv4-mapped IPv6"
+  - it: rejects egress CIDR 0:0:0:0:0:ffff:0:0/96 (overlaps the IPv4-mapped range ::ffff:0:0/96)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "0:0:0:0:0:ffff:0:0/96"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is IPv4-mapped IPv6"
+  - it: rejects egress CIDR ::ffff:10.0.0.0/104 (overlaps the IPv4-mapped range ::ffff:0:0/96)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "::ffff:10.0.0.0/104"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is IPv4-mapped IPv6"
+  - it: rejects egress CIDR ::ffff:a00:0/104 (overlaps the IPv4-mapped range ::ffff:0:0/96)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "::ffff:a00:0/104"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is IPv4-mapped IPv6"
+  - it: rejects egress CIDR ::ffff:8.8.8.8/128 (overlaps the IPv4-mapped range ::ffff:0:0/96)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "::ffff:8.8.8.8/128"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is IPv4-mapped IPv6"
+  - it: rejects egress CIDR ::/80 (overlaps the IPv4-mapped range ::ffff:0:0/96)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "::/80"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is IPv4-mapped IPv6"
+  - it: rejects egress CIDR ::/32 (overlaps the IPv4-mapped range ::ffff:0:0/96)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "::/32"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is IPv4-mapped IPv6"
+  - it: rejects egress CIDR :::/64 (malformed IPv6)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: ":::/64"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is not a valid IPv6 CIDR"
+  - it: rejects egress CIDR 1:2:3/64 (malformed IPv6)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "1:2:3/64"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is not a valid IPv6 CIDR"
+  - it: rejects egress CIDR 1::2::3/64 (malformed IPv6)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "1::2::3/64"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is not a valid IPv6 CIDR"
+  - it: rejects egress CIDR ::ffff:300.0.0.0/104 (malformed IPv6)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "::ffff:300.0.0.0/104"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is not a valid IPv6 CIDR"
+  - it: rejects egress CIDR 64:ff9b::/96 (NAT64 well-known prefix)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "64:ff9b::/96"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "overlaps the NAT64 prefix"
+  - it: rejects egress CIDR 64:ff9b::808:808/128 (NAT64 address inside 64:ff9b::/96)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "64:ff9b::808:808/128"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "overlaps the NAT64 prefix"
+  - it: rejects egress CIDR 64:ff9b::/32 (contains both NAT64 prefixes)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "64:ff9b::/32"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "overlaps the NAT64 prefix"
+  - it: rejects egress CIDR 64:ff9b:1::/48 (NAT64 local-use prefix)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "64:ff9b:1::/48"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "overlaps the NAT64 prefix"
+  - it: rejects egress CIDR 64:ff9b:1:abcd::/64 (inside 64:ff9b:1::/48)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "64:ff9b:1:abcd::/64"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "overlaps the NAT64 prefix"
+  - it: accepts egress CIDR 64:ff9b:2::/48 (next to the NAT64 prefixes)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "64:ff9b:2::/48"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: rejects egress CIDR 2001:db8::/32 (public IPv6 broader than /48, public /32)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "2001:db8::/32"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv6 range broader than /48"
+  - it: rejects egress CIDR 2001:db8::/47 (public IPv6 broader than /48, public /47)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "2001:db8::/47"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv6 range broader than /48"
+  - it: rejects egress CIDR fe00::/32 (public IPv6 broader than /48, next to fc00::/7)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "fe00::/32"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv6 range broader than /48"
+  - it: rejects egress CIDR 2600:1f00::/40 (public IPv6 broader than /48, public /40)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "2600:1f00::/40"
+          ports: [443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "is a public IPv6 range broader than /48"
+  - it: accepts egress CIDR 172.16.0.0/12 (RFC1918)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "172.16.0.0/12"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR 192.168.0.0/16 (RFC1918)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "192.168.0.0/16"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR 100.64.0.0/10 (shared address space)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "100.64.0.0/10"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR 52.94.0.0/16 (public /16)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "52.94.0.0/16"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR 3.5.140.0/22 (public /22)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "3.5.140.0/22"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR 2001:db8:0:0:0:0:0:1/128 (full IPv6 form)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "2001:db8:0:0:0:0:0:1/128"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR ::1/128 (outside ::ffff:0:0/96)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "::1/128"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts egress CIDR ::fffe:0:0/96 (next to ::ffff:0:0/96)
+    template: templates/deployment.yaml
+    set:
+      networkPolicy.egressCidrs:
+        - cidr: "::fffe:0:0/96"
+          ports: [443]
+    asserts:
+      - notFailedTemplate: {}
+  - it: rejects a main remote secret name outside <env>/<service>/...
+    template: templates/deployment.yaml
+    set:
+      externalSecret.remoteSecretName: shared-platform-db
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.remoteSecretName: Does not match pattern"

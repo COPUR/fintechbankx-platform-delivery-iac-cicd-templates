@@ -1,0 +1,299 @@
+name: container-image
+
+# Reusable image pipeline: build with Buildx, scan with Trivy, SBOM with Syft,
+# push to Amazon ECR through GitHub OIDC, sign and attest with cosign (keyless).
+#
+# Usage (caller job, main branch only):
+#   image:
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/container-image.yml@<release-sha> # v1.0.0 (pin a SHA; Renovate/Dependabot bump it)
+#     permissions:
+#       contents: read
+#       id-token: write   # AWS OIDC + cosign keyless
+#     with:
+#       image-name: fintechbankx/loan-lifecycle-service
+#       aws-role-to-assume: arn:aws:iam::<account>:role/<ci-ecr-push-role>
+#
+# Callers must grant id-token: write even with push: false, because GitHub
+# checks a called workflow's requested permissions statically.
+#
+# Tag policy: the only tag is the full git SHA (immutable). ECR repositories
+# should have tag immutability enabled; a re-run that finds the tag already in
+# ECR reuses that image and digest instead of rebuilding.
+#
+# Signature identity: cosign keyless signs with this job's OIDC token, so the
+# certificate identity is this reusable workflow
+# (https://github.com/<platform-repo>/.github/workflows/container-image.yml@<ref>)
+# and the certificate's GitHub workflow repository is the calling service repo.
+# helm-deploy.yml verifies exactly that before every deploy.
+#
+# Outputs: image-digest (sha256:...), image-uri (<registry>/<name>@<digest>),
+# image-repository (<registry>/<name>), image-tag.
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: ECR repository name, e.g. fintechbankx/loan-lifecycle-service.
+        type: string
+        required: true
+      aws-region:
+        description: AWS region of the ECR registry.
+        type: string
+        default: me-central-1
+      aws-role-to-assume:
+        description: IAM role ARN trusted for this repo via the GitHub OIDC provider (ECR push only). Required when push is true.
+        type: string
+        default: ""
+      dockerfile:
+        description: Dockerfile path.
+        type: string
+        default: Dockerfile
+      context:
+        description: Docker build context.
+        type: string
+        default: "."
+      boot-jar-task:
+        description: >-
+          Gradle task to run before the image build (e.g. :loan-bootstrap:bootJar) for
+          Dockerfiles that copy build/libs. Leave empty when the Dockerfile builds from source.
+        type: string
+        default: ""
+      java-version:
+        description: JDK used for boot-jar-task.
+        type: string
+        default: "23"
+      platforms:
+        description: Target platform. One platform only, because the image is loaded locally for scanning before it is pushed.
+        type: string
+        default: linux/amd64
+      push:
+        description: Push, sign and attest. false = build + scan + SBOM only.
+        type: boolean
+        default: true
+      trivy-severity:
+        description: Severities that fail the scan (only vulnerabilities with a fix available).
+        type: string
+        default: CRITICAL,HIGH
+      trivy-ignore-file:
+        description: Optional Trivy ignore file with reviewed, expiring exceptions.
+        type: string
+        default: .trivyignore
+      timeout-minutes:
+        type: number
+        default: 45
+    outputs:
+      image-digest:
+        description: Pushed image digest (sha256:...).
+        value: ${{ jobs.image.outputs.digest }}
+      image-uri:
+        description: Image reference pinned by digest.
+        value: ${{ jobs.image.outputs.uri }}
+      image-repository:
+        description: Registry/repository without tag or digest.
+        value: ${{ jobs.image.outputs.repository }}
+      image-tag:
+        description: Immutable tag (git SHA).
+        value: ${{ jobs.image.outputs.tag }}
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: image/build-scan-push
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: container-image-${{ github.repository }}-${{ inputs.image-name }}-${{ github.sha }}
+      cancel-in-progress: false
+    outputs:
+      digest: ${{ steps.result.outputs.digest }}
+      uri: ${{ steps.result.outputs.uri }}
+      repository: ${{ steps.result.outputs.repository }}
+      tag: ${{ steps.result.outputs.tag }}
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+      LOCAL_IMAGE: local/${{ inputs.image-name }}:${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Check inputs
+        env:
+          PUSH: ${{ inputs.push }}
+          ROLE: ${{ inputs.aws-role-to-assume }}
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          if [ "$PUSH" = "true" ] && [ -z "$ROLE" ]; then
+            echo "::error::aws-role-to-assume is required when push is true"; exit 1
+          fi
+          case "$PLATFORMS" in
+            *,*) echo "::error::platforms must name a single platform (image is loaded for scanning)"; exit 1 ;;
+          esac
+
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ inputs.push }}
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ inputs.aws-role-to-assume }}
+          role-session-name: gha-image-${{ github.run_id }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        if: ${{ inputs.push }}
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      - name: Check whether this commit is already published
+        id: existing
+        if: ${{ inputs.push }}
+        env:
+          REPOSITORY_NAME: ${{ inputs.image-name }}
+        run: |
+          set -euo pipefail
+          digest="$(aws ecr describe-images --repository-name "$REPOSITORY_NAME" \
+            --image-ids imageTag="$IMAGE_TAG" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)"
+          if [ -n "$digest" ] && [ "$digest" != "None" ]; then
+            echo "Image tag $IMAGE_TAG already in ECR ($digest); reusing it."
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up JDK (boot jar)
+        if: ${{ steps.existing.outputs.digest == '' && inputs.boot-jar-task != '' }}
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+
+      - name: Set up Gradle (boot jar)
+        if: ${{ steps.existing.outputs.digest == '' && inputs.boot-jar-task != '' }}
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+
+      - name: Build boot jar
+        if: ${{ steps.existing.outputs.digest == '' && inputs.boot-jar-task != '' }}
+        env:
+          BOOT_JAR_TASK: ${{ inputs.boot-jar-task }}
+        run: |
+          set -euo pipefail
+          GRADLE=gradle
+          if [ -x ./gradlew ]; then GRADLE=./gradlew; fi
+          "$GRADLE" --no-daemon "$BOOT_JAR_TASK" -x test
+
+      - name: Set up Docker Buildx
+        if: ${{ steps.existing.outputs.digest == '' }}
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build image (load locally for scanning)
+        if: ${{ steps.existing.outputs.digest == '' }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          load: true
+          push: false
+          tags: ${{ env.LOCAL_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ inputs.image-name }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.image-name }}
+
+      - name: Image must run as non-root
+        if: ${{ steps.existing.outputs.digest == '' }}
+        run: |
+          set -euo pipefail
+          user="$(docker image inspect --format '{{.Config.User}}' "$LOCAL_IMAGE")"
+          echo "image user: ${user:-<unset>}"
+          case "$user" in
+            ""|root|0|0:*|root:*) echo "::error::Image runs as root; set USER to a non-root UID (10001 by convention)"; exit 1 ;;
+          esac
+
+      - name: Trivy vulnerability scan (fail on fixable ${{ inputs.trivy-severity }})
+        if: ${{ steps.existing.outputs.digest == '' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.LOCAL_IMAGE }}
+          scan-type: image
+          severity: ${{ inputs.trivy-severity }}
+          ignore-unfixed: true
+          vuln-type: os,library
+          exit-code: "1"
+          format: table
+          trivyignores: ${{ hashFiles(inputs.trivy-ignore-file) != '' && inputs.trivy-ignore-file || '' }}
+
+      - name: Generate SBOM (SPDX JSON)
+        if: ${{ steps.existing.outputs.digest == '' }}
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.LOCAL_IMAGE }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+
+      - name: Upload SBOM
+        if: ${{ steps.existing.outputs.digest == '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.spdx.json
+          retention-days: 90
+
+      - name: Push image (reuses the build cache)
+        id: push
+        if: ${{ steps.existing.outputs.digest == '' && inputs.push }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          provenance: mode=max
+          tags: ${{ steps.ecr.outputs.registry }}/${{ inputs.image-name }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ inputs.image-name }}
+
+      - name: Install cosign
+        if: ${{ steps.existing.outputs.digest == '' && inputs.push }}
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      - name: Sign and attest SBOM (keyless)
+        if: ${{ steps.existing.outputs.digest == '' && inputs.push }}
+        env:
+          IMAGE_REF: ${{ steps.ecr.outputs.registry }}/${{ inputs.image-name }}@${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$IMAGE_REF"
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$IMAGE_REF"
+
+      - name: Result
+        id: result
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_NAME: ${{ inputs.image-name }}
+          EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
+          PUSHED_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest="${EXISTING_DIGEST:-$PUSHED_DIGEST}"
+          repository="${REGISTRY:-local}/$IMAGE_NAME"
+          {
+            echo "repository=$repository"
+            echo "tag=$IMAGE_TAG"
+            echo "digest=$digest"
+            if [ -n "$digest" ]; then echo "uri=$repository@$digest"; else echo "uri="; fi
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Container image"
+            echo "- repository: \`$repository\`"
+            echo "- tag: \`$IMAGE_TAG\`"
+            echo "- digest: \`${digest:-not pushed}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

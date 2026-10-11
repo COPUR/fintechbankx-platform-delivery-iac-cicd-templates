@@ -1,0 +1,367 @@
+name: ephemeral-env
+
+# Reusable ephemeral environment on the runner: the shared compose runtime of
+# this repository (compose/: PostgreSQL per service, KRaft Kafka with the
+# catalog topics, Keycloak with the fintechbankx realm and its fine-grained
+# admin permissions), the requested service
+# images and optionally the monolith side by side. Waits for every container to
+# be healthy, runs the caller's test command (e.g. a regression suite comparing
+# monolith and service responses), uploads results and logs, and always tears
+# the stack down.
+#
+# Callers must grant contents: read and id-token: write (ECR pulls via OIDC;
+# GitHub checks a called workflow's permissions statically).
+#
+# Usage (caller job):
+#   regression:
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/ephemeral-env.yml@main
+#     permissions:
+#       contents: read
+#       id-token: write
+#     with:
+#       profiles: lending observability
+#       service-images: |
+#         FBX_IMAGE_LN_LOAN_LIFECYCLE=<account>.dkr.ecr.me-central-1.amazonaws.com/fintechbankx/loan-lifecycle-service@sha256:<digest>
+#       # either a pinned image ...
+#       monolith-image: <account>.dkr.ecr.me-central-1.amazonaws.com/elms/monolith-oracle@sha256:<digest>
+#       # ... or built here from the caller checkout (not both):
+#       # monolith-build-command: ./gradlew :regression-parity:monolith-oracle:installDist
+#       # monolith-build-context: regression-parity/monolith-oracle
+#       # java-version: "23"
+#       parity-fixtures: true
+#       sql-fixtures: |
+#         customer-profile-kyc-service=db/fixtures/parity_seed_customers.sql
+#       service-env: |
+#         payment-initiation-settlement-service__ACCOUNTS_ADAPTER=in-memory
+#       seed-command: ./scripts/seed.sh
+#       test-command: regression-parity/scripts/compare-monolith.sh
+#       aws-role-to-assume: arn:aws:iam::<account>:role/<ci-ecr-pull-role>
+#
+# Order once the stack is healthy: sql-fixtures, seed-command, test-command.
+# The seed and test commands run in the caller's checkout with these variables:
+#   FBX_BASE_URL_<SERVICE> (e.g. FBX_BASE_URL_LN_LOAN_LIFECYCLE=http://127.0.0.1:18010),
+#   FBX_MONOLITH_BASE_URL, FBX_OIDC_ISSUER, FBX_KAFKA_BOOTSTRAP, FBX_ENV_FILE
+#   (generated credentials, for client-credentials tokens; with parity-fixtures
+#   also PARITY_USERNAME_<ACTOR>, PARITY_PASSWORD_<ACTOR>, PARITY_SECRET_<CLIENT>,
+#   PARITY_TPP_CLIENT_ID, PARITY_TPP_PRIVATE_JWK, PARITY_TPP_OTHER_CLIENT_ID,
+#   PARITY_TPP_OTHER_PRIVATE_JWK, PARITY_CHANNEL_CLIENT_ID and
+#   PARITY_CHANNEL_PRIVATE_JWK; see compose/README.md)
+#   and FBX_RESULTS_DIR (anything written there is uploaded). Every generated
+#   credential is masked in the logs.
+#
+# mode: only `compose` is implemented. `kind` (helm install of
+# charts/fintechbankx-service into a kind cluster) is a documented follow-up:
+# the chart needs the backing services reachable from the cluster first.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: compose (implemented) or kind (follow-up, fails with a message).
+        type: string
+        default: compose
+      profiles:
+        description: Space separated compose profiles (lending, payments, customer, riskcompliance, services, observability).
+        type: string
+        default: services
+      service-images:
+        description: Newline separated FBX_IMAGE_<SERVICE>=<image@digest or image:tag> lines (see compose/services.tsv). Unlisted services use fintechbankx/<service>:local.
+        type: string
+        default: ""
+      monolith-image:
+        description: Pinned monolith / monolith-oracle image (digest or immutable tag). Non-empty adds the monolith profile. Exclusive with monolith-build-context.
+        type: string
+        default: ""
+      monolith-build-context:
+        description: Docker build context for the monolith image, relative to the caller workspace (e.g. regression-parity/monolith-oracle). Built with a local tag; adds the monolith profile.
+        type: string
+        default: ""
+      monolith-build-command:
+        description: Optional command run in the caller workspace before the docker build (e.g. ./gradlew :regression-parity:monolith-oracle:installDist).
+        type: string
+        default: ""
+      java-version:
+        description: Temurin JDK set up before monolith-build-command; empty = runner default.
+        type: string
+        default: ""
+      monolith-spring-profiles:
+        description: SPRING_PROFILES_ACTIVE of the monolith (local = monolith-oracle; docker for the full ELMS image).
+        type: string
+        default: local
+      monolith-health-path:
+        description: Health path on the monolith port (/actuator/health for monolith-oracle, /api/actuator/health for the full ELMS image).
+        type: string
+        default: /actuator/health
+      parity-fixtures:
+        description: Add the regression parity test actors (users per role, parity-suite client) to the ephemeral realm; credentials in FBX_ENV_FILE.
+        type: boolean
+        default: false
+      sql-fixtures:
+        description: Newline separated <service>=<path> lines (path relative to the caller workspace); each SQL file runs against that service's own database with its own role after the stack is healthy.
+        type: string
+        default: ""
+      service-env:
+        description: Newline separated <service>__<VAR>=<value> lines of extra service environment (credential and identity/database wiring names are rejected).
+        type: string
+        default: ""
+      seed-command:
+        description: Optional command run in the caller checkout after sql-fixtures and before test-command, with the same environment.
+        type: string
+        default: ""
+      test-command:
+        description: Command run in the caller checkout once the stack is healthy.
+        type: string
+        required: true
+      working-directory:
+        description: Directory of the caller checkout to run the test command in.
+        type: string
+        default: "."
+      platform-repository:
+        type: string
+        default: COPUR/fintechbankx-platform-delivery-iac-cicd-templates
+      platform-ref:
+        description: Ref of this repository providing compose/.
+        type: string
+        default: main
+      identity-ref:
+        description: Ref of the identity repo for the realm.
+        type: string
+        default: main
+      kafka-ref:
+        description: Ref of the event-streaming repo for the topic catalog.
+        type: string
+        default: main
+      aws-region:
+        type: string
+        default: me-central-1
+      aws-role-to-assume:
+        description: Role allowed to pull the images from ECR. Empty = no registry login.
+        type: string
+        default: ""
+      wait-timeout-seconds:
+        type: number
+        default: 600
+      timeout-minutes:
+        type: number
+        default: 45
+
+permissions:
+  contents: read
+
+jobs:
+  ephemeral:
+    name: ephemeral-env/${{ inputs.mode }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: ephemeral-env-${{ github.repository }}-${{ github.ref }}-${{ inputs.profiles }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      FBX_COMPOSE: ${{ github.workspace }}/.fbx-platform/compose
+      FBX_RESULTS_DIR: ${{ github.workspace }}/.fbx-results
+    steps:
+      - name: Checkout caller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Checkout platform compose runtime
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ inputs.platform-repository }}
+          ref: ${{ inputs.platform-ref }}
+          path: .fbx-platform
+          sparse-checkout: compose
+
+      - name: Validate inputs and export images
+        env:
+          MODE: ${{ inputs.mode }}
+          SERVICE_IMAGES: ${{ inputs.service-images }}
+          MONOLITH_IMAGE: ${{ inputs.monolith-image }}
+          MONOLITH_PROFILES: ${{ inputs.monolith-spring-profiles }}
+          REQUESTED_PROFILES: ${{ inputs.profiles }}
+          MONOLITH_BUILD_CONTEXT: ${{ inputs.monolith-build-context }}
+          MONOLITH_HEALTH_PATH: ${{ inputs.monolith-health-path }}
+          PARITY_FIXTURES: ${{ inputs.parity-fixtures }}
+          SERVICE_ENV: ${{ inputs.service-env }}
+          SQL_FIXTURES: ${{ inputs.sql-fixtures }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" != "compose" ]; then
+            echo "::error::mode '$MODE' is not implemented; only compose is (kind is a documented follow-up)"
+            exit 1
+          fi
+          image_ok() { [[ "$1" =~ ^[a-z0-9./_:-]+(@sha256:[a-f0-9]{64}|:[A-Za-z0-9._-]+)$ && ! "$1" =~ :latest$ ]]; }
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            if [[ ! "$line" =~ ^(FBX_IMAGE_[A-Z_]+)=(.+)$ ]]; then
+              echo "::error::service-images line must be FBX_IMAGE_<SERVICE>=<image>: $line"; exit 1
+            fi
+            var="${BASH_REMATCH[1]}"; image="${BASH_REMATCH[2]}"
+            grep -qP "\t${var}\t" "$FBX_COMPOSE/services.tsv" || { echo "::error::$var is not in compose/services.tsv"; exit 1; }
+            image_ok "$image" || { echo "::error::$var must be pinned by digest or an immutable tag (no latest): $image"; exit 1; }
+            echo "$var=$image" >> "$GITHUB_ENV"
+          done <<< "$SERVICE_IMAGES"
+          profiles="$REQUESTED_PROFILES"
+          if [ -n "$MONOLITH_IMAGE" ] && [ -n "$MONOLITH_BUILD_CONTEXT" ]; then
+            echo "::error::set monolith-image or monolith-build-context, not both"; exit 1
+          fi
+          if [ -n "$MONOLITH_IMAGE" ]; then
+            image_ok "$MONOLITH_IMAGE" || { echo "::error::monolith-image must be pinned: $MONOLITH_IMAGE"; exit 1; }
+            echo "FBX_MONOLITH_IMAGE=$MONOLITH_IMAGE" >> "$GITHUB_ENV"
+          fi
+          if [ -n "$MONOLITH_BUILD_CONTEXT" ]; then
+            if [[ "$MONOLITH_BUILD_CONTEXT" == /* || "/$MONOLITH_BUILD_CONTEXT/" == */../* ]]; then
+              echo "::error::monolith-build-context must be relative to the caller workspace: $MONOLITH_BUILD_CONTEXT"; exit 1
+            fi
+          fi
+          if [ -n "$MONOLITH_IMAGE$MONOLITH_BUILD_CONTEXT" ]; then
+            [[ "$MONOLITH_HEALTH_PATH" =~ ^/[A-Za-z0-9/_.-]*$ ]] || { echo "::error::monolith-health-path is not a path: $MONOLITH_HEALTH_PATH"; exit 1; }
+            {
+              echo "FBX_MONOLITH_SPRING_PROFILES=$MONOLITH_PROFILES"
+              echo "FBX_MONOLITH_HEALTH_PATH=$MONOLITH_HEALTH_PATH"
+            } >> "$GITHUB_ENV"
+            profiles="$profiles monolith"
+          fi
+          if [ "$PARITY_FIXTURES" = true ]; then profiles="$profiles parity-fixtures"; fi
+          echo "FBX_PROFILES_RESOLVED=$profiles" >> "$GITHUB_ENV"
+          # Extra service environment -> compose override (validated by service-env.mjs).
+          printf '%s\n' "$SERVICE_ENV" > "$RUNNER_TEMP/service-env.txt"
+          bash "$FBX_COMPOSE/fbx-local.sh" service-env "$RUNNER_TEMP/service-env.txt"
+          # SQL fixture list: services and paths checked now, applied after health.
+          printf '%s\n' "$SQL_FIXTURES" > "$RUNNER_TEMP/sql-fixtures.txt"
+          bash "$FBX_COMPOSE/scripts/apply-sql-fixtures.sh" --fixtures "$RUNNER_TEMP/sql-fixtures.txt" \
+            --base-dir "$GITHUB_WORKSPACE" --check
+          mkdir -p "$FBX_RESULTS_DIR/logs"
+
+      - name: Configure AWS credentials (OIDC, image pulls)
+        if: ${{ inputs.aws-role-to-assume != '' }}
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ inputs.aws-role-to-assume }}
+          role-session-name: gha-ephemeral-${{ github.run_id }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Log in to Amazon ECR
+        if: ${{ inputs.aws-role-to-assume != '' }}
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      - name: Set up JDK for the monolith build
+        if: ${{ inputs.monolith-build-context != '' && inputs.java-version != '' }}
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+
+      - name: Build monolith image from the caller checkout
+        if: ${{ inputs.monolith-build-context != '' }}
+        working-directory: ${{ github.workspace }}
+        env:
+          BUILD_COMMAND: ${{ inputs.monolith-build-command }}
+          BUILD_CONTEXT: ${{ inputs.monolith-build-context }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BUILD_COMMAND" ]; then bash -c "$BUILD_COMMAND"; fi
+          [ -d "$BUILD_CONTEXT" ] || { echo "::error::monolith-build-context not found: $BUILD_CONTEXT"; exit 1; }
+          # Local tag only, never pushed; unique per run.
+          tag="fbx-local/monolith:${GITHUB_SHA::12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker build --pull -t "$tag" "$BUILD_CONTEXT"
+          echo "FBX_MONOLITH_IMAGE=$tag" >> "$GITHUB_ENV"
+
+      - name: Fetch platform assets and generate dev-only credentials
+        env:
+          FBX_IDENTITY_REF: ${{ inputs.identity-ref }}
+          FBX_KAFKA_REF: ${{ inputs.kafka-ref }}
+          PARITY_FIXTURES: ${{ inputs.parity-fixtures }}
+        run: |
+          set -euo pipefail
+          bash "$FBX_COMPOSE/fbx-local.sh" fetch
+          init_args=()
+          if [ "$PARITY_FIXTURES" = true ]; then init_args+=(--parity-fixtures); fi
+          bash "$FBX_COMPOSE/fbx-local.sh" init "${init_args[@]}"
+          # Mask every generated value (credentials, parity passwords and secrets).
+          while IFS= read -r line; do
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            value="${line#*=}"
+            [ "${#value}" -ge 16 ] && echo "::add-mask::$value"
+          done < "$FBX_COMPOSE/.env"
+          # Each parity private JWK (PARITY_*_PRIVATE_JWK) is one JSON line; also mask each private member.
+          while IFS= read -r member; do
+            [ -n "$member" ] && echo "::add-mask::$member"
+          done < <(node -e '
+            const lines = require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter((l) => /^PARITY_[A-Z0-9_]*PRIVATE_JWK=/.test(l));
+            for (const line of lines) { const k = JSON.parse(line.slice(line.indexOf("=") + 1)); for (const m of ["d", "p", "q", "dp", "dq", "qi"]) if (k[m]) console.log(k[m]); }' "$FBX_COMPOSE/.env")
+
+      - name: Start stack and wait for health
+        env:
+          FBX_WAIT_TIMEOUT: ${{ inputs.wait-timeout-seconds }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # profiles are a space separated list
+          bash "$FBX_COMPOSE/fbx-local.sh" up $FBX_PROFILES_RESOLVED
+          bash "$FBX_COMPOSE/fbx-local.sh" compose ps
+
+      - name: Export test environment
+        run: |
+          set -euo pipefail
+          {
+            while IFS=$'\t' read -r key service_id _ _ _ _ _ _ port; do
+              [[ -z "$key" || "$key" == \#* ]] && continue
+              if [ "$key" = monolith ]; then
+                echo "FBX_MONOLITH_BASE_URL=http://127.0.0.1:$port"
+              else
+                echo "FBX_BASE_URL_$(echo "${service_id#svc-}" | tr 'a-z-' 'A-Z_')=http://127.0.0.1:$port"
+              fi
+            done < "$FBX_COMPOSE/services.tsv"
+            echo "FBX_OIDC_ISSUER=http://localhost:8180/realms/fintechbankx"
+            echo "FBX_KAFKA_BOOTSTRAP=localhost:29092"
+            echo "FBX_ENV_FILE=$FBX_COMPOSE/.env"
+          } >> "$GITHUB_ENV"
+
+      - name: Apply SQL fixtures
+        if: ${{ inputs.sql-fixtures != '' }}
+        run: |
+          set -euo pipefail
+          bash "$FBX_COMPOSE/scripts/apply-sql-fixtures.sh" --fixtures "$RUNNER_TEMP/sql-fixtures.txt" \
+            --base-dir "$GITHUB_WORKSPACE" --env-file "$FBX_ENV_FILE"
+
+      - name: Run seed command
+        if: ${{ inputs.seed-command != '' }}
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          SEED_COMMAND: ${{ inputs.seed-command }}
+        run: |
+          set -euo pipefail
+          bash -c "$SEED_COMMAND"
+
+      - name: Run test command
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          set -euo pipefail
+          bash -c "$TEST_COMMAND"
+
+      - name: Collect container logs
+        if: ${{ always() }}
+        run: |
+          set +e
+          bash "$FBX_COMPOSE/fbx-local.sh" compose ps -a > "$FBX_RESULTS_DIR/logs/ps.txt" 2>&1
+          for svc in $(bash "$FBX_COMPOSE/fbx-local.sh" compose ps -a --services 2>/dev/null); do
+            bash "$FBX_COMPOSE/fbx-local.sh" compose logs --no-color --timestamps "$svc" > "$FBX_RESULTS_DIR/logs/$svc.log" 2>&1
+          done
+          exit 0
+
+      - name: Upload results and logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ephemeral-env-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.FBX_RESULTS_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Tear down
+        if: ${{ always() }}
+        run: bash "$FBX_COMPOSE/fbx-local.sh" down || true

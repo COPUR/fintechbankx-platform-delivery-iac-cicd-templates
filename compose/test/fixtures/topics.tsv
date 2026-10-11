@@ -1,0 +1,2 @@
+# topic	kind	partitions	replication_factor	min_insync_replicas	cleanup_policy	retention_ms	max_message_bytes
+evt.ln.loan.created.v1	event	3	3	2	delete	604800000	1048576
