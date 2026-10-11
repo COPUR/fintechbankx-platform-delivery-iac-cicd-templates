@@ -1,10 +1,10 @@
 name: ephemeral-env
 
 # Reusable ephemeral environment on the runner: the shared compose runtime of
-# this repository (compose/: PostgreSQL per service, KRaft Kafka with the
-# catalog topics, Keycloak with the fintechbankx realm and its fine-grained
-# admin permissions), the requested service
-# images and optionally the monolith side by side. Waits for every container to
+# this repository (compose/: PostgreSQL per service, MongoDB for the three
+# open-finance data services, KRaft Kafka with the catalog topics, Keycloak
+# with the fintechbankx realm and its fine-grained admin permissions), the
+# requested service images and optionally the monolith side by side. Waits for every container to
 # be healthy, runs the caller's test command (e.g. a regression suite comparing
 # monolith and service responses), uploads results and logs, and always tears
 # the stack down.
@@ -61,7 +61,7 @@ on:
         type: string
         default: compose
       profiles:
-        description: Space separated compose profiles (lending, payments, customer, riskcompliance, openfinance, services, observability).
+        description: Space separated compose profiles (see compose/README.md) - lending, payments (with consent), customer, riskcompliance, openfinance (the seven open-finance services and MongoDB), services (the default - all 15 services), observability; monolith and parity-fixtures come from their own inputs.
         type: string
         default: services
       service-images:

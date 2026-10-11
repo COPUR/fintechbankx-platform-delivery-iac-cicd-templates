@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Generates the git-ignored env files for the local/ephemeral runtime:
 #   <out-dir>/.env       compose interpolation: PostgreSQL superuser, Keycloak admin,
-#                        Redis, MongoDB root, one database credential per service
-#                        (services.tsv, either store) and the OIDC client credentials
+#                        Redis, MongoDB root, consent's internal token issuer, one
+#                        database credential per service (services.tsv, either
+#                        store) and the OIDC client credentials
 #   <out-dir>/realm.env  keycloak-config-cli settings plus every $(env:NAME)
 #                        placeholder of the identity repo's realm
 # With --parity-fixtures (regression parity runs, local/ephemeral only) also:
@@ -126,6 +127,13 @@ put KC_ADMIN_USER fbx-local-admin
 secret KC_ADMIN_CRED
 secret REDIS_CRED
 secret MONGO_ROOT_CRED
+# consent-authorization-service's internal token issuer (openfinance.internal.security:
+# login and HS256 key, at least 32 bytes). Its application.yml ships RUNTIME_MANAGED_*
+# placeholders the chart replaces from Secrets Manager; locally they come from here
+# (decision D7), so no shipped placeholder is ever a working login.
+put FBX_OF_CONSENT_INTERNAL_USER fbx-local-consent-internal
+secret FBX_OF_CONSENT_INTERNAL_CRED
+secret FBX_OF_CONSENT_INTERNAL_HMAC_SECRET
 oidc_names=()
 while IFS=$'\t' read -r key service_id _ _ _ _ cred_var _ _; do
   [[ -z "$key" || "$key" == \#* ]] && continue

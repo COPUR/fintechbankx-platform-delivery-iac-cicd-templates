@@ -112,12 +112,31 @@ test("ephemeral-env: the exported base URLs carry each service's host port (serv
     assert.equal(exported[name], `http://127.0.0.1:${port}`, name);
   }
   assert.equal(exported.FBX_BASE_URL_LN_LOAN_LIFECYCLE, "http://127.0.0.1:18010");
+  assert.equal(exported.FBX_BASE_URL_OF_ATM_DIRECTORY, "http://127.0.0.1:18150");
+  assert.equal(Object.keys(exported).filter((k) => k.startsWith("FBX_BASE_URL_")).length, 15);
   for (const v of Object.values(exported)) assert.doesNotMatch(v, /\t|postgresql|mongodb/);
+  // Decision D5: a service that checks DPoP htu against DPOP_PUBLIC_BASE_URL
+  // gets exactly the origin the suite calls (FBX_BASE_URL_*), 127.0.0.1 not localhost.
+  const compose = YAML.parse(fs.readFileSync(path.join(composeDir, "docker-compose.yml"), "utf8")).services;
+  let dpop = 0;
+  for (const [key, serviceId] of rows) {
+    const base = compose[key].environment?.DPOP_PUBLIC_BASE_URL;
+    if (base === undefined) continue;
+    assert.equal(base, exported[`FBX_BASE_URL_${serviceId.replace(/^svc-/, "").toUpperCase().replaceAll("-", "_")}`], key);
+    dpop++;
+  }
+  assert.equal(dpop, 5, "consent, payee, retail, corporate and metadata");
 });
 
 test("ephemeral-env: the profiles input names every service profile of the compose runtime", () => {
-  const description = workflow().on.workflow_call.inputs.profiles.description;
-  for (const p of ["lending", "payments", "customer", "riskcompliance", "openfinance", "services", "observability"]) {
-    assert.match(description, new RegExp(`\\b${p}\\b`), p);
-  }
+  const input = workflow().on.workflow_call.inputs.profiles;
+  const compose = YAML.parse(fs.readFileSync(path.join(repo, "compose", "docker-compose.yml"), "utf8")).services;
+  // monolith and parity-fixtures come from their own inputs.
+  const profiles = [...new Set(Object.values(compose).flatMap((x) => x.profiles ?? []))]
+    .filter((p) => !["monolith", "parity-fixtures"].includes(p));
+  assert.ok(profiles.includes("openfinance"));
+  for (const p of profiles) assert.match(input.description, new RegExp(`\\b${p}\\b`), p);
+  assert.equal(input.default, "services");
+  assert.match(input.description, /services[^,;.]*all 15/, "says that the default starts all 15 services");
+  assert.match(input.description, /openfinance[^,;.]*seven open-finance services/, "says what openfinance starts");
 });

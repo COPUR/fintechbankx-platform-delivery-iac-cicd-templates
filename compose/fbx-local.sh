@@ -19,7 +19,9 @@
 #   compose/fbx-local.sh compose [args ...]    any docker compose command with the right files
 #
 # Profiles: lending, payments, customer, riskcompliance, openfinance, services, monolith,
-# observability, parity-fixtures (needs `init --parity-fixtures`).
+# observability, parity-fixtures (needs `init --parity-fixtures`). openfinance starts the
+# seven open-finance services and MongoDB, payments the payment services with consent,
+# services starts all 15 services (compose/README.md has the table).
 # Service images default to fintechbankx/<service>:local; override with the
 # FBX_IMAGE_* / FBX_MONOLITH_IMAGE variables (see compose/services.tsv).
 set -euo pipefail
@@ -75,5 +77,5 @@ case "$cmd" in
     if [[ " $* " == *" parity-fixtures "* ]]; then ensure_env --parity-fixtures; else ensure_env; fi
     FBX_PROFILES="$*" dc config -q ;;
   compose) dc "$@" ;;
-  *) sed -n '2,24p' "$0"; [ "$cmd" = help ] ;;
+  *) sed -n '2,26p' "$0"; [ "$cmd" = help ] ;;
 esac

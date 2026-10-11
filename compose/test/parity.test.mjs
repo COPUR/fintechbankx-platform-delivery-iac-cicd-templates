@@ -151,10 +151,22 @@ test("compose: parity-fixtures-import is opt-in, layered after the realm import 
     "IMPORT_MANAGED_REQUIREDACTION", "IMPORT_MANAGED_AUTHENTICATIONFLOW", "IMPORT_MANAGED_IDENTITYPROVIDER"]) {
     assert.equal(imp.environment[k], "no-delete", `${k}`);
   }
-  for (const name of ["loan-lifecycle-service", "payment-initiation-settlement-service", "customer-profile-kyc-service",
-    "risk-decisioning-service", "compliance-evidence-service", "monolith"]) {
-    assert.deepEqual(s[name].depends_on["parity-fixtures-import"],
-      { condition: "service_completed_successfully", required: false }, `${name} waits for the fixture when enabled`);
+  // Every row of services.tsv that validates Keycloak tokens (it waits for
+  // realm-import) also waits for the parity layer when that profile is on:
+  // the 13 resource servers and the monolith. Products and atm serve public
+  // data without tokens and wait for neither.
+  const rows = fs.readFileSync(path.join(composeDir, "services.tsv"), "utf8").split("\n")
+    .filter((l) => l && !l.startsWith("#")).map((l) => l.split("\t")[0]);
+  const waiting = rows.filter((name) => s[name].depends_on["realm-import"]);
+  assert.equal(waiting.length, 14, `the 13 resource servers and the monolith: ${waiting}`);
+  for (const name of rows) {
+    if (waiting.includes(name)) {
+      assert.deepEqual(s[name].depends_on["parity-fixtures-import"],
+        { condition: "service_completed_successfully", required: false }, `${name} waits for the fixture when enabled`);
+    } else {
+      assert.ok(["open-products-catalog-service", "atm-directory-service"].includes(name), `${name} must wait for realm-import`);
+      assert.equal(s[name].depends_on["parity-fixtures-import"], undefined, name);
+    }
   }
 });
 
@@ -230,12 +242,39 @@ test("service-env rejects unknown services, bad names and credential overrides",
     ["payment-initiation-settlement-service__SERVICE_CLIENT_REGISTRATION=x", /credential/],
     ["compliance-evidence-service__REDIS_URL=redis://evil:6379", /credential/],
     ["compliance-evidence-service__SPRING_DATA_REDIS_HOST=evil", /credential/],
-    ["customer-profile-kyc-service__DATABASE_CA_BUNDLE=ca-bundle.pem", /credential/]
+    ["customer-profile-kyc-service__DATABASE_CA_BUNDLE=ca-bundle.pem", /credential/],
+    // the part-B services' datastore and internal credentials
+    ["personal-financial-data-service__MONGODB_URI=mongodb://evil:27017/x", /credential/],
+    ["banking-metadata-service__REDIS_URL=redis://evil:6379", /credential/],
+    ["consent-authorization-service__OPENFINANCE_INTERNAL_JWT_HMAC_SECRET=x", /credential/],
+    ["consent-authorization-service__OPENFINANCE_INTERNAL_USERNAME=x", /credential/],
+    ["consent-authorization-service__OPENFINANCE_INTERNAL_PASSWORD=x", /credential/],
+    ["svc-pay-recurring-mandates__SERVICE_CLIENT_SECRET=x", /credential/],
+    ["payment-bulk-orchestration-service__OIDC_TOKEN_URI=http://evil", /credential/]
   ]) {
     const { res } = renderServiceEnv([line]);
     assert.notEqual(res.status, 0, `${line} must be rejected`);
     assert.match(res.stderr, why, line);
   }
+});
+
+test("service-env switches the part-B defaults: seeding (D6), outbox relays (D4), adapters (D3) and cache mode", () => {
+  const { res, out } = renderServiceEnv([
+    "payee-verification-service__PAYEE_DIRECTORY_SEED_ENABLED=true",
+    "svc-of-open-products-catalog__OPEN_PRODUCTS_SEED_ENABLED=true",
+    "atm-directory-service__ATM_DIRECTORY_SEED_ENABLED=true",
+    "consent-authorization-service__OUTBOX_RELAY_ENABLED=false",
+    "payment-recurring-mandates-service__OUTBOX_RELAY_ENABLED=true",
+    "payment-recurring-mandates-service__ACCOUNTS_ADAPTER=http",
+    "business-financial-data-service__OPENFINANCE_BFD_CACHE_MODE=inmemory"
+  ]);
+  assert.equal(res.status, 0, res.stderr);
+  const doc = JSON.parse(fs.readFileSync(out, "utf8")).services;
+  assert.equal(doc["payee-verification-service"].environment.PAYEE_DIRECTORY_SEED_ENABLED, "true");
+  assert.equal(doc["open-products-catalog-service"].environment.OPEN_PRODUCTS_SEED_ENABLED, "true");
+  assert.equal(doc["atm-directory-service"].environment.ATM_DIRECTORY_SEED_ENABLED, "true");
+  assert.equal(doc["consent-authorization-service"].environment.OUTBOX_RELAY_ENABLED, "false");
+  assert.equal(doc["payment-recurring-mandates-service"].environment.ACCOUNTS_ADAPTER, "http");
 });
 
 test("docker compose config applies the service-env override and the parity profile", { skip: !dockerCompose && "docker compose not available" }, () => {
@@ -251,6 +290,15 @@ test("docker compose config applies the service-env override and the parity prof
   // the compose defaults the override does not name stay
   assert.equal(cfg.services["payment-initiation-settlement-service"].environment.ACCOUNTS_ADAPTER, "in-memory");
   assert.ok(cfg.services["parity-fixtures-import"]);
+  // A seed switch replaces the compose default (D6) in the openfinance profile.
+  const { res: r2, out: seedOverride } = renderServiceEnv(["payee-verification-service__PAYEE_DIRECTORY_SEED_ENABLED=true"]);
+  assert.equal(r2.status, 0, r2.stderr);
+  res = run("docker", [...base, "-f", seedOverride, "--profile", "openfinance", "config", "--format", "json"], { env });
+  assert.equal(res.status, 0, res.stderr);
+  const of = JSON.parse(res.stdout).services;
+  assert.equal(of["payee-verification-service"].environment.PAYEE_DIRECTORY_SEED_ENABLED, "true");
+  assert.equal(of["payee-verification-service"].environment.DPOP_PUBLIC_BASE_URL, "http://127.0.0.1:18100", "other defaults stay");
+  assert.equal(of["payment-recurring-mandates-service"], undefined, "mandates is not an openfinance service");
   // Without the profile the optional dependency is dropped and config still validates.
   res = run("docker", [...base, "--profile", "services", "--profile", "monolith", "config", "-q"], { env });
   assert.equal(res.status, 0, res.stderr);

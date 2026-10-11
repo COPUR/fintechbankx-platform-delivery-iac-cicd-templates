@@ -1,5 +1,8 @@
 # Service registry for the local/ephemeral runtime (tab separated).
-# Database, schema and role match each service repo's application.yml (spring.datasource, spring.flyway.schemas).
+# Database, schema and role match each service repo's application.yml (spring.datasource, spring.flyway.schemas);
+# a MongoDB row's database is that of its MONGODB_URI default and its user that of its RUNBOOK-EXTRACT
+# (banking-metadata: the runbook's db_of_banking_metadata_local, decision D9). service_id = the identity
+# realm's service client; key = its service slug.
 # store: postgresql (database, schema and LOGIN role from postgres/init) or mongodb (schema "-", app_role is
 # the MongoDB user that mongo/init creates with readWrite on its own database only). Readers that do not need
 # a column end their read with "_", so a column appended later lands there.
@@ -9,4 +12,14 @@ payment-initiation-settlement-service	svc-pay-initiation-settlement	payments,ser
 customer-profile-kyc-service	svc-cus-profile-kyc	lending,customer,payments,services	db_cus_profile_kyc_local	sc_cus_profile_kyc	customer_profile_app	FBX_DB_CRED_CUS_PROFILE_KYC	FBX_IMAGE_CUS_PROFILE_KYC	18030	postgresql
 risk-decisioning-service	svc-rsk-decisioning	payments,riskcompliance,services	db_rsk_decisioning_local	sc_rsk_decisioning	risk_decisioning_app	FBX_DB_CRED_RSK_DECISIONING	FBX_IMAGE_RSK_DECISIONING	18040	postgresql
 compliance-evidence-service	svc-cmp-evidence	payments,riskcompliance,services	db_cmp_evidence_local	sc_cmp_evidence	compliance_evidence_app	FBX_DB_CRED_CMP_EVIDENCE	FBX_IMAGE_CMP_EVIDENCE	18050	postgresql
+payment-recurring-mandates-service	svc-pay-recurring-mandates	payments,services	db_pay_recurring_mandates_local	sc_pay_recurring_mandates	pay_recurring_mandates_app	FBX_DB_CRED_PAY_RECURRING_MANDATES	FBX_IMAGE_PAY_RECURRING_MANDATES	18060	postgresql
+payment-bulk-orchestration-service	svc-pay-bulk-orchestration	payments,services	db_pay_bulk_orchestration_local	sc_pay_bulk_orchestration	payment_bulk_app	FBX_DB_CRED_PAY_BULK_ORCHESTRATION	FBX_IMAGE_PAY_BULK_ORCHESTRATION	18070	postgresql
+payment-request-to-pay-service	svc-pay-request-to-pay	payments,services	db_pay_request_to_pay_local	sc_pay_request_to_pay	payment_request_to_pay_app	FBX_DB_CRED_PAY_REQUEST_TO_PAY	FBX_IMAGE_PAY_REQUEST_TO_PAY	18080	postgresql
+consent-authorization-service	svc-of-consent-authorization	openfinance,payments,services	db_of_consent_authorization_local	sc_of_consent_authorization	consent_authorization_app	FBX_DB_CRED_OF_CONSENT_AUTHORIZATION	FBX_IMAGE_OF_CONSENT_AUTHORIZATION	18090	postgresql
+payee-verification-service	svc-of-payee-verification	openfinance,services	db_of_payee_verification_local	sc_of_payee_verification	payee_verification_app	FBX_DB_CRED_OF_PAYEE_VERIFICATION	FBX_IMAGE_OF_PAYEE_VERIFICATION	18100	postgresql
+personal-financial-data-service	svc-of-personal-financial-data	openfinance,services	db_of_personal_financial_data_local	-	personal_financial_data_app	FBX_DB_CRED_OF_PERSONAL_FINANCIAL_DATA	FBX_IMAGE_OF_PERSONAL_FINANCIAL_DATA	18110	mongodb
+business-financial-data-service	svc-of-business-financial-data	openfinance,services	db_of_business_financial_data_local	-	business_financial_data_app	FBX_DB_CRED_OF_BUSINESS_FINANCIAL_DATA	FBX_IMAGE_OF_BUSINESS_FINANCIAL_DATA	18120	mongodb
+banking-metadata-service	svc-of-banking-metadata	openfinance,services	db_of_banking_metadata_local	-	metadata_app	FBX_DB_CRED_OF_BANKING_METADATA	FBX_IMAGE_OF_BANKING_METADATA	18130	mongodb
+open-products-catalog-service	svc-of-open-products-catalog	openfinance,services	db_of_open_products_catalog_local	sc_of_open_products_catalog	open_products_catalog_app	FBX_DB_CRED_OF_OPEN_PRODUCTS_CATALOG	FBX_IMAGE_OF_OPEN_PRODUCTS_CATALOG	18140	postgresql
+atm-directory-service	svc-of-atm-directory	openfinance,services	db_of_atm_directory_local	sc_of_atm_directory	atm_directory_app	FBX_DB_CRED_OF_ATM_DIRECTORY	FBX_IMAGE_OF_ATM_DIRECTORY	18150	postgresql
 monolith	elms-monolith	monolith	db_elms_monolith_local	public	elms_monolith_app	FBX_DB_CRED_ELMS_MONOLITH	FBX_MONOLITH_IMAGE	18000	postgresql

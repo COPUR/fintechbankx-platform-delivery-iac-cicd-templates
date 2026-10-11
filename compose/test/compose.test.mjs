@@ -34,15 +34,20 @@ const parseServices = (text) => text.split("\n")
     return { key, serviceId, profiles: profiles.split(","), database, schema, role, credVar, imageVar, hostPort, store, columns: cols.length };
   });
 const services = () => parseServices(fs.readFileSync(servicesTsv, "utf8"));
+const composeDoc = () => YAML.parse(fs.readFileSync(composeFile, "utf8"));
 const postgresRows = () => services().filter((s) => s.store === "postgresql");
-// A services.tsv with the real rows plus MongoDB rows (none is in the real
-// registry yet), for the scripts that must tell the two stores apart.
+const mongoRows = () => services().filter((s) => s.store === "mongodb");
+// A services.tsv with the real rows plus two more MongoDB rows, for the
+// scripts that must tell the two stores apart (and keep the registry order).
 const MONGO_FIXTURE_ROWS = [
   ["fixture-docs-service", "svc-of-fixture-docs", "openfinance,services", "db_of_fixture_docs_local", "-",
     "fixture_docs_app", "FBX_DB_CRED_OF_FIXTURE_DOCS", "FBX_IMAGE_OF_FIXTURE_DOCS", "18990", "mongodb"],
   ["fixture-ledger-service", "svc-of-fixture-ledger", "openfinance,services", "db_of_fixture_ledger_local", "-",
     "fixture_ledger_app", "FBX_DB_CRED_OF_FIXTURE_LEDGER", "FBX_IMAGE_OF_FIXTURE_LEDGER", "18991", "mongodb"]
 ];
+// Every mongodb row of servicesWithMongo(): the registry's own, then the fixtures.
+const allMongoRows = () => [...mongoRows().map((r) => [r.key, r.serviceId, r.profiles.join(","), r.database, r.schema,
+  r.role, r.credVar, r.imageVar, r.hostPort, r.store]), ...MONGO_FIXTURE_ROWS];
 function servicesWithMongo() {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fbx-services-")), "services.tsv");
   fs.writeFileSync(file, fs.readFileSync(servicesTsv, "utf8") + MONGO_FIXTURE_ROWS.map((r) => r.join("\t")).join("\n") + "\n");
@@ -64,9 +69,22 @@ function recordingStub(name, envNames = []) {
   const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   return { dir, calls };
 }
+// The five services of part A and the ten that joined in part B (round 8).
 const SERVICE_KEYS = ["loan-lifecycle-service", "payment-initiation-settlement-service", "customer-profile-kyc-service",
   "risk-decisioning-service", "compliance-evidence-service"];
+const PAYMENT_KEYS = ["payment-recurring-mandates-service", "payment-bulk-orchestration-service", "payment-request-to-pay-service"];
+const OPENFINANCE_KEYS = ["consent-authorization-service", "payee-verification-service", "personal-financial-data-service",
+  "business-financial-data-service", "banking-metadata-service", "open-products-catalog-service", "atm-directory-service"];
+const NEW_KEYS = [...PAYMENT_KEYS, ...OPENFINANCE_KEYS];
+const ALL_KEYS = [...SERVICE_KEYS, ...NEW_KEYS];
+const MONGO_KEYS = ["personal-financial-data-service", "business-financial-data-service", "banking-metadata-service"];
+// No resource server and no Kafka client: public read APIs on PostgreSQL only.
+const PUBLIC_KEYS = ["open-products-catalog-service", "atm-directory-service"];
 const MEM_LIMIT = "${FBX_SERVICE_MEM_LIMIT:-768m}";
+const ISSUER = "http://localhost:8180/realms/fintechbankx";
+const JWKS = "http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs";
+const TOKEN_URI = "http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/token";
+const COLLECTOR_TRACES = "http://otel-collector:4318/v1/traces";
 const required = (name) => `\${${name}:?run compose/fbx-local.sh init}`;
 const oidcSecretVar = (serviceId) => `FBX_OIDC_SECRET_${serviceId.toUpperCase().replaceAll("-", "_")}`;
 const placeholders = (realmFile) => [...new Set(
@@ -85,10 +103,15 @@ test("init-env generates every credential, all random, mode 600", () => {
   const { out, res } = generate();
   assert.equal(res.status, 0, res.stderr);
   const env = parseEnv(path.join(out, ".env"));
-  for (const key of ["POSTGRES_SUPERUSER_CRED", "KC_ADMIN_USER", "KC_ADMIN_CRED", "REDIS_CRED", "MONGO_ROOT_CRED"]) {
+  for (const key of ["POSTGRES_SUPERUSER_CRED", "KC_ADMIN_USER", "KC_ADMIN_CRED", "REDIS_CRED", "MONGO_ROOT_CRED",
+    "FBX_OF_CONSENT_INTERNAL_USER", "FBX_OF_CONSENT_INTERNAL_CRED", "FBX_OF_CONSENT_INTERNAL_HMAC_SECRET"]) {
     assert.ok(env[key], `${key} missing`);
   }
   for (const s of services()) assert.ok(env[s.credVar], `${s.credVar} missing for ${s.key}`);
+  // One OIDC client credential per service id, whether or not the realm in use defines the client.
+  for (const s of services().filter((x) => x.serviceId.startsWith("svc-"))) {
+    assert.match(env[oidcSecretVar(s.serviceId)] ?? "", /^[A-Za-z0-9]{32,}$/, `OIDC client credential of ${s.serviceId}`);
+  }
   const secrets = Object.entries(env).filter(([k]) => /CRED|SECRET/.test(k)).map(([, v]) => v);
   for (const v of secrets) assert.match(v, /^[A-Za-z0-9]{32,}$/);
   assert.equal(new Set(secrets).size, secrets.length, "secret values must be unique");
@@ -135,6 +158,23 @@ test("init-env generates a credential for the rows of either store and one Mongo
     assert.match(env[oidcSecretVar(row[1])], /^[A-Za-z0-9]{32,}$/, `OIDC client credential of ${row[1]}`);
   }
   assert.match(env.MONGO_ROOT_CRED, /^[A-Za-z0-9]{32,}$/);
+});
+
+test("init-env generates consent's internal token issuer credentials (decision D7): no shipped placeholder survives", () => {
+  // consent-authorization-service ships RUNTIME_MANAGED_* defaults for
+  // openfinance.internal.security (jwt-hmac-secret, internal-username,
+  // internal-password); NimbusHmacJwtAdapter needs at least 32 bytes of HMAC key.
+  const { out, res } = generate();
+  assert.equal(res.status, 0, res.stderr);
+  const env = parseEnv(path.join(out, ".env"));
+  assert.match(env.FBX_OF_CONSENT_INTERNAL_HMAC_SECRET, /^[A-Za-z0-9]{32,}$/);
+  assert.match(env.FBX_OF_CONSENT_INTERNAL_CRED, /^[A-Za-z0-9]{32,}$/);
+  assert.match(env.FBX_OF_CONSENT_INTERNAL_USER, /^[a-z][a-z0-9-]+$/);
+  for (const v of Object.values(env)) assert.doesNotMatch(v, /RUNTIME_MANAGED/);
+  const consent = composeDoc().services["consent-authorization-service"].environment;
+  assert.equal(consent.OPENFINANCE_INTERNAL_JWT_HMAC_SECRET, required("FBX_OF_CONSENT_INTERNAL_HMAC_SECRET"));
+  assert.equal(consent.OPENFINANCE_INTERNAL_USERNAME, required("FBX_OF_CONSENT_INTERNAL_USER"));
+  assert.equal(consent.OPENFINANCE_INTERNAL_PASSWORD, required("FBX_OF_CONSENT_INTERNAL_CRED"));
 });
 
 test("init-env refuses a realm placeholder it does not know", () => {
@@ -219,24 +259,51 @@ test("fetch-platform-assets rejects a realm that is not fintechbankx", () => {
 
 // --- compose definition -----------------------------------------------------
 
-const composeDoc = () => YAML.parse(fs.readFileSync(composeFile, "utf8"));
-
 test("services.tsv follows the database-per-service conventions of the service repos", () => {
-  // Values taken from each service repo's application.yml (spring.flyway.schemas, datasource).
+  // PostgreSQL: each service repo's application.yml (datasource url and username
+  // defaults, spring.flyway.schemas) at its r8 head. MongoDB: the database of
+  // the application.yml MONGODB_URI default and the user of the service's
+  // RUNBOOK-EXTRACT (readWrite on db_of_<capability>_<env>); metadata's yml
+  // default says banking_metadata_local, its runbook db_of_banking_metadata_<env>
+  // (decision D9: the runbook name).
   const expected = {
-    "loan-lifecycle-service": ["svc-ln-loan-lifecycle", "db_ln_loan_lifecycle_local", "sc_ln_loan_lifecycle", "loan_lifecycle_app"],
-    "payment-initiation-settlement-service": ["svc-pay-initiation-settlement", "db_pay_initiation_settlement_local", "sc_pay_initiation_settlement", "payment_initiation_app"],
-    "customer-profile-kyc-service": ["svc-cus-profile-kyc", "db_cus_profile_kyc_local", "sc_cus_profile_kyc", "customer_profile_app"],
-    "risk-decisioning-service": ["svc-rsk-decisioning", "db_rsk_decisioning_local", "sc_rsk_decisioning", "risk_decisioning_app"],
-    "compliance-evidence-service": ["svc-cmp-evidence", "db_cmp_evidence_local", "sc_cmp_evidence", "compliance_evidence_app"]
+    "loan-lifecycle-service": ["svc-ln-loan-lifecycle", "db_ln_loan_lifecycle_local", "sc_ln_loan_lifecycle", "loan_lifecycle_app", "postgresql", "18010"],
+    "payment-initiation-settlement-service": ["svc-pay-initiation-settlement", "db_pay_initiation_settlement_local", "sc_pay_initiation_settlement", "payment_initiation_app", "postgresql", "18020"],
+    "customer-profile-kyc-service": ["svc-cus-profile-kyc", "db_cus_profile_kyc_local", "sc_cus_profile_kyc", "customer_profile_app", "postgresql", "18030"],
+    "risk-decisioning-service": ["svc-rsk-decisioning", "db_rsk_decisioning_local", "sc_rsk_decisioning", "risk_decisioning_app", "postgresql", "18040"],
+    "compliance-evidence-service": ["svc-cmp-evidence", "db_cmp_evidence_local", "sc_cmp_evidence", "compliance_evidence_app", "postgresql", "18050"],
+    "payment-recurring-mandates-service": ["svc-pay-recurring-mandates", "db_pay_recurring_mandates_local", "sc_pay_recurring_mandates", "pay_recurring_mandates_app", "postgresql", "18060"],
+    "payment-bulk-orchestration-service": ["svc-pay-bulk-orchestration", "db_pay_bulk_orchestration_local", "sc_pay_bulk_orchestration", "payment_bulk_app", "postgresql", "18070"],
+    "payment-request-to-pay-service": ["svc-pay-request-to-pay", "db_pay_request_to_pay_local", "sc_pay_request_to_pay", "payment_request_to_pay_app", "postgresql", "18080"],
+    "consent-authorization-service": ["svc-of-consent-authorization", "db_of_consent_authorization_local", "sc_of_consent_authorization", "consent_authorization_app", "postgresql", "18090"],
+    "payee-verification-service": ["svc-of-payee-verification", "db_of_payee_verification_local", "sc_of_payee_verification", "payee_verification_app", "postgresql", "18100"],
+    "personal-financial-data-service": ["svc-of-personal-financial-data", "db_of_personal_financial_data_local", "-", "personal_financial_data_app", "mongodb", "18110"],
+    "business-financial-data-service": ["svc-of-business-financial-data", "db_of_business_financial_data_local", "-", "business_financial_data_app", "mongodb", "18120"],
+    "banking-metadata-service": ["svc-of-banking-metadata", "db_of_banking_metadata_local", "-", "metadata_app", "mongodb", "18130"],
+    "open-products-catalog-service": ["svc-of-open-products-catalog", "db_of_open_products_catalog_local", "sc_of_open_products_catalog", "open_products_catalog_app", "postgresql", "18140"],
+    "atm-directory-service": ["svc-of-atm-directory", "db_of_atm_directory_local", "sc_of_atm_directory", "atm_directory_app", "postgresql", "18150"],
+    monolith: ["elms-monolith", "db_elms_monolith_local", "public", "elms_monolith_app", "postgresql", "18000"]
   };
   const rows = Object.fromEntries(services().map((s) => [s.key, s]));
-  for (const [key, [id, db, schema, role]] of Object.entries(expected)) {
-    assert.ok(rows[key], `${key} missing from services.tsv`);
-    assert.deepEqual([rows[key].serviceId, rows[key].database, rows[key].schema, rows[key].role], [id, db, schema, role]);
+  assert.deepEqual(Object.keys(rows).sort(), Object.keys(expected).sort(), "the 15 services and the monolith, nothing else");
+  for (const [key, want] of Object.entries(expected)) {
+    const r = rows[key];
+    assert.deepEqual([r.serviceId, r.database, r.schema, r.role, r.store, r.hostPort], want, key);
   }
   const dbs = services().map((s) => s.database);
   assert.equal(new Set(dbs).size, dbs.length, "one database per service");
+  const roles = services().map((s) => s.role);
+  assert.equal(new Set(roles).size, roles.length, "one role or MongoDB user per service");
+});
+
+test("services.tsv: the 15 service ids are the identity realm's 15 service clients, each keyed by its service slug", () => {
+  // fixtures/identity-service-clients.json: the identity repo's realm/service-clients.json clients.
+  const clients = JSON.parse(fs.readFileSync(path.join(fixtures, "identity-service-clients.json"), "utf8")).clients;
+  assert.equal(clients.length, 15);
+  const rows = services().filter((s) => s.key !== "monolith");
+  assert.deepEqual(rows.map((s) => s.serviceId).sort(), clients.map((c) => c.clientId).sort());
+  for (const c of clients) assert.equal(rows.find((s) => s.serviceId === c.clientId).key, c.serviceSlug, c.clientId);
+  assert.deepEqual(rows.map((s) => s.key).sort(), [...ALL_KEYS].sort());
 });
 
 test("services.tsv: ten columns, a store per row (postgresql or mongodb) and a unique host port", () => {
@@ -250,10 +317,13 @@ test("services.tsv: ten columns, a store per row (postgresql or mongodb) and a u
     if (s.store === "mongodb") assert.equal(s.schema, "-", `${s.key}: a MongoDB row has no schema`);
     assert.match(s.hostPort, /^\d{4,5}$/, `${s.key}: host port ${s.hostPort}`);
   }
-  // Every row of the registry today is a PostgreSQL service.
-  for (const key of [...SERVICE_KEYS, "monolith"]) assert.equal(services().find((s) => s.key === key).store, "postgresql", key);
+  // The three open-finance data services keep their read models in MongoDB; every other row is PostgreSQL.
+  assert.deepEqual(mongoRows().map((s) => s.key).sort(), [...MONGO_KEYS].sort());
   const ports = services().map((s) => s.hostPort);
   assert.equal(new Set(ports).size, ports.length, `host ports must be unique: ${ports}`);
+  // 180x0 scheme: the monolith on 18000, the services from 18010 in steps of 10.
+  assert.deepEqual(services().filter((s) => s.key !== "monolith").map((s) => Number(s.hostPort)).sort((a, b) => a - b),
+    Array.from({ length: 15 }, (_, i) => 18010 + 10 * i));
 });
 
 test("every service in services.tsv is wired in compose with its own database, role, credential, image, profiles and port", () => {
@@ -276,6 +346,31 @@ test("every service in services.tsv is wired in compose with its own database, r
     assert.match(svc.image, new RegExp(`^\\$\\{${s.imageVar}:-[^}]+\\}$`));
     assert.deepEqual(svc.ports, [`127.0.0.1:${s.hostPort}:8080`], `${s.key} port`);
   }
+});
+
+test("every service waits for its own store, runs on 8080/8081 and is healthy only when its readiness group is UP", () => {
+  const s = composeDoc().services;
+  const loan = s["loan-lifecycle-service"];
+  for (const r of services().filter((x) => x.key !== "monolith")) {
+    const svc = s[r.key];
+    const env = svc.environment;
+    assert.equal(env.FINTECHBANKX_SERVICE_ID, r.serviceId, `${r.key} service id`);
+    assert.equal(env.SERVER_PORT, "8080", r.key);
+    assert.equal(env.MANAGEMENT_SERVER_PORT, "8081", r.key);
+    assert.equal(svc.image, `\${${r.imageVar}:-fintechbankx/${r.key}:local}`, `${r.key} image default`);
+    // Readiness on the management port (every application.yml enables the probes).
+    assert.deepEqual(svc.healthcheck, loan.healthcheck, `${r.key} healthcheck`);
+    if (r.store === "postgresql") {
+      assert.deepEqual(svc.depends_on.postgres, { condition: "service_healthy" }, `${r.key} waits for PostgreSQL`);
+      assert.equal(svc.depends_on["mongo-init"], undefined, r.key);
+    } else {
+      assert.deepEqual(svc.depends_on["mongo-init"], { condition: "service_completed_successfully" }, `${r.key} waits for its MongoDB user`);
+      assert.equal(svc.depends_on.postgres, undefined, `${r.key} has no PostgreSQL database`);
+    }
+  }
+  // The ten that joined in part B migrate in-process (Flyway at start-up as the
+  // app role, or MongoDB indexes from the service): no one-shot of their own.
+  for (const key of NEW_KEYS) assert.equal(s[`${key}-migrate`], undefined, key);
 });
 
 test("every service in services.tsv runs only the local profile and sets neither a TLS off switch nor DB_SSL_ROOT_CERT", () => {
@@ -376,21 +471,34 @@ test("customer, risk and compliance migrate in a one-shot of their own image bef
   }
 });
 
-test("loan and initiation get outbound client-credentials tokens from keycloak:8080; no service gets names it does not read", () => {
+test("loan, initiation, mandates and bulk get outbound client-credentials tokens from keycloak:8080; no service gets names it does not read", () => {
   const s = composeDoc().services;
-  for (const key of ["loan-lifecycle-service", "payment-initiation-settlement-service"]) {
+  const callers = ["loan-lifecycle-service", "payment-initiation-settlement-service",
+    "payment-recurring-mandates-service", "payment-bulk-orchestration-service"];
+  for (const key of ALL_KEYS) {
     const env = s[key].environment;
-    assert.equal(env.SERVICE_CLIENT_SECRET, required(oidcSecretVar(env.FINTECHBANKX_SERVICE_ID)), `${key} SERVICE_CLIENT_SECRET`);
-    assert.equal(env.OIDC_TOKEN_URI, "http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/token", `${key} OIDC_TOKEN_URI`);
-  }
-  for (const key of SERVICE_KEYS) {
-    const env = s[key].environment;
+    if (callers.includes(key)) {
+      // The secret realm-import gives the client of the service id (SERVICE_CLIENT_ID keeps that default).
+      assert.equal(env.SERVICE_CLIENT_SECRET, required(oidcSecretVar(env.FINTECHBANKX_SERVICE_ID)), `${key} SERVICE_CLIENT_SECRET`);
+      assert.equal(env.OIDC_TOKEN_URI, TOKEN_URI, `${key} OIDC_TOKEN_URI (the default is localhost:8180)`);
+      assert.equal(env.SERVICE_CLIENT_ID, undefined, `${key}: the client id defaults to the service id`);
+    } else {
+      for (const k of ["SERVICE_CLIENT_SECRET", "OIDC_TOKEN_URI"]) assert.equal(env[k], undefined, `${key}.${k}: makes no outbound call`);
+    }
     for (const k of Object.keys(env)) {
       assert.ok(!["OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET"].includes(k), `${key}.${k}: no service reads it (SERVICE_CLIENT_* is the client-credentials input)`);
-      assert.doesNotMatch(k, /^OTEL_/, `${key}.${k}: Spring Boot 3.3.6 reads no OTEL_* variable and no service maps one`);
     }
-    assert.equal(env.OIDC_ISSUER_URI, "http://localhost:8180/realms/fintechbankx");
-    assert.equal(env.OIDC_JWK_SET_URI, "http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs");
+    if (SERVICE_KEYS.includes(key)) {
+      for (const k of Object.keys(env)) assert.doesNotMatch(k, /^OTEL_/, `${key}.${k}: Spring Boot 3.3.6 reads no OTEL_* variable and none of the five maps one`);
+    }
+    if (PUBLIC_KEYS.includes(key)) {
+      for (const k of Object.keys(env)) assert.doesNotMatch(k, /^OIDC_/, `${key}.${k}: no resource server`);
+      assert.equal(s[key].depends_on["realm-import"], undefined, `${key} does not need Keycloak`);
+      continue;
+    }
+    assert.equal(env.OIDC_ISSUER_URI, ISSUER, key);
+    assert.equal(env.OIDC_JWK_SET_URI, JWKS, key);
+    assert.deepEqual(s[key].depends_on["realm-import"], { condition: "service_completed_successfully" }, key);
   }
 });
 
@@ -416,7 +524,11 @@ test("initiation starts with a default currency, in-memory accounts and its call
 
 test("every compose-network URL a service gets names a service that each of the caller's profiles also starts", () => {
   const s = composeDoc().services;
-  for (const key of SERVICE_KEYS) {
+  // The identity realm gives each caller's client an audience mapper per callee it may call.
+  const clients = JSON.parse(fs.readFileSync(path.join(fixtures, "identity-service-clients.json"), "utf8")).clients;
+  const idOf = Object.fromEntries(services().map((r) => [r.key, r.serviceId]));
+  let edges = 0;
+  for (const key of ALL_KEYS) {
     for (const [k, v] of Object.entries(s[key].environment)) {
       const m = /^https?:\/\/([a-z0-9-]+):8080(\/|$)/.exec(String(v));
       if (!m || m[1] === "keycloak") continue;
@@ -425,8 +537,12 @@ test("every compose-network URL a service gets names a service that each of the 
       for (const p of s[key].profiles) {
         assert.ok(callee.profiles.includes(p), `${key}.${k}: profile ${p} starts ${key} but not ${m[1]}`);
       }
+      const audiences = clients.find((c) => c.clientId === idOf[key]).audiences;
+      assert.ok(audiences.includes(idOf[m[1]]), `${key}.${k}: the realm client ${idOf[key]} has no audience ${idOf[m[1]]}`);
+      edges++;
     }
   }
+  assert.equal(edges, 6, "loan -> customer, initiation -> risk, compliance, customer, mandates and bulk -> consent");
 });
 
 test("customer links identities through the Keycloak admin API as its own realm client", () => {
@@ -440,13 +556,223 @@ test("customer links identities through the Keycloak admin API as its own realm 
     { condition: "service_completed_successfully" });
 });
 
-test("every service uses the stack's Kafka and waits for the catalog topics", () => {
+test("every service with a Kafka client uses the stack's Kafka and waits for the catalog topics; products and atm have none", () => {
+  // Topics are never auto-created (admin auto-create false, broker auto-create
+  // off): topic-init creates them from the Kafka repo's catalog, including what
+  // the ten part-B services use: evt.pay.mandate.v1, evt.pay.bulk.v1,
+  // evt.pay.rtp.v1, evt.of.consent.v1, evt.of.payee.v1 (outbox relays), and the
+  // consent projections' groups cg.<service id>.consent-projection.v1 with
+  // their DLQs evt.of.account.dlq.v1 (retail), evt.of.corporate.dlq.v1
+  // (corporate), evt.of.metadata.dlq.v1 (metadata), fixed in each application.yml.
   const s = composeDoc().services;
-  for (const key of SERVICE_KEYS) {
+  for (const key of ALL_KEYS) {
     const env = s[key].environment;
+    if (PUBLIC_KEYS.includes(key)) {
+      for (const k of Object.keys(env)) assert.doesNotMatch(k, /^(SPRING_)?KAFKA_/, `${key}.${k}: no Kafka client`);
+      assert.equal(s[key].depends_on["topic-init"], undefined, key);
+      continue;
+    }
     assert.equal(env.KAFKA_BOOTSTRAP_SERVERS, "kafka:9092", key);
     assert.equal(env.KAFKA_SECURITY_PROTOCOL, "PLAINTEXT", key);
     assert.deepEqual(s[key].depends_on["topic-init"], { condition: "service_completed_successfully" }, key);
+  }
+});
+
+// --- the ten services of part B: what they read at the r8 heads -----------------
+
+// The ${NAME} placeholders of each service's application.yml at its r8 head
+// (mandates, bulk and rtp: open-finance-bootstrap/src/main/resources/application.yml;
+// the others: src/main/resources/application.yml). application-local.yml adds
+// none (it only sets fintechbankx.tls.enforce: false).
+const YML_READS = {
+  "payment-recurring-mandates-service":
+    "ACCOUNTS_ADAPTER ACCOUNTS_SERVICE_BASE_URL ACCOUNTS_SERVICE_PATH CONSENT_ADAPTER " +
+    "CONSENT_SERVICE_BASE_URL DB_MIGRATION_PASSWORD DB_MIGRATION_USERNAME DB_POOL_MAX DB_POOL_MIN_IDLE " +
+    "DB_URL DB_USERNAME DPOP_REQUIRED KAFKA_BOOTSTRAP_SERVERS KAFKA_SECURITY_PROTOCOL " +
+    "MANDATES_LIMIT_PERIOD_ZONE METRICS_TAG_APP METRICS_TAG_SQUAD OIDC_AUDIENCE OIDC_ISSUER_URI " +
+    "OIDC_JWK_SET_URI OIDC_TOKEN_URI OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OUTBOX_RELAY_ENABLED " +
+    "SERVICE_CLIENT_ID SERVICE_CLIENT_SECRET TRACING_SAMPLING_PROBABILITY",
+  "payment-bulk-orchestration-service":
+    "BULK_PROCESSING_BATCH_SIZE BULK_PROCESSING_ENABLED CONSENT_ADAPTER CONSENT_SERVICE_BASE_URL " +
+    "DB_POOL_MAX DB_POOL_MIN_IDLE DB_URL DB_USERNAME DPOP_REQUIRED KAFKA_BOOTSTRAP_SERVERS " +
+    "KAFKA_SECURITY_PROTOCOL METRICS_TAG_APP METRICS_TAG_SQUAD OIDC_AUDIENCE OIDC_ISSUER_URI " +
+    "OIDC_JWK_SET_URI OIDC_TOKEN_URI OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OUTBOX_RELAY_ENABLED " +
+    "SERVICE_CLIENT_ID SERVICE_CLIENT_SECRET TRACING_SAMPLING_PROBABILITY",
+  "payment-request-to-pay-service":
+    "DB_MIGRATION_PASSWORD DB_MIGRATION_USERNAME DB_POOL_MAX DB_POOL_MIN_IDLE DB_URL DB_USERNAME " +
+    "KAFKA_BOOTSTRAP_SERVERS KAFKA_SECURITY_PROTOCOL METRICS_TAG_APP METRICS_TAG_SQUAD OIDC_AUDIENCE " +
+    "OIDC_ISSUER_URI OIDC_JWK_SET_URI OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OUTBOX_RELAY_ENABLED " +
+    "PAY_REQUEST_CACHE_TTL TPP_REQUIRED_SCOPE TRACING_SAMPLING_PROBABILITY",
+  "consent-authorization-service":
+    "DATABASE_CA_BUNDLE DB_POOL_MAX DB_POOL_MIN_IDLE DB_RUNTIME_ROLE DB_URL DB_USERNAME " +
+    "DPOP_PUBLIC_BASE_URL DPOP_REPLAY_STORE FLYWAY_PASSWORD FLYWAY_USER KAFKA_BOOTSTRAP_SERVERS " +
+    "KAFKA_SECURITY_PROTOCOL METRICS_APP_TAG METRICS_SQUAD_TAG OIDC_AUDIENCE OIDC_ISSUER_URI " +
+    "OIDC_JWK_SET_URI OIDC_PSU_ID_CLAIM OPENFINANCE_CA_ACCESS_TOKEN_TTL OPENFINANCE_CA_AUTH_CODE_TTL " +
+    "OPENFINANCE_CA_REFRESH_TOKEN_TTL OPENFINANCE_CA_SOFTHSM_ENABLED " +
+    "OPENFINANCE_CA_SOFTHSM_FALLBACK_TO_JDK OPENFINANCE_CA_SOFTHSM_LIBRARY_PATH " +
+    "OPENFINANCE_CA_SOFTHSM_SLOT_LIST_INDEX OPENFINANCE_CA_SOFTHSM_TOKEN_LABEL " +
+    "OPENFINANCE_CONSENT_ACCOUNT_DIRECTORY_URL OPENFINANCE_CONSENT_ACCOUNT_OWNERSHIP_MODE " +
+    "OPENFINANCE_CONSENT_EXPIRY_SWEEP_ENABLED OPENFINANCE_CONSENT_EXPIRY_SWEEP_INTERVAL " +
+    "OPENFINANCE_INTERNAL_ACCESS_TOKEN_TTL OPENFINANCE_INTERNAL_ALLOWED_CLOCK_SKEW " +
+    "OPENFINANCE_INTERNAL_AUDIENCE OPENFINANCE_INTERNAL_FAILED_ATTEMPT_WINDOW OPENFINANCE_INTERNAL_ISSUER " +
+    "OPENFINANCE_INTERNAL_JWT_HMAC_SECRET OPENFINANCE_INTERNAL_LOCK_DURATION " +
+    "OPENFINANCE_INTERNAL_MAX_FAILED_ATTEMPTS OPENFINANCE_INTERNAL_PASSWORD OPENFINANCE_INTERNAL_USERNAME " +
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OUTBOX_RELAY_ENABLED SPRING_FLYWAY_ENABLED " +
+    "TRACING_SAMPLING_PROBABILITY",
+  "payee-verification-service":
+    "COP_CLOSE_MATCH_THRESHOLD COP_DIRECTORY_CACHE_TTL DATABASE_CA_BUNDLE DB_POOL_MAX DB_POOL_MIN_IDLE " +
+    "DB_URL DB_USERNAME DPOP_PUBLIC_BASE_URL FLYWAY_PASSWORD FLYWAY_USER KAFKA_BOOTSTRAP_SERVERS " +
+    "KAFKA_SECURITY_PROTOCOL METRICS_APP_TAG METRICS_SQUAD_TAG OIDC_AUDIENCE OIDC_ISSUER_URI " +
+    "OIDC_JWK_SET_URI OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OUTBOX_RELAY_ENABLED " +
+    "PAYEE_DIRECTORY_SEED_ENABLED TRACING_ENABLED TRACING_SAMPLING_PROBABILITY",
+  "personal-financial-data-service":
+    "CONSENT_PROJECTION_CONCURRENCY CONSENT_PROJECTION_ENABLED DPOP_PUBLIC_BASE_URL " +
+    "KAFKA_BOOTSTRAP_SERVERS KAFKA_SECURITY_PROTOCOL MONGODB_URI OIDC_AUDIENCE OIDC_ISSUER_URI " +
+    "OIDC_JWK_SET_URI OPENFINANCE_PFD_CACHE_KEY_PREFIX OPENFINANCE_PFD_CACHE_MODE " +
+    "OPENFINANCE_PFD_CACHE_TTL OPENFINANCE_PFD_DPOP_CLOCK_SKEW OPENFINANCE_PFD_DPOP_MAX_PROOF_AGE " +
+    "OPENFINANCE_PFD_JWT_SECRET OPENFINANCE_PFD_PERSISTENCE_MODE OTEL_EXPORTER_OTLP_TRACES_ENDPOINT " +
+    "REDIS_URL",
+  "business-financial-data-service":
+    "CONSENT_PROJECTION_ENABLED DPOP_PUBLIC_BASE_URL KAFKA_BOOTSTRAP_SERVERS KAFKA_LISTENER_CONCURRENCY " +
+    "KAFKA_SECURITY_PROTOCOL MONGODB_URI OIDC_AUDIENCE OIDC_ISSUER_URI OIDC_JWK_SET_URI " +
+    "OPENFINANCE_BFD_CACHE_KEY_PREFIX OPENFINANCE_BFD_CACHE_MODE OPENFINANCE_BFD_CACHE_TTL " +
+    "OPENFINANCE_BFD_ETAG_CACHE_TTL OPENFINANCE_BFD_PERSISTENCE_MODE OTEL_EXPORTER_OTLP_TRACES_ENDPOINT " +
+    "REDIS_URL",
+  "banking-metadata-service":
+    "CONSENT_PROJECTION_ENABLED DPOP_PUBLIC_BASE_URL KAFKA_BOOTSTRAP_SERVERS KAFKA_SECURITY_PROTOCOL " +
+    "MONGODB_URI OIDC_AUDIENCE OIDC_ISSUER_URI OIDC_JWK_SET_URI OIDC_PSU_CLAIM " +
+    "OPENFINANCE_BM_CACHE_KEY_PREFIX OPENFINANCE_BM_CACHE_MODE OPENFINANCE_BM_CACHE_TTL " +
+    "OPENFINANCE_BM_DPOP_CLOCK_SKEW OPENFINANCE_BM_DPOP_MAX_PROOF_AGE OPENFINANCE_BM_MONGO_ENSURE_INDEXES " +
+    "OPENFINANCE_BM_PERSISTENCE_MODE OTEL_EXPORTER_OTLP_ENDPOINT REDIS_URL",
+  "open-products-catalog-service":
+    "DB_POOL_MAX DB_POOL_MIN_IDLE DB_URL DB_USERNAME FLYWAY_PASSWORD FLYWAY_USER " +
+    "OPEN_PRODUCTS_HISTORY_GUARD_CHECK OPEN_PRODUCTS_MIGRATE_ONLY OPEN_PRODUCTS_SEED_ENABLED " +
+    "OPEN_PRODUCTS_SNAPSHOT_REFRESH OTEL_EXPORTER_OTLP_TRACES_ENDPOINT TRACING_ENABLED " +
+    "TRACING_SAMPLING_PROBABILITY",
+  "atm-directory-service":
+    "ATM_DIRECTORY_SEED_ENABLED ATM_DIRECTORY_SNAPSHOT_MAX_AGE ATM_DIRECTORY_SNAPSHOT_REFRESH " +
+    "DATABASE_CA_BUNDLE DB_POOL_MAX DB_POOL_MIN_IDLE DB_URL DB_USERNAME FLYWAY_PASSWORD FLYWAY_URL " +
+    "FLYWAY_USER"
+};
+// Names Spring Boot 3.3.6 binds by relaxed binding (the profile, the two
+// ports, the datasource credential, management.tracing.enabled), and the
+// service id label every service container carries.
+const BOOT_NAMES = ["SPRING_PROFILES_ACTIVE", "SERVER_PORT", "MANAGEMENT_SERVER_PORT", "SPRING_DATASOURCE_PASSWORD",
+  "MANAGEMENT_TRACING_ENABLED", "FINTECHBANKX_SERVICE_ID"];
+
+test("the ten part-B services get only names their application.yml or Spring Boot reads", () => {
+  const s = composeDoc().services;
+  assert.deepEqual(Object.keys(YML_READS).sort(), [...NEW_KEYS].sort());
+  for (const key of NEW_KEYS) {
+    const reads = new Set([...YML_READS[key].split(" "), ...BOOT_NAMES]);
+    for (const k of Object.keys(s[key].environment)) assert.ok(reads.has(k), `${key}.${k}: not read by the service`);
+    assert.equal(s[key].environment.SPRING_PROFILES_ACTIVE, "local", key);
+  }
+});
+
+test("profiles: openfinance starts the seven open-finance services and MongoDB, payments adds mandates, bulk, rtp and consent (D2), services all 15", () => {
+  const s = composeDoc().services;
+  const members = (p) => Object.keys(s).filter((k) => (s[k].profiles ?? []).includes(p)).sort();
+  const svc = (p) => members(p).filter((k) => ALL_KEYS.includes(k));
+  assert.deepEqual(svc("openfinance"), [...OPENFINANCE_KEYS].sort());
+  assert.deepEqual(members("openfinance").filter((k) => !ALL_KEYS.includes(k)), ["mongo", "mongo-init"]);
+  assert.deepEqual(svc("payments"), ["payment-initiation-settlement-service", "customer-profile-kyc-service",
+    "risk-decisioning-service", "compliance-evidence-service", ...PAYMENT_KEYS, "consent-authorization-service"].sort());
+  assert.deepEqual(svc("services"), [...ALL_KEYS].sort());
+  assert.deepEqual(members("services").filter((k) => !ALL_KEYS.includes(k) && !k.endsWith("-migrate")), ["mongo", "mongo-init"]);
+  // unchanged by part B
+  assert.deepEqual(svc("lending"), ["customer-profile-kyc-service", "loan-lifecycle-service"]);
+  assert.deepEqual(svc("customer"), ["customer-profile-kyc-service"]);
+  assert.deepEqual(svc("riskcompliance"), ["compliance-evidence-service", "risk-decisioning-service"]);
+  // MongoDB only where a mongodb row runs; no Redis outside the monolith (D8).
+  for (const p of ["lending", "payments", "customer", "riskcompliance"]) assert.ok(!members(p).includes("mongo"), p);
+  assert.deepEqual(s.redis.profiles, ["monolith"]);
+  // Every dependency a service has is started by each of its profiles, or optional.
+  for (const key of ALL_KEYS) {
+    for (const [dep, cond] of Object.entries(s[key].depends_on ?? {})) {
+      if (cond.required === false || !s[dep].profiles) continue;
+      for (const p of s[key].profiles) assert.ok(s[dep].profiles.includes(p), `${key}: profile ${p} does not start ${dep}`);
+    }
+  }
+});
+
+test("mandates and bulk read consents from consent-authorization-service; mandates uses in-memory accounts (D3)", () => {
+  const s = composeDoc().services;
+  for (const key of ["payment-recurring-mandates-service", "payment-bulk-orchestration-service"]) {
+    const env = s[key].environment;
+    // CONSENT_ADAPTER keeps its default (http); the default URL is a cluster DNS name.
+    assert.equal(env.CONSENT_SERVICE_BASE_URL, "http://consent-authorization-service:8080", key);
+    assert.equal(env.CONSENT_ADAPTER, undefined, key);
+  }
+  const mandates = s["payment-recurring-mandates-service"].environment;
+  assert.equal(mandates.ACCOUNTS_ADAPTER, "in-memory", "no accounts service exists (decision D3)");
+  assert.equal(mandates.ACCOUNTS_SERVICE_BASE_URL, undefined);
+  // consent's caller allow-list keeps its default (bulk and mandates).
+  assert.equal(s["consent-authorization-service"].environment.OPENFINANCE_CONSENT_SERVICE_CALLERS, undefined);
+});
+
+test("outbox relays: consent publishes evt.of.consent.v1 for the three projections (D4); the others keep the default off", () => {
+  const s = composeDoc().services;
+  assert.equal(s["consent-authorization-service"].environment.OUTBOX_RELAY_ENABLED, "true");
+  for (const key of ALL_KEYS.filter((k) => k !== "consent-authorization-service")) {
+    assert.equal(s[key].environment.OUTBOX_RELAY_ENABLED, undefined, `${key}: relay default (false) unless service-env turns it on`);
+  }
+});
+
+test("DPoP: consent, payee and the three data services check htu against http://127.0.0.1:<host port> (D5)", () => {
+  // They build htu from DPOP_PUBLIC_BASE_URL + request path (forward-headers
+  // strategy none); payee refuses to start without it, the others default to
+  // localhost:8080. Mandates, bulk and rtp take htu from the request URL.
+  const s = composeDoc().services;
+  const dpop = ["consent-authorization-service", "payee-verification-service", ...MONGO_KEYS];
+  assert.equal(services().filter((r) => dpop.includes(r.key)).length, dpop.length, "all five are in services.tsv");
+  for (const r of services().filter((x) => x.key !== "monolith")) {
+    const v = s[r.key].environment.DPOP_PUBLIC_BASE_URL;
+    if (dpop.includes(r.key)) assert.equal(v, `http://127.0.0.1:${r.hostPort}`, r.key);
+    else assert.equal(v, undefined, r.key);
+  }
+});
+
+test("sample data seeding is off for payee, products and atm (D6) and only these names switch it", () => {
+  const s = composeDoc().services;
+  assert.equal(s["payee-verification-service"].environment.PAYEE_DIRECTORY_SEED_ENABLED, "false");
+  assert.equal(s["open-products-catalog-service"].environment.OPEN_PRODUCTS_SEED_ENABLED, "false");
+  assert.equal(s["atm-directory-service"].environment.ATM_DIRECTORY_SEED_ENABLED, "false");
+});
+
+test("MongoDB services: MongoDB persistence, in-memory cache and DPoP replay store, no Redis (D8)", () => {
+  const s = composeDoc().services;
+  const mode = { "personal-financial-data-service": "PFD", "business-financial-data-service": "BFD", "banking-metadata-service": "BM" };
+  for (const key of MONGO_KEYS) {
+    const env = s[key].environment;
+    assert.equal(env[`OPENFINANCE_${mode[key]}_CACHE_MODE`], "inmemory", key);
+    // persistence keeps its default (mongodb): the in-memory adapters are test code only
+    assert.equal(env[`OPENFINANCE_${mode[key]}_PERSISTENCE_MODE`], undefined, key);
+    assert.equal(env.REDIS_URL, undefined, key);
+    assert.equal(s[key].depends_on.redis, undefined, key);
+    // the consent projection consumer stays on (default true)
+    assert.equal(env.CONSENT_PROJECTION_ENABLED, undefined, key);
+  }
+  // D9: metadata's database is the runbook name, not the application.yml default banking_metadata_local.
+  assert.match(s["banking-metadata-service"].environment.MONGODB_URI, /@mongo:27017\/db_of_banking_metadata_local$/);
+});
+
+test("tracing: off unless FBX_TRACING_ENABLED; services with an OTLP exporter send to the collector", () => {
+  // Mandates, bulk, rtp, consent, payee, retail, corporate and products ship
+  // micrometer-tracing-bridge-otel and map OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+  // (defaults: cluster DNS or localhost). Metadata maps OTEL_EXPORTER_OTLP_ENDPOINT
+  // but has no tracing bridge; atm has neither.
+  const s = composeDoc().services;
+  const exporting = [...PAYMENT_KEYS, "consent-authorization-service", "payee-verification-service",
+    "personal-financial-data-service", "business-financial-data-service", "open-products-catalog-service"];
+  for (const key of NEW_KEYS) {
+    const env = s[key].environment;
+    if (exporting.includes(key)) {
+      assert.equal(env.MANAGEMENT_TRACING_ENABLED, "${FBX_TRACING_ENABLED:-false}", key);
+      assert.equal(env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, COLLECTOR_TRACES, key);
+    } else {
+      for (const k of Object.keys(env)) assert.doesNotMatch(k, /^(OTEL_|MANAGEMENT_TRACING)/, `${key}.${k}: no tracing bridge`);
+    }
   }
 });
 
@@ -464,6 +790,7 @@ test("every service container has a memory limit (decision D11)", () => {
 
 test("compose commits no credentials and pins every image", () => {
   const doc = composeDoc();
+  let urlCredentials = 0;
   for (const [name, svc] of Object.entries(doc.services)) {
     const image = svc.image.replace(/^\$\{[A-Z0-9_]+:-([^}]+)\}$/, "$1");
     assert.match(image, /(:[\w.-]+|@sha256:[a-f0-9]{64})$/, `${name} image must be pinned: ${svc.image}`);
@@ -474,11 +801,16 @@ test("compose commits no credentials and pins every image", () => {
         assert.match(String(v), /^\$\{[A-Z0-9_]+:\?[^}]*\}$/, `${name}.${k} must come from the generated .env without a default`);
       }
       // A credential inside a URL (MONGODB_URI) also comes only from the generated .env.
-      const userinfo = /:\/\/[^/@\s]+:([^@\s]+)@/.exec(String(v));
-      if (userinfo) assert.match(userinfo[1], /^\$\{[A-Z0-9_]+:\?[^}]*\}$/, `${name}.${k}: URL credential must come from the generated .env`);
+      // (the ${VAR:?message} form has spaces in its message, so the credential may too)
+      const userinfo = /:\/\/[^/@\s:]+:([^@]+)@/.exec(String(v));
+      if (userinfo) {
+        assert.match(userinfo[1], /^\$\{[A-Z0-9_]+:\?[^}]*\}$/, `${name}.${k}: URL credential must come from the generated .env`);
+        urlCredentials++;
+      }
     }
     for (const p of svc.ports ?? []) assert.match(String(p), /^127\.0\.0\.1:/, `${name} port ${p} must bind to localhost`);
   }
+  assert.equal(urlCredentials, mongoRows().length, "every MONGODB_URI credential was checked");
   const ignored = fs.readFileSync(path.join(repo, ".gitignore"), "utf8");
   for (const p of ["compose/.env", "compose/realm.env", "compose/.cache/"]) assert.ok(ignored.includes(p), `${p} not git-ignored`);
   const tracked = execFileSync("git", ["ls-files", "compose"], { cwd: repo, encoding: "utf8" });
@@ -525,12 +857,40 @@ test("admin-permissions runs the identity repo's FGAP step after realm-import; t
 
 test("docker compose config validates every profile with a generated env", { skip: !dockerCompose && "docker compose not available" }, () => {
   const { out } = generate();
-  for (const profile of ["", "lending", "payments", "customer", "riskcompliance", "openfinance", "services", "observability", "monolith"]) {
+  const used = [...new Set(Object.values(composeDoc().services).flatMap((x) => x.profiles ?? []))].filter((p) => p !== "parity-fixtures");
+  assert.ok(used.includes("openfinance"), "openfinance profile");
+  for (const profile of ["", ...used]) {
     const args = ["compose", "--project-directory", composeDir, "--env-file", path.join(out, ".env"), "-f", composeFile];
     if (profile) args.push("--profile", profile);
     const res = run("docker", [...args, "config", "-q"], { env: { ...process.env, FBX_REALM_ENV_FILE: path.join(out, "realm.env") } });
     assert.equal(res.status, 0, `profile ${profile || "core"}: ${res.stderr}`);
   }
+});
+
+test("docker compose resolves the openfinance and services profiles to the expected containers", { skip: !dockerCompose && "docker compose not available" }, () => {
+  const { out } = generate();
+  const core = ["admin-permissions", "kafka", "keycloak", "postgres", "realm-import", "topic-init"];
+  const migrate = ["compliance-evidence-service-migrate", "customer-profile-kyc-service-migrate", "risk-decisioning-service-migrate"];
+  const expected = {
+    openfinance: [...core, "mongo", "mongo-init", ...OPENFINANCE_KEYS],
+    services: [...core, "mongo", "mongo-init", ...ALL_KEYS, ...migrate]
+  };
+  for (const [profile, want] of Object.entries(expected)) {
+    const res = run("docker", ["compose", "--project-directory", composeDir, "--env-file", path.join(out, ".env"), "-f", composeFile,
+      "--profile", profile, "config", "--services"], { env: { ...process.env, FBX_REALM_ENV_FILE: path.join(out, "realm.env") } });
+    assert.equal(res.status, 0, res.stderr);
+    assert.deepEqual(res.stdout.trim().split("\n").sort(), [...want].sort(), profile);
+  }
+});
+
+test("fbx-local.sh help names every profile it brings down", () => {
+  const script = path.join(composeDir, "fbx-local.sh");
+  const res = run("bash", [script, "help"]);
+  assert.equal(res.status, 0, res.stderr);
+  const listed = /^all_profiles="([^"]*)"$/m.exec(fs.readFileSync(script, "utf8"))[1].split(/\s+/).filter(Boolean);
+  for (const p of listed) assert.match(res.stdout, new RegExp(`\\b${p}\\b`), p);
+  assert.match(res.stdout.replace(/\n# ?/g, " "), /openfinance starts the seven open-finance services/);
+  assert.match(res.stdout.replace(/\n# ?/g, " "), /services starts all 15 services/);
 });
 
 test("docker compose config fails without the generated env", { skip: !dockerCompose && "docker compose not available" }, () => {
@@ -578,7 +938,8 @@ test("postgres init skips mongodb rows and fails on a row of unknown store (no s
   let res = run("bash", [pgInit], { env: { ...process.env, ...creds, FBX_SERVICES_TSV: file, PATH: `${psql.dir}:${process.env.PATH}` } });
   assert.equal(res.status, 0, res.stderr);
   const touched = psql.calls().map((c) => c.args.join(" "));
-  for (const r of MONGO_FIXTURE_ROWS) assert.ok(!touched.some((a) => a.includes(r[3]) || a.includes(r[5])), `${r[0]} reached psql`);
+  assert.ok(allMongoRows().length >= 5, "the registry's MongoDB rows and the fixtures");
+  for (const r of allMongoRows()) assert.ok(!touched.some((a) => a.includes(r[3]) || a.includes(r[5])), `${r[0]} reached psql`);
   for (const r of postgresRows()) assert.ok(touched.some((a) => a.includes(`db=${r.database}`)), `${r.key} not created`);
   const bad = path.join(tmp(), "services.tsv");
   fs.writeFileSync(bad, fs.readFileSync(file, "utf8").replace(/\tmongodb$/m, "\tcassandra"));
@@ -612,7 +973,7 @@ test("postgres init creates one database and schema per service and isolates the
       res = q("select 1", { ...asSvc, PGDATABASE: other.database });
       assert.notEqual(res.status, 0, `${s.role} must not connect to ${other.database}`);
     }
-    for (const r of MONGO_FIXTURE_ROWS) {
+    for (const r of allMongoRows()) {
       res = q(`select count(*) from pg_database where datname = '${r[3]}'`);
       assert.equal(res.stdout.trim(), "0", `${r[0]}: no PostgreSQL database for a mongodb row`);
     }
@@ -656,7 +1017,7 @@ test("sql fixtures refuse a MongoDB service", () => {
   fs.mkdirSync(path.join(base, "db"), { recursive: true });
   fs.writeFileSync(path.join(base, "db", "ok.sql"), "select 1;\n");
   const servicesFile = servicesWithMongo();
-  for (const name of [MONGO_FIXTURE_ROWS[0][0], MONGO_FIXTURE_ROWS[0][1]]) {
+  for (const name of [MONGO_FIXTURE_ROWS[0][0], MONGO_FIXTURE_ROWS[0][1], ...MONGO_KEYS]) {
     const res = sqlFixtureRun([`${name}=db/ok.sql`], { env: path.join(out, ".env"), baseDir: base, check: true, servicesFile });
     assert.notEqual(res.status, 0, name);
     assert.match(res.stderr, /MongoDB/, name);
@@ -672,7 +1033,7 @@ const mongoUserScript = path.join(composeDir, "mongo", "init", "service-user.js"
 
 test("mongo init: one mongosh call per mongodb row with its database and user, credentials only in the environment", () => {
   const mongosh = recordingStub("mongosh", ["FBX_DB", "FBX_USER", "FBX_CRED", "MONGO_ROOT_USER", "MONGO_ROOT_CRED"]);
-  const creds = Object.fromEntries(MONGO_FIXTURE_ROWS.map((r, i) => [r[6], `fixture-cred-${i}-abcdefghijklmnop`]));
+  const creds = Object.fromEntries(allMongoRows().map((r, i) => [r[6], `fixture-cred-${i}-abcdefghijklmnop`]));
   const env = { ...process.env, ...creds, FBX_SERVICES_TSV: servicesWithMongo(), MONGO_ROOT_USER: "fbx-root",
     MONGO_ROOT_CRED: "fixture-root-abcdefghijklmnop", PATH: `${mongosh.dir}:${process.env.PATH}` };
   let res = run("bash", [mongoInit], { env });
@@ -680,7 +1041,7 @@ test("mongo init: one mongosh call per mongodb row with its database and user, c
   const calls = mongosh.calls();
   const userCalls = calls.filter((c) => c.args.includes("--file"));
   assert.deepEqual(userCalls.map((c) => [c.env.FBX_DB, c.env.FBX_USER, c.env.FBX_CRED]),
-    MONGO_FIXTURE_ROWS.map((r) => [r[3], r[5], creds[r[6]]]), "one user per mongodb row, in registry order");
+    allMongoRows().map((r) => [r[3], r[5], creds[r[6]]]), "one user per mongodb row, in registry order");
   for (const c of userCalls) {
     assert.equal(c.args[c.args.indexOf("--file") + 1], mongoUserScript);
     assert.deepEqual([c.env.MONGO_ROOT_USER, c.env.MONGO_ROOT_CRED], ["fbx-root", "fixture-root-abcdefghijklmnop"]);
@@ -701,12 +1062,17 @@ test("mongo init: one mongosh call per mongodb row with its database and user, c
   assert.match(res.stderr, new RegExp(`${MONGO_FIXTURE_ROWS[1][6]} is not set`));
 });
 
-test("mongo init: the registry without mongodb rows creates no user", () => {
-  const mongosh = recordingStub("mongosh", ["FBX_DB"]);
-  const res = run("bash", [mongoInit], { env: { ...process.env, FBX_SERVICES_TSV: servicesTsv, MONGO_ROOT_USER: "fbx-root",
+test("mongo init: the registry's own mongodb rows are retail, corporate and metadata, each in its own database", () => {
+  const mongosh = recordingStub("mongosh", ["FBX_DB", "FBX_USER"]);
+  const creds = Object.fromEntries(mongoRows().map((r, i) => [r.credVar, `registry-cred-${i}-abcdefghijklmnop`]));
+  const res = run("bash", [mongoInit], { env: { ...process.env, ...creds, FBX_SERVICES_TSV: servicesTsv, MONGO_ROOT_USER: "fbx-root",
     MONGO_ROOT_CRED: "fixture-root-abcdefghijklmnop", PATH: `${mongosh.dir}:${process.env.PATH}` } });
   assert.equal(res.status, 0, res.stderr);
-  assert.deepEqual(mongosh.calls().filter((c) => c.args.includes("--file")), []);
+  assert.deepEqual(mongosh.calls().filter((c) => c.args.includes("--file")).map((c) => [c.env.FBX_DB, c.env.FBX_USER]), [
+    ["db_of_personal_financial_data_local", "personal_financial_data_app"],
+    ["db_of_business_financial_data_local", "business_financial_data_app"],
+    ["db_of_banking_metadata_local", "metadata_app"]
+  ]);
 });
 
 // The user script runs inside mongosh; here it runs in a Node VM against a

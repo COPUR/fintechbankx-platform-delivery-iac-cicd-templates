@@ -7,11 +7,11 @@ monolith's `docker-compose.yml`, `docker-compose.open-finance-eventing.yml` and
 | Part | What runs | Source of truth |
 |---|---|---|
 | PostgreSQL 16 | one database, schema and LOGIN role per `postgresql` row of services.tsv; no role can connect to another service's database | [services.tsv](services.tsv) (matches each service repo's `application.yml`), [postgres/init](postgres/init/10-service-databases.sh) |
-| MongoDB 7.0 (`openfinance`, `services`) | `mongo` plus the `mongo-init` one-shot: one user per `mongodb` row of services.tsv, readWrite on its own database only; no `mongodb` row yet | [mongo/init](mongo/init/10-service-databases.sh) |
+| MongoDB 7.0 (`openfinance`, `services`) | `mongo` plus the `mongo-init` one-shot: one user per `mongodb` row of services.tsv (the three open-finance data services), readWrite on its own database only | [mongo/init](mongo/init/10-service-databases.sh) |
 | Kafka | single-broker KRaft (no ZooKeeper), auto-create off, catalog topics at RF 1 | topic catalog and `create-topics.sh` fetched from fintechbankx-platform-event-streaming-kafka |
 | Keycloak 26 + realm import | dev-mode Keycloak, realm `fintechbankx` applied by keycloak-config-cli, then `admin-permissions` (the identity repo's second import step: fine-grained admin permissions, e.g. the customer service's view/manage-members on `/customers`, and scope-mapping narrowing); the customer service waits for it | `realm/fintechbankx-realm.json`, `realm/admin-permissions.json` and `scripts/realm/apply-admin-permissions.mjs` fetched from fintechbankx-platform-identity-iam-keycloak-ldap |
 | `observability` profile | OTel collector + Jaeger (UI on 127.0.0.1:16686) | [otel/collector.yaml](otel/collector.yaml) |
-| service profiles | `lending` (loan + customer), `payments` (initiation-settlement + risk + compliance + customer), `customer`, `riskcompliance`, `openfinance` (MongoDB so far), `services` (all five + MongoDB); customer, risk and compliance each with a `<service>-migrate` one-shot | images `fintechbankx/<service>:local` or `FBX_IMAGE_*` |
+| service profiles | the 15 services, one container each (table below); customer, risk and compliance each with a `<service>-migrate` one-shot | images `fintechbankx/<service>:local` or `FBX_IMAGE_*` |
 | `monolith` profile | comparison target side by side (+ Redis): the monolith-oracle app by default, or the full ELMS image | `FBX_MONOLITH_IMAGE` |
 | `parity-fixtures` profile | regression parity test actors layered onto the realm, and parity-suite's admin permission on `/customers` (local/ephemeral only) | [keycloak/parity-fixtures.template.json](keycloak/parity-fixtures.template.json), [keycloak/parity-admin-permissions.json](keycloak/parity-admin-permissions.json) |
 
@@ -24,9 +24,45 @@ compose/fbx-local.sh down                        # removes containers and volume
 compose/fbx-local.sh reset                       # lighter reset between parity runs (see below)
 ```
 
-Issuer for tokens: `http://localhost:8180/realms/fintechbankx`. Service ports on
-127.0.0.1 (services.tsv `host_port`): loan 18010, payment 18020, customer 18030,
-risk 18040, compliance 18050, monolith 18000; PostgreSQL 15432, MongoDB 37017.
+Issuer for tokens: `http://localhost:8180/realms/fintechbankx`. Infrastructure on
+127.0.0.1: PostgreSQL 15432, MongoDB 37017, Kafka 29092, Keycloak 8180, Jaeger
+16686; the monolith 18000.
+
+### Profiles and ports
+
+Every service runs `SPRING_PROFILES_ACTIVE=local` and listens on 8080 (API) and
+8081 (management) in its container; the host port (services.tsv `host_port`,
+127.0.0.1 only) maps to 8080. `FBX_BASE_URL_<SERVICE>` in the workflow is
+`http://127.0.0.1:<host port>`.
+
+| Service (compose key) | Service id | Host port | Store | Profiles |
+|---|---|---|---|---|
+| loan-lifecycle-service | svc-ln-loan-lifecycle | 18010 | PostgreSQL | lending, services |
+| payment-initiation-settlement-service | svc-pay-initiation-settlement | 18020 | PostgreSQL | payments, services |
+| customer-profile-kyc-service | svc-cus-profile-kyc | 18030 | PostgreSQL | lending, customer, payments, services |
+| risk-decisioning-service | svc-rsk-decisioning | 18040 | PostgreSQL | payments, riskcompliance, services |
+| compliance-evidence-service | svc-cmp-evidence | 18050 | PostgreSQL | payments, riskcompliance, services |
+| payment-recurring-mandates-service | svc-pay-recurring-mandates | 18060 | PostgreSQL | payments, services |
+| payment-bulk-orchestration-service | svc-pay-bulk-orchestration | 18070 | PostgreSQL | payments, services |
+| payment-request-to-pay-service | svc-pay-request-to-pay | 18080 | PostgreSQL | payments, services |
+| consent-authorization-service | svc-of-consent-authorization | 18090 | PostgreSQL | openfinance, payments (D2), services |
+| payee-verification-service | svc-of-payee-verification | 18100 | PostgreSQL | openfinance, services |
+| personal-financial-data-service | svc-of-personal-financial-data | 18110 | MongoDB | openfinance, services |
+| business-financial-data-service | svc-of-business-financial-data | 18120 | MongoDB | openfinance, services |
+| banking-metadata-service | svc-of-banking-metadata | 18130 | MongoDB | openfinance, services |
+| open-products-catalog-service | svc-of-open-products-catalog | 18140 | PostgreSQL | openfinance, services |
+| atm-directory-service | svc-of-atm-directory | 18150 | PostgreSQL | openfinance, services |
+
+So `lending` starts loan and customer; `payments` initiation, customer, risk,
+compliance, mandates, bulk, request-to-pay and consent; `customer` customer;
+`riskcompliance` risk and compliance; `openfinance` the seven open-finance
+services with MongoDB; `services` (the workflow default) all 15 with MongoDB.
+The service ids are the identity realm's 15 service clients and the compose
+keys their service slugs (`realm/service-clients.json`; a test checks the copy
+in `test/fixtures/identity-service-clients.json`). `up` waits for every
+container to be healthy for at most `FBX_WAIT_TIMEOUT` seconds (default 600;
+the workflow input `wait-timeout-seconds`). A cold `services` start with
+fifteen JVMs has not been timed yet; raise it if the wait runs out.
 
 ## Secrets
 
@@ -34,7 +70,10 @@ risk 18040, compliance 18050, monolith 18000; PostgreSQL 15432, MongoDB 37017.
 (mode 600, git-ignored) with random values from `openssl rand`: the PostgreSQL
 superuser, the MongoDB root (`MONGO_ROOT_CRED`, user `fbx-local-root`, used by
 `mongo-init` only), one credential per service database (either store), the
-Keycloak admin, Redis, one OIDC client credential per service and every
+Keycloak admin, Redis, one OIDC client credential per service, the consent
+service's internal token issuer (`FBX_OF_CONSENT_INTERNAL_USER` fixed to
+`fbx-local-consent-internal`, `FBX_OF_CONSENT_INTERNAL_CRED` and
+`FBX_OF_CONSENT_INTERNAL_HMAC_SECRET` random; decision D7) and every
 `$(env:NAME)` placeholder of the
 realm (LDAP and channel URLs get fixed dev values: customer web
 `http://localhost:3000`, staff web (`fintechbankx-staff-web`)
@@ -99,17 +138,38 @@ What each service gets beyond the common database, Kafka (`kafka:9092`,
 | loan, initiation | `SERVICE_CLIENT_SECRET` (the secret realm-import gives `svc-ln-loan-lifecycle` / `svc-pay-initiation-settlement`), `OIDC_TOKEN_URI=http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/token` | their outbound client-credentials registration; the token URI defaults to `localhost:8180`, which a container cannot reach. The client id keeps its default (the service id) |
 | customer | `IDENTITY_ADMIN_ENABLED=true`, `KEYCLOAK_BASE_URL=http://keycloak:8080`, `IDENTITY_ADMIN_CLIENT_SECRET` (the secret of `svc-cus-profile-kyc`) | identity link (`PUT /api/v1/customers/{id}/identity-link`) through the Keycloak admin API; off it answers 503. The realm's `svc-cus-profile-kyc` client has a service account, and `admin-permissions` gives it view and manage members of `/customers` before customer starts |
 | risk, compliance | Kafka settings like the others | their outbox relay (`OUTBOX_RELAY_ENABLED`, off by default) would otherwise publish to `localhost:9092` |
+| mandates | `SERVICE_CLIENT_SECRET` (secret of `svc-pay-recurring-mandates`), `OIDC_TOKEN_URI` on `keycloak:8080`, `CONSENT_SERVICE_BASE_URL=http://consent-authorization-service:8080`, `ACCOUNTS_ADAPTER=in-memory` (D3) | every mandate is bound to a consent it reads from the consent service with a client-credentials token (the realm client has the consent audience); the consent URL defaults to a cluster DNS name; the http accounts adapter has no service to call |
+| bulk | `SERVICE_CLIENT_SECRET` (secret of `svc-pay-bulk-orchestration`), `OIDC_TOKEN_URI`, `CONSENT_SERVICE_BASE_URL` as mandates | the consent check of every bulk file |
+| request-to-pay | database, Kafka and JWT settings only | its Kafka default is `localhost:29092`; the outbox relay (`evt.pay.rtp.v1`) stays off |
+| consent | `DPOP_PUBLIC_BASE_URL=http://127.0.0.1:18090` (D5), `OUTBOX_RELAY_ENABLED=true` (D4), `OPENFINANCE_INTERNAL_USERNAME` / `_PASSWORD` / `_JWT_HMAC_SECRET` from the generated `FBX_OF_CONSENT_INTERNAL_USER` / `_CRED` / `_HMAC_SECRET` (D7) | the DPoP `htu` is this origin plus the request path; the relay publishes `evt.of.consent.v1`, which the three data services project; the internal token issuer would otherwise use its shipped `RUNTIME_MANAGED_*` placeholders |
+| payee | `DPOP_PUBLIC_BASE_URL=http://127.0.0.1:18100`, `PAYEE_DIRECTORY_SEED_ENABLED=false` (D6) | the service refuses to start without the DPoP base URL; no sample payee directory |
+| retail, corporate, metadata | `MONGODB_URI=mongodb://<app_role>:${<credential_var>}@mongo:27017/<database>`, `OPENFINANCE_PFD_CACHE_MODE` / `OPENFINANCE_BFD_CACHE_MODE` / `OPENFINANCE_BM_CACHE_MODE=inmemory` (D8), `DPOP_PUBLIC_BASE_URL=http://127.0.0.1:18110` / `18120` / `18130` | the read model and consent projection live in MongoDB as the row's own user (metadata in `db_of_banking_metadata_local`, D9); the in-memory cache and DPoP replay store replace Redis; each consumes `evt.of.consent.v1` with the consumer group and DLQ its `application.yml` fixes (`cg.<service id>.consent-projection.v1`, `evt.of.account` / `corporate` / `metadata` `.dlq.v1`) |
+| products | `OPEN_PRODUCTS_SEED_ENABLED=false` (D6); PostgreSQL only | public catalogue: no resource server, no Kafka client; no `SAMPLE-*` products |
+| atm | `ATM_DIRECTORY_SEED_ENABLED=false` (D6); PostgreSQL only | public directory: no resource server, no Kafka client, no tracing; Flyway uses its own connection (`FLYWAY_URL`, default `DB_URL`) |
+
+All ten above run Flyway in-process (no migrate one-shot). Every service that
+validates tokens gets the issuer `http://localhost:8180/realms/fintechbankx`
+(the one tokens carry) and the JWKS from `keycloak:8080`; products and atm get
+neither. Their outbox relays stay off (`OUTBOX_RELAY_ENABLED`, default false)
+except consent's; turn one on per run with `service-env`.
 
 `payments` starts customer too: initiation reads the KYC status before every
-payment and refuses the payment when it cannot. A test checks that every
-compose-network URL a service gets names a service that each of the caller's
-profiles also starts.
+payment and refuses the payment when it cannot. It starts consent as well
+(D2): mandates and bulk check every mandate and file against it. A test
+checks that every compose-network URL a service gets names a service that
+each of the caller's profiles also starts, and that the caller's realm client
+carries the callee's audience.
 
-No service gets `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` (none reads them) or
-`OTEL_*` variables: Spring Boot 3.3.6 reads none, none of the five services
-maps one, and none ships an OTLP exporter. `MANAGEMENT_TRACING_ENABLED`
-(`FBX_TRACING_ENABLED`, default false) stays; it only switches in-process
-tracing.
+No service gets `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` (none reads them).
+Spring Boot 3.3.6 reads no `OTEL_*` variable itself; of the 15, eight ship an
+OTLP exporter and map `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` in their
+`application.yml` (mandates, bulk, request-to-pay, consent, payee, retail,
+corporate, products), and compose points it at the collector
+(`http://otel-collector:4318/v1/traces`, `observability` profile). The five
+first services and metadata map none, atm has no tracing at all, so they get
+no endpoint. `MANAGEMENT_TRACING_ENABLED` (`FBX_TRACING_ENABLED`, default
+false) switches tracing; it also overrides payee's `TRACING_ENABLED` default
+of true, so no service tries to export unless asked.
 
 **Memory** (decision D11): every service container and migrate one-shot has
 `mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}`, the smallest memory limit in the
@@ -117,6 +177,43 @@ fifteen services' Helm values (atm and products; the others have 896Mi or
 1Gi). The images size the heap at 75 % of the container limit
 (`MaxRAMPercentage=75`) instead of 75 % of the runner's memory, so fifteen
 JVMs fit on one runner. Raise it per run with `FBX_SERVICE_MEM_LIMIT`.
+
+### Decisions
+
+| # | Decision | Why, and how to change it |
+|---|---|---|
+| D1 | services.tsv has an explicit `store` column (`postgresql` or `mongodb`) | Mongo is not read from a `-` schema; each init script refuses a store it does not handle |
+| D2 | consent runs in `payments` as well as `openfinance` (and `services`) | mandates and bulk check every mandate and file against it; without it they fail every request. The alternative, `openfinance` only with an optional dependency, would start them broken |
+| D3 | `ACCOUNTS_ADAPTER=in-memory` for initiation and mandates | no accounts service exists: the http adapter fails initiation at start-up and answers 503 in mandates. Demo accounts, local runs only |
+| D4 | consent's outbox relay is on, every other relay off | consent's `evt.of.consent.v1` feeds the three data services' consent projections; turn another relay on per run with `service-env` (`<service>__OUTBOX_RELAY_ENABLED=true`) |
+| D5 | `DPOP_PUBLIC_BASE_URL` is `http://127.0.0.1:<host port>` | it is the origin of the DPoP `htu` the service expects, so it must equal the `FBX_BASE_URL_*` the workflow exports and the suite calls (a test checks this); `localhost` would be a different string |
+| D6 | the sample seeds of payee, products and atm are off | parity runs start from empty, deterministic data; turn one on per run with `service-env` (`PAYEE_DIRECTORY_SEED_ENABLED`, `OPEN_PRODUCTS_SEED_ENABLED`, `ATM_DIRECTORY_SEED_ENABLED`) |
+| D7 | `init-env.sh` generates consent's internal issuer credentials | the shipped `RUNTIME_MANAGED_*` defaults are placeholders; the HMAC key needs at least 32 bytes (40 generated) |
+| D8 | no Redis for the open-finance services | `OPENFINANCE_*_CACHE_MODE=inmemory` keeps the cache and DPoP replay store in memory; the monolith's Redis is not shared |
+| D9 | metadata's database is `db_of_banking_metadata_local` | the runbook convention `db_of_banking_metadata_<env>`, not the `application.yml` default `banking_metadata_local` |
+| D10 | MongoDB `mongo:7.0.41` with one user per service | the 7.0 line the services' CI runs, pinned by full tag (their CI pins no digest) |
+| D11 | `mem_limit` per container, default 768m | the smallest Helm limit (atm, products); `FBX_SERVICE_MEM_LIMIT` raises it |
+
+### What does not work locally yet
+
+- **No MongoDB sample data.** retail, corporate and metadata start with empty
+  read models: `sql-fixtures` is PostgreSQL only (`apply-sql-fixtures.sh`
+  refuses a `mongodb` service) and there is no Mongo fixture loader yet. Their
+  consent projections fill only from consents created in the same run.
+- **Channel tokens for consent.** The realm's `fintechbankx-web` and
+  `fintechbankx-mobile` do not carry the `svc-of-consent-authorization`
+  audience, so a PSU consent authorization with a channel token fails on
+  `aud`. That is a realm (identity repository) or parity fixture change, not
+  a compose one.
+- **Parity coverage.** `parity-suite`'s audiences, its fixtures and the parity
+  tests cover the original five services only; the TPP clients carry the
+  open-finance audiences of the realm's TPP template.
+- **No accounts service** (D3): initiation and mandates use in-memory demo
+  accounts.
+- **Redis health in corporate.** corporate does not switch off Spring's Redis
+  health contributor (retail and metadata do), so its overall
+  `/actuator/health` may report Redis down; readiness (`readinessState`,
+  `mongo`), which the healthcheck uses, is not affected.
 
 ## Regression parity support
 
@@ -277,23 +374,26 @@ is rejected. `CRED` also matches loan's `CUSTOMER_CREDIT_*`: change those in
 the compose file. Example: `payment-initiation-settlement-service__OUTBOX_RELAY_ENABLED=true`
 (initiation already runs with `ACCOUNTS_ADAPTER=in-memory`).
 
-**Spring profile**: the five services and the migrate one-shots run with
-`SPRING_PROFILES_ACTIVE=local` and no other profile. The stack uses Kafka over
-`PLAINTEXT` on `kafka:9092` and PostgreSQL without TLS, which the service-side
-TLS assertion refuses unless that profile is active
-(fintechbankx-platform-event-streaming-kafka
+**Spring profile**: all 15 services and the migrate one-shots run with
+`SPRING_PROFILES_ACTIVE=local` and no other profile (never `aws`). The stack
+uses Kafka over `PLAINTEXT` on `kafka:9092`, PostgreSQL and MongoDB without
+TLS, which the service-side TLS assertion refuses unless that profile is
+active (fintechbankx-platform-event-streaming-kafka
 `docs/guides/SERVICE_CLIENT_CONFIGURATION.md`, and the chart README section
-"Service-side TLS assertion"). Loan and payment initiation-settlement switch it
-off in their `application-local.yml` (`fintechbankx.tls.enforce: false`);
-customer, risk and compliance ship no local profile file and turn their TLS
-guards off by the profile name (compliance its runtime role guard too, since
-one role owns and uses the schema here). Compose sets no `FINTECHBANKX_TLS_*`
-variable and no `DB_SSL_ROOT_CERT` (the database CA bundle those guards
-require while they are on; there is none here).
+"Service-side TLS assertion"). Twelve services switch it off in their
+`application-local.yml` (`fintechbankx.tls.enforce: false`): loan, payment
+initiation-settlement and the ten above. Customer, risk and compliance ship no
+local profile file and turn their TLS guards off by the profile name
+(compliance its runtime role guard too, since one role owns and uses the
+schema here). Compose sets no `FINTECHBANKX_TLS_*` variable and no
+`DB_SSL_ROOT_CERT` (the database CA bundle those guards require while they are
+on; there is none here).
 
 **Caller allow-lists**: customer `SERVICE_CALLERS=svc-ln-loan-lifecycle`; risk
 and compliance `SERVICE_CALLERS=svc-pay-initiation-settlement` (comma separated
-`azp` values, the variable the three services read).
+`azp` values, the variable the three services read). Consent keeps its default
+(`openfinance.consent.service-callers`: `svc-pay-bulk-orchestration`,
+`svc-pay-recurring-mandates`), which are exactly its callers here.
 
 **Comparison target** (`monolith` profile). Defaults are for the
 monolith-oracle app (enterprise-loan-management-system
@@ -354,9 +454,14 @@ otherwise use `down`. Pulled or locally built images are kept by both.
 
 `node --test compose/test/*.test.mjs` (part of `npm test`): secret generation,
 asset fetching, the services.tsv columns and compose wiring per row (database,
-role, credential, image, profiles, port, `local` profile, memory limit),
-the five services' settings above and the migrate one-shots, credential
-hygiene, `docker compose config -q` for every profile, parity actors and their
+role, credential, image, profiles, port, store, `local` profile, memory
+limit, healthcheck), the service ids against the realm's service clients,
+every service's settings above and the decisions D2 to D9, the migrate
+one-shots, that every variable compose gives the ten newer services is on a
+list of the names their `application.yml` (or Spring Boot) reads, outbound
+URLs against profiles and realm audiences, credential hygiene,
+`docker compose config -q` for every profile
+and the service list of `openfinance` and `services`, parity actors and their
 rendered realm layer, service-env validation, the workflow structure and its
 exported base URLs, the PostgreSQL init and SQL fixtures against a real server
 (local PostgreSQL 16 binaries or `FBX_TEST_PGHOST`), and the store split of
@@ -369,9 +474,9 @@ MongoDB user script runs in a Node VM against a stand-in `db`).
   `docker compose config` and the database init were exercised, and the
   services' effective Spring settings under the rendered compose environment
   were read with a Spring Boot 3.3.6 probe over each service's own
-  `application*.yml`. `mongo`, its healthcheck and `mongo-init` have not run
-  against a live MongoDB; services.tsv has no `mongodb` row until the
-  open-finance services join.
+  `application*.yml`, for all 15. `mongo`, its healthcheck and `mongo-init`
+  have not run against a live MongoDB, and none of the ten services added
+  with the `openfinance` profile has been started from its image here.
 - LDAP federation in the realm points at `ldap://openldap:389`, which this stack
   does not run; interactive staff logins (client `fintechbankx-staff-web`; the
   customer clients `fintechbankx-web` and `fintechbankx-mobile` map only the

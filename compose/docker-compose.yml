@@ -6,9 +6,11 @@
 #                   kafka (single-broker KRaft) + topic-init from the Kafka repo's catalog,
 #                   keycloak 26 + realm-import of the identity repo's realm
 #                   + admin-permissions (its fine-grained admin permissions step)
-#   profiles:       lending (loan + customer), payments (initiation + risk + compliance + customer),
-#                   customer, riskcompliance, openfinance (mongo + mongo-init so far),
-#                   services (all five + mongo), monolith (ELMS / monolith-oracle side by side,
+#   profiles:       lending (loan + customer), payments (initiation + risk + compliance + customer
+#                   + mandates + bulk + request-to-pay + consent), customer, riskcompliance,
+#                   openfinance (the seven open-finance services: consent, payee, the three
+#                   data services on mongo + mongo-init, products, atm), services (all 15
+#                   services + mongo), monolith (ELMS / monolith-oracle side by side,
 #                   with redis), observability (otel-collector + jaeger),
 #                   parity-fixtures (regression parity test actors layered onto the realm, plus
 #                   parity-suite's admin permission on /customers; ephemeral/local only)
@@ -21,7 +23,7 @@
 # file cannot run with a committed default.
 #
 # Host ports bind to 127.0.0.1 only: postgres 15432, mongo 37017, kafka 29092,
-# keycloak 8180, jaeger UI 16686, services 18010-18050 (services.tsv host_port),
+# keycloak 8180, jaeger UI 16686, services 18010-18150 (services.tsv host_port),
 # monolith 18000.
 #
 # Extra per-service environment (e.g. OUTBOX_RELAY_ENABLED=true) comes from
@@ -41,6 +43,13 @@ services:
       FBX_DB_CRED_CUS_PROFILE_KYC: ${FBX_DB_CRED_CUS_PROFILE_KYC:?run compose/fbx-local.sh init}
       FBX_DB_CRED_RSK_DECISIONING: ${FBX_DB_CRED_RSK_DECISIONING:?run compose/fbx-local.sh init}
       FBX_DB_CRED_CMP_EVIDENCE: ${FBX_DB_CRED_CMP_EVIDENCE:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_PAY_RECURRING_MANDATES: ${FBX_DB_CRED_PAY_RECURRING_MANDATES:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_PAY_BULK_ORCHESTRATION: ${FBX_DB_CRED_PAY_BULK_ORCHESTRATION:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_PAY_REQUEST_TO_PAY: ${FBX_DB_CRED_PAY_REQUEST_TO_PAY:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_OF_CONSENT_AUTHORIZATION: ${FBX_DB_CRED_OF_CONSENT_AUTHORIZATION:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_OF_PAYEE_VERIFICATION: ${FBX_DB_CRED_OF_PAYEE_VERIFICATION:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_OF_OPEN_PRODUCTS_CATALOG: ${FBX_DB_CRED_OF_OPEN_PRODUCTS_CATALOG:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_OF_ATM_DIRECTORY: ${FBX_DB_CRED_OF_ATM_DIRECTORY:?run compose/fbx-local.sh init}
       FBX_DB_CRED_ELMS_MONOLITH: ${FBX_DB_CRED_ELMS_MONOLITH:?run compose/fbx-local.sh init}
     volumes:
       - ./services.tsv:/fbx/services.tsv:ro
@@ -287,7 +296,7 @@ services:
   # One user per mongodb row of services.tsv with readWrite on its own
   # database only (credential FBX_DB_CRED_* of the row); re-runnable, like
   # topic-init. Services with store=mongodb wait for it. Lists the credential
-  # of every mongodb row (none yet).
+  # of every mongodb row (retail, corporate, metadata).
   mongo-init:
     image: mongo:7.0.41
     profiles: [openfinance, services]
@@ -298,6 +307,9 @@ services:
       FBX_MONGO_URI: mongodb://mongo:27017/admin
       MONGO_ROOT_USER: fbx-local-root
       MONGO_ROOT_CRED: ${MONGO_ROOT_CRED:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_OF_PERSONAL_FINANCIAL_DATA: ${FBX_DB_CRED_OF_PERSONAL_FINANCIAL_DATA:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_OF_BUSINESS_FINANCIAL_DATA: ${FBX_DB_CRED_OF_BUSINESS_FINANCIAL_DATA:?run compose/fbx-local.sh init}
+      FBX_DB_CRED_OF_BANKING_METADATA: ${FBX_DB_CRED_OF_BANKING_METADATA:?run compose/fbx-local.sh init}
     volumes:
       - ./services.tsv:/fbx/services.tsv:ro
       - ./mongo/init:/fbx/mongo-init:ro
@@ -328,8 +340,9 @@ services:
   #   mem_limit (decision D11): FBX_SERVICE_MEM_LIMIT, default 768m, the smallest
   #     memory limit in the services' Helm values; the images size the heap at
   #     75 % of it (MaxRAMPercentage=75) instead of 75 % of the host.
-  #   No OTEL_* variables: Spring Boot 3.3.6 reads none and none of these five
-  #     services maps one or ships an OTLP exporter.
+  #   No OTEL_* variables for these five: Spring Boot 3.3.6 reads none and none
+  #     of them maps one or ships an OTLP exporter (the part-B services below
+  #     that do get the collector's URL).
   loan-lifecycle-service:
     image: ${FBX_IMAGE_LN_LOAN_LIFECYCLE:-fintechbankx/loan-lifecycle-service:local}
     profiles: [lending, services]
@@ -590,6 +603,393 @@ services:
       MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
     ports:
       - "127.0.0.1:18050:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # --- part B: payments (mandates, bulk, request-to-pay) and open finance ------------
+  # Same common wiring as the five above (local profile only, mem_limit, 8080 and
+  # 8081, readiness healthcheck), checked against each application.yml at its r8
+  # head. Flyway runs in-process at start-up as the app role in every PostgreSQL
+  # one (bulk and request-to-pay do not create their schema: postgres/init does,
+  # owned by the role); no migrate one-shot. The three data services keep their
+  # read model in MongoDB as their own user (mongo-init) and build their consent
+  # projection from evt.of.consent.v1 (groups cg.<service id>.consent-projection.v1,
+  # DLQs evt.of.account / corporate / metadata .dlq.v1 from the topic catalog, set
+  # in their application.yml). Products and atm serve public data: no Keycloak, no
+  # Kafka. The eight that ship an OTLP exporter and map
+  # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT send to the collector (observability profile)
+  # once FBX_TRACING_ENABLED=true. Outbox relays stay off (OUTBOX_RELAY_ENABLED
+  # default false) except consent's (decision D4).
+  payment-recurring-mandates-service:
+    image: ${FBX_IMAGE_PAY_RECURRING_MANDATES:-fintechbankx/payment-recurring-mandates-service:local}
+    profiles: [payments, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    depends_on:
+      postgres: {condition: service_healthy}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-pay-recurring-mandates
+      # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, PostgreSQL without TLS)
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://postgres:5432/db_pay_recurring_mandates_local
+      DB_USERNAME: pay_recurring_mandates_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_PAY_RECURRING_MANDATES:?run compose/fbx-local.sh init}
+      # the outbox relay (evt.pay.mandate.v1, OUTBOX_RELAY_ENABLED, off by default) publishes here
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      # Outbound client-credentials token (registrations consent-service and
+      # accounts-service, client id SERVICE_CLIENT_ID, default svc-pay-recurring-mandates,
+      # whose realm client has the svc-of-consent-authorization audience).
+      SERVICE_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_PAY_RECURRING_MANDATES:?run compose/fbx-local.sh init}
+      OIDC_TOKEN_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/token
+      # Every mandate is bound to a PSU-authorised consent (GET /api/v1/consents/{id},
+      # CONSENT_ADAPTER default http); the default URL is a cluster DNS name.
+      # Consent is in the payments profile too (decision D2).
+      CONSENT_SERVICE_BASE_URL: http://consent-authorization-service:8080
+      # Decision D3: no accounts service exists; the default (http) answers 503 on
+      # every call. The in-memory adapter holds demo accounts (local runs only).
+      ACCOUNTS_ADAPTER: in-memory
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    ports:
+      - "127.0.0.1:18060:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  payment-bulk-orchestration-service:
+    image: ${FBX_IMAGE_PAY_BULK_ORCHESTRATION:-fintechbankx/payment-bulk-orchestration-service:local}
+    profiles: [payments, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    depends_on:
+      postgres: {condition: service_healthy}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-pay-bulk-orchestration
+      # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, PostgreSQL without TLS)
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://postgres:5432/db_pay_bulk_orchestration_local
+      DB_USERNAME: payment_bulk_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_PAY_BULK_ORCHESTRATION:?run compose/fbx-local.sh init}
+      # the outbox relay (evt.pay.bulk.v1, OUTBOX_RELAY_ENABLED, off by default) publishes here
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      # Outbound client-credentials token (registration consent-service, client id
+      # SERVICE_CLIENT_ID, default svc-pay-bulk-orchestration).
+      SERVICE_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_PAY_BULK_ORCHESTRATION:?run compose/fbx-local.sh init}
+      OIDC_TOKEN_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/token
+      # Consent check of every bulk file (CONSENT_ADAPTER default http, decision D2).
+      CONSENT_SERVICE_BASE_URL: http://consent-authorization-service:8080
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    ports:
+      - "127.0.0.1:18070:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  payment-request-to-pay-service:
+    image: ${FBX_IMAGE_PAY_REQUEST_TO_PAY:-fintechbankx/payment-request-to-pay-service:local}
+    profiles: [payments, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    depends_on:
+      postgres: {condition: service_healthy}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-pay-request-to-pay
+      # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, PostgreSQL without TLS)
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://postgres:5432/db_pay_request_to_pay_local
+      DB_USERNAME: payment_request_to_pay_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_PAY_REQUEST_TO_PAY:?run compose/fbx-local.sh init}
+      # the default is localhost:29092; the outbox relay (evt.pay.rtp.v1) is off by default
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    ports:
+      - "127.0.0.1:18080:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # payments too (decision D2): mandates and bulk check every mandate and file against it.
+  consent-authorization-service:
+    image: ${FBX_IMAGE_OF_CONSENT_AUTHORIZATION:-fintechbankx/consent-authorization-service:local}
+    profiles: [openfinance, payments, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    depends_on:
+      postgres: {condition: service_healthy}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-of-consent-authorization
+      # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, PostgreSQL without TLS)
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://postgres:5432/db_of_consent_authorization_local
+      DB_USERNAME: consent_authorization_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_OF_CONSENT_AUTHORIZATION:?run compose/fbx-local.sh init}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      # DPoP htu = this + request path (forward-headers-strategy none): the origin
+      # callers use, FBX_BASE_URL_OF_CONSENT_AUTHORIZATION (decision D5).
+      DPOP_PUBLIC_BASE_URL: http://127.0.0.1:18090
+      # Decision D4: the relay publishes evt.of.consent.v1, from which the three
+      # data services build their consent projection.
+      OUTBOX_RELAY_ENABLED: "true"
+      # Internal token issuer (openfinance.internal.security): generated by
+      # init-env.sh instead of the shipped RUNTIME_MANAGED_* defaults (decision D7).
+      OPENFINANCE_INTERNAL_USERNAME: ${FBX_OF_CONSENT_INTERNAL_USER:?run compose/fbx-local.sh init}
+      OPENFINANCE_INTERNAL_PASSWORD: ${FBX_OF_CONSENT_INTERNAL_CRED:?run compose/fbx-local.sh init}
+      OPENFINANCE_INTERNAL_JWT_HMAC_SECRET: ${FBX_OF_CONSENT_INTERNAL_HMAC_SECRET:?run compose/fbx-local.sh init}
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    ports:
+      - "127.0.0.1:18090:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  payee-verification-service:
+    image: ${FBX_IMAGE_OF_PAYEE_VERIFICATION:-fintechbankx/payee-verification-service:local}
+    profiles: [openfinance, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    depends_on:
+      postgres: {condition: service_healthy}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-of-payee-verification
+      # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, PostgreSQL without TLS)
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://postgres:5432/db_of_payee_verification_local
+      DB_USERNAME: payee_verification_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_OF_PAYEE_VERIFICATION:?run compose/fbx-local.sh init}
+      # the outbox relay (evt.of.payee.v1, OUTBOX_RELAY_ENABLED, off by default) publishes here
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      # Required (no default; the service refuses to start without it), decision D5.
+      DPOP_PUBLIC_BASE_URL: http://127.0.0.1:18100
+      # Decision D6: no sample payee directory (db/seed), so parity runs start empty.
+      PAYEE_DIRECTORY_SEED_ENABLED: "false"
+      # application.yml: management.tracing.enabled from TRACING_ENABLED, default true
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    ports:
+      - "127.0.0.1:18100:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # The three data services: the read model in MongoDB (persistence mode mongodb,
+  # the only one in the production jar), plain mongodb:// as the row's user; the
+  # Redis cache and DPoP replay store replaced by the in-memory ones (cache mode
+  # inmemory, decision D8), so no Redis runs for them.
+  personal-financial-data-service:
+    image: ${FBX_IMAGE_OF_PERSONAL_FINANCIAL_DATA:-fintechbankx/personal-financial-data-service:local}
+    profiles: [openfinance, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    depends_on:
+      mongo-init: {condition: service_completed_successfully}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-of-personal-financial-data
+      # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, MongoDB without TLS); never the aws profile
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      MONGODB_URI: mongodb://personal_financial_data_app:${FBX_DB_CRED_OF_PERSONAL_FINANCIAL_DATA:?run compose/fbx-local.sh init}@mongo:27017/db_of_personal_financial_data_local
+      OPENFINANCE_PFD_CACHE_MODE: inmemory
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      DPOP_PUBLIC_BASE_URL: http://127.0.0.1:18110
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    ports:
+      - "127.0.0.1:18110:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  business-financial-data-service:
+    image: ${FBX_IMAGE_OF_BUSINESS_FINANCIAL_DATA:-fintechbankx/business-financial-data-service:local}
+    profiles: [openfinance, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    depends_on:
+      mongo-init: {condition: service_completed_successfully}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-of-business-financial-data
+      # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, MongoDB without TLS); never the aws profile
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      MONGODB_URI: mongodb://business_financial_data_app:${FBX_DB_CRED_OF_BUSINESS_FINANCIAL_DATA:?run compose/fbx-local.sh init}@mongo:27017/db_of_business_financial_data_local
+      OPENFINANCE_BFD_CACHE_MODE: inmemory
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      DPOP_PUBLIC_BASE_URL: http://127.0.0.1:18120
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    ports:
+      - "127.0.0.1:18120:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  banking-metadata-service:
+    image: ${FBX_IMAGE_OF_BANKING_METADATA:-fintechbankx/banking-metadata-service:local}
+    profiles: [openfinance, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    depends_on:
+      mongo-init: {condition: service_completed_successfully}
+      realm-import: {condition: service_completed_successfully}
+      # waits for the parity actors only when the parity-fixtures profile is on
+      parity-fixtures-import: {condition: service_completed_successfully, required: false}
+      topic-init: {condition: service_completed_successfully}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-of-banking-metadata
+      # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, MongoDB without TLS); never the aws profile
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      # decision D9: the runbook's database (db_of_banking_metadata_<env>), not the
+      # application.yml default banking_metadata_local
+      MONGODB_URI: mongodb://metadata_app:${FBX_DB_CRED_OF_BANKING_METADATA:?run compose/fbx-local.sh init}@mongo:27017/db_of_banking_metadata_local
+      OPENFINANCE_BM_CACHE_MODE: inmemory
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      OIDC_ISSUER_URI: http://localhost:8180/realms/fintechbankx
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
+      DPOP_PUBLIC_BASE_URL: http://127.0.0.1:18130
+      # no tracing bridge in this service: no tracing settings
+    ports:
+      - "127.0.0.1:18130:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # Public catalogue: no resource server, no Kafka client; PostgreSQL only.
+  open-products-catalog-service:
+    image: ${FBX_IMAGE_OF_OPEN_PRODUCTS_CATALOG:-fintechbankx/open-products-catalog-service:local}
+    profiles: [openfinance, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-of-open-products-catalog
+      # local: application-local.yml sets fintechbankx.tls.enforce: false (PostgreSQL without TLS)
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://postgres:5432/db_of_open_products_catalog_local
+      DB_USERNAME: open_products_catalog_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_OF_OPEN_PRODUCTS_CATALOG:?run compose/fbx-local.sh init}
+      # Decision D6: no SAMPLE-* products (db/seed afterMigrate callback).
+      OPEN_PRODUCTS_SEED_ENABLED: "false"
+      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    ports:
+      - "127.0.0.1:18140:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # Public directory: no resource server, no Kafka client, no tracing; PostgreSQL
+  # only (read-only pool; Flyway on its own connection, FLYWAY_URL default DB_URL).
+  atm-directory-service:
+    image: ${FBX_IMAGE_OF_ATM_DIRECTORY:-fintechbankx/atm-directory-service:local}
+    profiles: [openfinance, services]
+    mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      FINTECHBANKX_SERVICE_ID: svc-of-atm-directory
+      # local: application-local.yml sets fintechbankx.tls.enforce: false (PostgreSQL without TLS)
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: "8080"
+      MANAGEMENT_SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://postgres:5432/db_of_atm_directory_local
+      DB_USERNAME: atm_directory_app
+      SPRING_DATASOURCE_PASSWORD: ${FBX_DB_CRED_OF_ATM_DIRECTORY:?run compose/fbx-local.sh init}
+      # Decision D6: no sample ATMs (db/seed).
+      ATM_DIRECTORY_SEED_ENABLED: "false"
+    ports:
+      - "127.0.0.1:18150:8080"
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
       interval: 10s
