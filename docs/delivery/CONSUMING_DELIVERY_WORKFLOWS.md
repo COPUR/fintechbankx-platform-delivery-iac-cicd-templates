@@ -162,10 +162,12 @@ Pinning (supply chain):
   - Render guard (a check, not a control): the validate job refuses an install
     render (`helm template`, no cluster) in which any `image:` line is not
     exactly `image-repository@image-digest`, so it catches a chart that renders
-    an image tag (`repository:tag`) or another digest; it refuses a chart whose
-    templates call `lookup` by name (validate renders without a cluster, so
-    `lookup` returns nothing there, while in the deploy job a Secret lookup is
-    Forbidden for the deploy Role and aborts the upgrade). It reads lines, not
+    an image tag (`repository:tag`) or another digest; it refuses a chart in
+    which any template file holds the word `lookup`, the chart's own and every
+    subchart's, unpacked or packaged as `charts/<dep>.tgz` at any depth
+    (validate renders without a cluster, so `lookup` returns nothing there,
+    while in the deploy job a Secret lookup is Forbidden for the deploy Role
+    and aborts the upgrade). It reads lines, not
     YAML: an image key written as an explicit `?` key, an escaped key (block
     or flow), an alias or a tagged key is not seen, and a line holding
     `image:` inside a value string (a ConfigMap holding YAML) fails it; it is
@@ -182,7 +184,12 @@ Pinning (supply chain):
     namespaced Role (mesh repository,
     `deploy/kustomize/base/generated/deploy-rbac.yaml`) grants no Secrets. Run
     `helm rollback`, `helm history` or `helm status` by hand with
-    `HELM_DRIVER=configmap` as well.
+    `HELM_DRIVER=configmap` as well. A release ConfigMap holds the chart, the
+    merged values and the rendered manifest, gzipped and base64-encoded but
+    not encrypted, so anyone who can read ConfigMaps in the namespace (the
+    deploy group included) can read them. Values files and `--set` values
+    must carry no secrets: credentials reach a service only through
+    ExternalSecrets, and the deploy Role cannot create Secrets.
 - `terraform`: backend from `environments/<env>.backend.hcl` or
   `state-bucket`/`state-key`/`lock-table`; apply runs the saved plan only.
 - `contract-checks`: allowlist file `<spec>.accepted-breaking.txt` next to the

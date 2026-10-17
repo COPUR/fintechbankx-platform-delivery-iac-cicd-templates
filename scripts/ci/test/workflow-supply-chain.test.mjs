@@ -160,7 +160,7 @@ test("helm-deploy deploy job verifies the bundle digest and deploys the packaged
 
 // validate checks the install render (a check, not a control: the deploy job renders again
 // against the cluster): every container image must be <image-repository>@<image-digest>, and
-// no chart template may call lookup by name (validate renders without a cluster, so lookup
+// no template file of the chart or of any subchart may hold the word lookup (validate renders without a cluster, so lookup
 // returns empty there; in the deploy job it asks the cluster, and a Secret lookup is Forbidden
 // for the deploy Role, which aborts the upgrade).
 const IMG_REPO = "123456789012.dkr.ecr.me-central-1.amazonaws.com/fintechbankx/loan-lifecycle-service";
@@ -246,8 +246,51 @@ test("helm-deploy render guard refuses a chart that calls lookup, in its own or 
     assert.notEqual(r.status, 0, file);
     assert.match(r.stdout, new RegExp(`::error::the chart calls lookup.*svc/${file.replace(/\./g, "\\.")}`), file);
   }
+  // A lookup at the top of a large template: the guard must not stop reading early (with
+  // pipefail, tar ended by SIGPIPE would turn the match into a miss).
+  const large = runRenderGuard(ok, { "templates/deployment.yaml": secretLookup + "# filler\n".repeat(200000) });
+  assert.notEqual(large.status, 0, "large template");
+  assert.match(large.stdout, /::error::the chart calls lookup.*svc\/templates\/deployment\.yaml/);
   const r = runRenderGuard(ok, { "templates/deployment.yaml": "kind: Deployment\n", "README.md": "uses lookup\n" });
   assert.equal(r.status, 0, "only templates count" + r.stdout + r.stderr);
+});
+
+// Helm loads a dependency packaged as charts/<dep>.tgz (helm dependency build, or a vendored
+// archive), at any depth; the guard opens those archives and reads their templates too.
+function packChart(dir, name, files) {
+  const src = fs.mkdtempSync(path.join(tmpRoot, "fbx-sub-"));
+  fs.mkdirSync(path.join(src, name));
+  fs.writeFileSync(path.join(src, name, "Chart.yaml"), `apiVersion: v2\nname: ${name}\nversion: 1.0.0\n`);
+  for (const [file, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(src, name, file)), { recursive: true });
+    fs.writeFileSync(path.join(src, name, file), content);
+  }
+  const tgz = path.join(dir, `${name}-1.0.0.tgz`);
+  execFileSync("tar", ["-czf", tgz, "-C", src, name]);
+  return fs.readFileSync(tgz);
+}
+
+test("helm-deploy render guard reads the templates of packaged subcharts, at any depth", () => {
+  const ok = pod(`"${IMG_REPO}@${IMG_DIGEST}"`);
+  const secretLookup = '{{- $s := lookup "v1" "Secret" .Release.Namespace "db" }}\n';
+  const dir = fs.mkdtempSync(path.join(tmpRoot, "fbx-pack-"));
+  const sub = packChart(dir, "sub", { "templates/cm.yaml": secretLookup });
+  const inner = packChart(dir, "inner", { "templates/_helpers.tpl": secretLookup });
+  const outer = packChart(dir, "outer", { "templates/cm.yaml": "kind: ConfigMap\n", "charts/inner-1.0.0.tgz": inner });
+  const clean = packChart(dir, "clean", { "templates/cm.yaml": "kind: ConfigMap\n", "README.md": "uses lookup\n" });
+  const base = { "templates/deployment.yaml": "kind: Deployment\n" };
+  const cases = {
+    "a packaged subchart": [{ ...base, "charts/sub-1.0.0.tgz": sub }, /::error::the chart calls lookup.*svc\/charts\/sub-1\.0\.0\.tgz!\/sub\/templates\/cm\.yaml/],
+    "a subchart packaged inside a packaged subchart": [{ ...base, "charts/outer-1.0.0.tgz": outer }, /::error::the chart calls lookup.*svc\/charts\/outer-1\.0\.0\.tgz!\/outer\/charts\/inner-1\.0\.0\.tgz!\/inner\/templates\/_helpers\.tpl/],
+    "a subchart archive that cannot be read": [{ ...base, "charts/broken-1.0.0.tgz": "not a gzip archive\n" }, /./],
+  };
+  for (const [name, [templates, expected]] of Object.entries(cases)) {
+    const r = runRenderGuard(ok, templates);
+    assert.notEqual(r.status, 0, name);
+    assert.match(r.stdout + r.stderr, expected, name);
+  }
+  const r = runRenderGuard(ok, { ...base, "charts/clean-1.0.0.tgz": clean });
+  assert.equal(r.status, 0, "a packaged subchart without lookup passes" + r.stdout + r.stderr);
 });
 
 // Helm's default storage driver keeps every release in a Secret; the deploy roles'

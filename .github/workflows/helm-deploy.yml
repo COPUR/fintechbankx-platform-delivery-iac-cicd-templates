@@ -15,15 +15,22 @@ name: helm-deploy
 # it), not in Helm's default Secrets: the deploy role's namespaced Role (mesh
 # repository, deploy/kustomize/base/generated/deploy-rbac.yaml) grants no
 # Secrets. Run helm rollback, history or status by hand with
-# HELM_DRIVER=configmap too, or Helm finds no release.
+# HELM_DRIVER=configmap too, or Helm finds no release. A release ConfigMap holds
+# the chart, the merged values and the rendered manifest (gzip and base64, not
+# encrypted), readable by anyone who can read ConfigMaps in the namespace, the
+# deploy group included. So values files and --set values carry no secrets:
+# credentials reach a service only through ExternalSecrets (the deploy Role
+# cannot create Secrets either).
 #
 # The deploy job never checks anything out: it deploys exactly the bytes the
 # validate job checked (time-of-check equals time-of-use).
 #
 # The render guard (validate step render-guard) is a check, not a control. It
 # catches a chart whose install render (helm template, no cluster) has an image
-# tag or a digest other than image-digest, or whose templates call lookup by
-# name. It does not stop a chart written to render differently at deploy time:
+# tag or a digest other than image-digest, or in which any template file holds
+# the word lookup: the chart's own and every subchart's, unpacked or packaged as
+# charts/<dep>.tgz at any depth. It does not stop a chart written to render
+# differently at deploy time:
 # helm upgrade renders again against the cluster, where .Release.IsUpgrade,
 # .Release.Revision and .Capabilities differ, and a lookup built through tpl
 # passes the word check. It reads lines, not YAML: an image key written as an
@@ -419,11 +426,28 @@ jobs:
           # renders against the cluster, where the deploy Role (mesh deploy-rbac.yaml) grants no
           # Secrets and a Secret lookup aborts the upgrade. Either way the validated render is not
           # the deployed one.
-          charts=(fbx-deploy-bundle/chart/*.tgz)
+          # Every template file is read, the chart's own and each subchart's, including a subchart
+          # packaged as charts/<dep>.tgz at any depth (Helm loads those archives); an archive that
+          # cannot be read fails the step.
           found=()
-          while IFS= read -r f; do
-            if tar -xzOf "${charts[0]}" "$f" | grep -qw lookup; then found+=("$f"); fi
-          done < <(tar -tzf "${charts[0]}" | grep -E '/templates/.*[^/]$')
+          scan_lookup() {
+            local list f tmp
+            list=$(tar -tzf "$1")
+            while IFS= read -r f; do
+              case "$f" in
+                # grep reads all input (no -q): an early exit would end tar with SIGPIPE, and
+                # pipefail would then turn a match into a miss.
+                */templates/*[!/]) if tar -xzOf "$1" "$f" | grep -w lookup > /dev/null; then found+=("$2$f"); fi ;;
+                */charts/*.tgz)
+                  tmp=$(mktemp)
+                  tar -xzOf "$1" "$f" > "$tmp"
+                  scan_lookup "$tmp" "$2$f!/"
+                  rm -f "$tmp" ;;
+              esac
+            done <<< "$list"
+          }
+          charts=(fbx-deploy-bundle/chart/*.tgz)
+          scan_lookup "${charts[0]}" ""
           if [ "${#found[@]}" -gt 0 ]; then
             echo "::error::the chart calls lookup, which the deploy cannot reproduce: ${found[*]}"
             exit 1
