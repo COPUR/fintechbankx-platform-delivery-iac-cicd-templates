@@ -336,10 +336,7 @@ test("cosign step fails closed: failed verification, tag instead of digest, unan
 // downloads allowed to fail the rule, each by its block and the URL of its download,
 // with the reason; every entry must match exactly one download, so the list only
 // shrinks.
-const PENDING_DOWNLOADS = [
-  { where: "templates/ci/gitlab/java23-quality-gates.yml job quality_gates before_script", download: "https://deb.nodesource.com/setup_22.x",
-    reason: "an install script, not a release asset; replacing it changes how the template provisions Node" },
-];
+const PENDING_DOWNLOADS = [];
 
 // The GitLab CI files: the templates in templates/ci/gitlab and every *gitlab-ci*.yml
 // elsewhere in the repository (ci/templates/*/gitlab-ci.yml, a .gitlab-ci.yml).
@@ -696,7 +693,10 @@ test("the download check itself accepts a checked file and rejects pipes, missin
 test("a PENDING_DOWNLOADS entry suppresses exactly the one download it names", () => {
   const where = "templates/ci/gitlab/java23-quality-gates.yml job quality_gates before_script";
   const nodesource = "curl -fsSL https://deb.nodesource.com/setup_22.x | bash -";
-  assert.deepEqual(unlistedDownloadProblems([{ where, run: nodesource }]), []);
+  // The list is empty now; the rule is checked with the entry it once held.
+  const pending = [{ where, download: "https://deb.nodesource.com/setup_22.x", reason: "test entry" }];
+  assert.deepEqual(unlistedDownloadProblems([{ where, run: nodesource }], pending), []);
+  assert.notDeepEqual(unlistedDownloadProblems([{ where, run: nodesource }]), [], "an unlisted NodeSource install is refused");
   const cases = {
     "a second download on the NodeSource line": `${nodesource} && curl -fsSL https://get.example.test/install.sh | sh`,
     "the NodeSource download twice": `${nodesource}\n${nodesource}`,
@@ -704,5 +704,5 @@ test("a PENDING_DOWNLOADS entry suppresses exactly the one download it names", (
     "a second URL on the NodeSource curl": "curl -fsSL https://deb.nodesource.com/setup_22.x https://get.example.test/install.sh | bash -",
     "a second URL with its own -o on the NodeSource curl": 'curl -fsSL https://deb.nodesource.com/setup_22.x -o "$d/i.sh" https://get.example.test/i.sh | bash -',
   };
-  for (const [name, run] of Object.entries(cases)) assert.notDeepEqual(unlistedDownloadProblems([{ where, run }]), [], name);
+  for (const [name, run] of Object.entries(cases)) assert.notDeepEqual(unlistedDownloadProblems([{ where, run }], pending), [], name);
 });

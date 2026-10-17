@@ -8,14 +8,33 @@ stages:
 variables:
   GRADLE_OPTS: "-Dorg.gradle.daemon=false"
   GITLEAKS_VERSION: "8.24.3"
+  NODE_VERSION: "22.23.3"
 
 quality_gates:
   stage: verify
   image: eclipse-temurin:23-jdk
   before_script:
-    - apt-get update && apt-get install -y curl ca-certificates gnupg git
-    - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-    - apt-get install -y nodejs
+    - apt-get update && apt-get install -y curl ca-certificates git
+    - |
+      # Node.js for the OpenAPI lint (npx): the nodejs.org release tarball for the
+      # job's architecture, checked against the sha256 in that release's
+      # SHASUMS256.txt (signed by a Node.js releaser) before it is extracted.
+      # Another version or architecture fails until its sha256 are added here.
+      set -e
+      case "$(uname -m)" in
+        x86_64) node_arch=x64; node_sha=1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af ;;
+        aarch64|arm64) node_arch=arm64; node_sha=5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2 ;;
+        *) echo "ERROR: no Node.js build for architecture $(uname -m)"; exit 1 ;;
+      esac
+      if [ "$NODE_VERSION" != "22.23.3" ]; then
+        echo "ERROR: no pinned sha256 for Node.js $NODE_VERSION; add each architecture's sha256 from that release's SHASUMS256.txt to this job"
+        exit 1
+      fi
+      node_dir="$(mktemp -d)"
+      curl -sSfL -o "$node_dir/node.tar.gz" "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.gz"
+      echo "${node_sha}  $node_dir/node.tar.gz" | sha256sum -c -
+      tar -xz -C "$node_dir" -f "$node_dir/node.tar.gz" --strip-components=1
+      export PATH="$node_dir/bin:$PATH"
   script:
     - GRADLE_CMD="$(bash templates/ci/scripts/resolve-gradle-command.sh)"
     - $GRADLE_CMD --no-daemon clean check

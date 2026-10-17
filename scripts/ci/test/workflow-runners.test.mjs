@@ -222,7 +222,7 @@ function stubs(arch, shaExit = 0) {
   write("uname", `[ "$1" = "-m" ] && echo ${arch} || echo Linux`);
   write("curl", `echo "curl $*" >> ${log}; out=""; while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done; [ -n "$out" ] && echo fake > "$out"; exit 0`);
   write("sha256sum", `echo "sha256sum $* <<$(cat)" >> ${log}; exit ${shaExit}`);
-  write("tar", `echo "tar $*" >> ${log}; dir=""; while [ $# -gt 0 ]; do [ "$1" = "-C" ] && dir="$2"; shift; done; case "$dir" in "${tmpRoot}"/*) ;; *) echo "tar stub: refusing -C '$dir' outside the test root" >&2; exit 1 ;; esac; for b in oasdiff gitleaks kubeconform actionlint; do touch "$dir/$b"; chmod +x "$dir/$b"; done`);
+  write("tar", `echo "tar $*" >> ${log}; all="$*"; dir=""; while [ $# -gt 0 ]; do [ "$1" = "-C" ] && dir="$2"; shift; done; case "$dir" in "${tmpRoot}"/*) ;; *) echo "tar stub: refusing -C '$dir' outside the test root" >&2; exit 1 ;; esac; for b in oasdiff gitleaks kubeconform actionlint; do touch "$dir/$b"; chmod +x "$dir/$b"; done; case "$all" in *node.tar.gz*) mkdir -p "$dir/bin"; for b in node npm npx; do touch "$dir/bin/$b"; chmod +x "$dir/bin/$b"; done ;; esac`);
   return { bin, log: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "") };
 }
 const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -355,5 +355,55 @@ test("templates/ci/gitlab/java23-quality-gates.yml installs gitleaks 8.24.3 for 
   const other = exec("aarch64", "8.25.0");
   assert.notEqual(other.r.status, 0, "a version without pins fails");
   assert.match(other.r.out, /8\.25\.0/);
+  assert.equal(other.s.log(), "", "nothing is downloaded for a version without pins");
+});
+
+// The GitLab template's Node.js install for the OpenAPI lint (npx): the nodejs.org
+// tarball for the job architecture, checked against the sha256 in that release's
+// SHASUMS256.txt before it is extracted, replacing the unchecked NodeSource
+// install script. Another version or architecture fails before any download.
+const NODE = {
+  version: "22.23.3",
+  archTok: { x86_64: "x64", aarch64: "arm64" },
+  sha: { x86_64: "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af", aarch64: "5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2" },
+};
+test("templates/ci/gitlab/java23-quality-gates.yml installs Node.js 22.23.3 for the job architecture, checks its sha256 and refuses other versions", () => {
+  const ci = YAML.parse(fs.readFileSync(path.join(repo, "templates/ci/gitlab/java23-quality-gates.yml"), "utf8"));
+  assert.equal(String(ci.variables.NODE_VERSION), NODE.version);
+  const before = ci.quality_gates.before_script.map(String);
+  assert.ok(!before.some((l) => /nodesource|install -y[^\n]*\bnodejs\b/.test(l)), "no NodeSource or distribution Node.js install");
+  const at = before.findIndex((l) => l.includes("https://nodejs.org/dist/"));
+  assert.ok(at >= 0, "the Node.js install item is in quality_gates.before_script");
+  assert.ok(ci.quality_gates.script.map(String).some((l) => /\bnpx -y @redocly\/cli@/.test(l)), "the OpenAPI lint runs through npx");
+  const run = `set -o pipefail\n${before[at]}\ncommand -v node >> "$GITHUB_PATH"\n`;
+  const exec = (arch, version, shaExit = 0) => {
+    const s = stubs(arch, shaExit);
+    const tmp = fs.mkdtempSync(path.join(tmpRoot, "fbx-tmpdir-"));
+    return { s, tmp, r: runScript(run, { NODE_VERSION: version, TMPDIR: tmp }, s.bin) };
+  };
+  for (const arch of ["x86_64", "aarch64"]) {
+    const { s, tmp, r } = exec(arch, NODE.version);
+    assert.equal(r.status, 0, r.out);
+    const calls = s.log();
+    const url = `https://nodejs.org/dist/v${NODE.version}/node-v${NODE.version}-linux-${NODE.archTok[arch]}.tar.gz`;
+    const file = calls.match(new RegExp(`^curl .*-o ([^ ]+) ${reEscape(url)}$`, "m"));
+    assert.ok(file, calls);
+    assert.ok(file[1].startsWith(`${tmp}/`), `the tarball goes under TMPDIR, got ${file[1]}`);
+    assert.match(calls, new RegExp(`^sha256sum -c - <<${NODE.sha[arch]}  ${reEscape(file[1])}$`, "m"), calls);
+    const dir = path.dirname(file[1]);
+    assert.match(calls, new RegExp(`^tar -xz -C ${reEscape(dir)} -f ${reEscape(file[1])} --strip-components=1$`, "m"), calls);
+    assert.ok(calls.indexOf("sha256sum") < calls.indexOf("tar "), "checksum before extract");
+    assert.deepEqual(r.path, [path.join(dir, "bin", "node")], "node comes from the checked tarball");
+  }
+  const mismatch = exec("aarch64", NODE.version, 1);
+  assert.notEqual(mismatch.r.status, 0, "a checksum mismatch fails the job");
+  assert.doesNotMatch(mismatch.s.log(), /^tar /m, "nothing is extracted after a mismatch");
+  const odd = exec("riscv64", NODE.version);
+  assert.notEqual(odd.r.status, 0);
+  assert.match(odd.r.out, /riscv64/);
+  assert.equal(odd.s.log(), "", "nothing is downloaded for an unsupported architecture");
+  const other = exec("aarch64", "22.24.0");
+  assert.notEqual(other.r.status, 0, "a version without pins fails");
+  assert.match(other.r.out, /22\.24\.0/);
   assert.equal(other.s.log(), "", "nothing is downloaded for a version without pins");
 });

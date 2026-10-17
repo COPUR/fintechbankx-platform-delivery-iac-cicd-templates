@@ -43,9 +43,10 @@ the default version; another `oasdiff-version`, `gitleaks-version` or
 `gitleaks-sha256` or `kubeconform-sha256`, else the step fails before it
 downloads anything (checked by `scripts/ci/test/workflow-runners.test.mjs`).
 Every curl or wget download in a GitHub workflow or GitLab template here is
-checked with `sha256sum -c` before it is extracted, except the NodeSource install
-script of the GitLab template, listed in `PENDING_DOWNLOADS` (checked by
-`scripts/ci/test/workflow-supply-chain.test.mjs`).
+checked with `sha256sum -c` before it is extracted; `PENDING_DOWNLOADS` lists
+exceptions and is empty (checked by `scripts/ci/test/workflow-supply-chain.test.mjs`).
+The GitLab template installs Node.js 22.23.3 from the nodejs.org tarball for the
+job's architecture, checked the same way.
 
 | Capability | Path | How a service uses it |
 |---|---|---|
