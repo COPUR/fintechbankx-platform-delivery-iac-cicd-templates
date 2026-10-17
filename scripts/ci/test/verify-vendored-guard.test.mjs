@@ -16,8 +16,13 @@
 //       adapter define, before it writes any output, and before it only
 //       comments, assigns variables, fails or opens blocks that write
 //       nothing (no merge*, set or unset other than on a variable bound only
-//       to dict calls, no tpl).
-// Text inside values and code after the guard call are review matters.
+//       to dict calls, no tpl);
+//   (d) a template that changes the values all templates share: the rule of
+//       (c) applies to every action of every template file (partials,
+//       NOTES.txt, defines, subcharts, code after a guard call), the vendored
+//       guard file aside.
+// Text an action writes inside a value and the adapter's mapping are review
+// matters.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -986,6 +991,126 @@ test("(c) passes with a render-time include, a local dict built with set and uns
     DEPLOYMENT_BODY
   ].join("\n");
   assertPass(verify(makeChart(t, files)));
+});
+
+// (d) Helm renders every template of a chart and its subcharts against one
+// shared values map, in a fixed order (pkg/engine: deepest path first, then by
+// name in reverse), so a template that renders before a workload, or a define
+// it includes, can change a value the workload's guard then reads. The rule of
+// (c) applies to every template file, wherever the action sits: tpl, merge,
+// mergeOverwrite, mustMerge and mustMergeOverwrite are refused, and set and
+// unset are accepted only on a bare variable every assignment of which in the
+// same template or define is a dict call. The vendored guard file is not read.
+// With values forbidden: true, which the guard refuses without the change,
+// helm template (3.16) renders the first six charts below and the block one:
+// the change reaches the Deployment's guard. The others (a define nothing
+// includes, tpl, NOTES.txt and a Deployment that both render after the guard
+// call, a subchart's own values) do not reach this guard; the rule refuses
+// them all the same, wherever they sit.
+const POD_FREE_CM = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\ndata:\n  forbidden: {{ .Values.forbidden | quote }}\n";
+const crossTemplate = {
+  "a pod-free template that sets .Values and renders before the Deployment (templates/zz-*)": [
+    { "templates/zz-config.yaml": POD_FREE_CM + '{{- $_ := set .Values "forbidden" false }}\n' },
+    /FAIL \(d\) templates\/zz-config\.yaml: \{\{ \$_ := set \.Values "forbidden" false \}\} \(line 7\) can change values .*: it calls set on something other than a variable bound to a dict call/
+  ],
+  "a pod-free template that merges into .Values": [
+    { "templates/zz-config.yaml": POD_FREE_CM + '{{- $_ := mergeOverwrite .Values (dict "forbidden" false) }}\n' },
+    /FAIL \(d\) templates\/zz-config\.yaml: .* \(line 7\) can change values .*: it calls mergeOverwrite/
+  ],
+  "a pod-free template that replaces .Values on the root map every template of the chart shares ($)": [
+    { "templates/zz-config.yaml": POD_FREE_CM + '{{- $_ := set $ "Values" (dict "forbidden" false) }}\n' },
+    /FAIL \(d\) templates\/zz-config\.yaml: \{\{ \$_ := set \$ "Values" .* \(line 7\) can change values .*: it calls set on something other than a variable bound to a dict call/
+  ],
+  "a pod-free template that sets a value through a variable bound to .Values": [
+    { "templates/zz-config.yaml": '{{- $v := .Values }}\n' + POD_FREE_CM + '{{- $_ := set $v "forbidden" false }}\n' },
+    /FAIL \(d\) templates\/zz-config\.yaml: .* \(line 8\) can change values .*: it calls set on \$v, which is assigned something other than a dict call/
+  ],
+  "a pod-free template in a deeper directory (rendered first) that unsets a value": [
+    { "templates/config/cm.yaml": POD_FREE_CM + '{{- $_ := unset .Values "forbidden" }}\n' },
+    /FAIL \(d\) templates\/config\/cm\.yaml: .* can change values .*: it calls unset/
+  ],
+  "a partial define that sets .Values, included by a pod-free template": [
+    {
+      "templates/_reset.tpl": '{{- define "example.reset" -}}\n{{- $_ := set .Values "forbidden" false -}}\n{{- end -}}\n',
+      "templates/zz-config.yaml": POD_FREE_CM + '{{- include "example.reset" . }}\n'
+    },
+    /FAIL \(d\) templates\/_reset\.tpl: \{\{ \$_ := set \.Values "forbidden" false \}\} \(line 2, define "example\.reset"\) can change values/
+  ],
+  "a partial define that merges into .Values, included by nothing": [
+    { "templates/_merge.tpl": '{{- define "example.merge" -}}{{- $_ := mustMergeOverwrite .Values (dict "forbidden" false) -}}{{- end -}}\n' },
+    /FAIL \(d\) templates\/_merge\.tpl: .* \(line 1, define "example\.merge"\) can change values .*: it calls mustMergeOverwrite/
+  ],
+  "a block in a pod-free template whose body sets .Values": [
+    { "templates/zz-config.yaml": POD_FREE_CM + '{{- block "example.hook" . }}{{ $_ := set .Values "forbidden" false }}{{ end }}\n' },
+    /FAIL \(d\) templates\/zz-config\.yaml: .* \(line 7, block "example\.hook"\) can change values .*: it calls set/
+  ],
+  "a pod-free template that calls tpl": [
+    { "templates/zz-config.yaml": POD_FREE_CM + "  note: {{ tpl .Values.note . | quote }}\n" },
+    /FAIL \(d\) templates\/zz-config\.yaml: \{\{ tpl \.Values\.note \. \| quote \}\} \(line 7\) can change values .*: it calls tpl/
+  ],
+  "NOTES.txt that sets .Values": [
+    { "templates/NOTES.txt": '{{- $_ := set .Values "forbidden" false -}}\ninstalled\n' },
+    /FAIL \(d\) templates\/NOTES\.txt: .* \(line 1\) can change values/
+  ],
+  "a workload template that sets .Values after its own guard call": [
+    { "templates/deployment.yaml": '{{- include "fbx.guard" . -}}\n{{- $_ := set .Values "forbidden" true -}}\n' + DEPLOYMENT_BODY },
+    /FAIL \(d\) templates\/deployment\.yaml: .* \(line 2\) can change values/
+  ],
+  "a subchart template that sets its values": [
+    {
+      "charts/sub/Chart.yaml": "apiVersion: v2\nname: sub\nversion: 0.1.0\n",
+      "charts/sub/templates/cm.yaml": POD_FREE_CM + '{{- $_ := set .Values "forbidden" false }}\n'
+    },
+    /FAIL \(d\) charts\/sub\/templates\/cm\.yaml: .* can change values/
+  ]
+};
+for (const [label, [extra, expected]] of Object.entries(crossTemplate)) {
+  test(`(d) fails for ${label}`, (t) => {
+    const files = { ...baseFiles(), ...extra };
+    const r = verify(makeChart(t, files));
+    assertFail(r, expected);
+    assert.match(r.out, /ok \(c\) templates\/deployment\.yaml \(Deployment\)/, "the Deployment itself calls the guard first");
+  });
+}
+
+test("(d) fails for a template inside a subchart archive that merges into its values", (t) => {
+  const dir = makeChart(t, baseFiles());
+  pack(dir, "charts/sub-0.1.0.tgz", "sub", {
+    "Chart.yaml": "apiVersion: v2\nname: sub\nversion: 0.1.0\n",
+    "templates/cm.yaml": POD_FREE_CM + '{{- $_ := merge .Values (dict "forbidden" false) }}\n'
+  });
+  assertFail(verify(dir), /FAIL \(d\) charts\/sub-0\.1\.0\.tgz!sub\/templates\/cm\.yaml: .* can change values .*: it calls merge/);
+});
+
+test("(d) passes for local dicts built with set and unset in templates and defines, each in its own scope (control)", (t) => {
+  const files = baseFiles();
+  files["templates/_labels.tpl"] = [
+    '{{- define "example.values" -}}{{- $v := .Values -}}{{- toYaml $v.labels -}}{{- end -}}',
+    '{{- define "example.labels" -}}',
+    '{{- $v := dict "app" .Chart.Name -}}',
+    '{{- $_ := set $v "chart" (printf "%s-%s" .Chart.Name .Chart.Version) -}}',
+    "{{- toYaml $v -}}",
+    "{{- end -}}",
+    ""
+  ].join("\n");
+  files["templates/configmap.yaml"] = [
+    '{{- $data := dict "a" "1" -}}',
+    '{{- if .Values.b }}{{ $_ := set $data "b" "2" }}{{ end -}}',
+    '{{- $_ := unset $data "a" -}}',
+    "apiVersion: v1",
+    "kind: ConfigMap",
+    "metadata:",
+    "  name: x",
+    "  labels:",
+    '{{ include "example.labels" . | indent 4 }}',
+    "data:",
+    "{{ toYaml $data | indent 2 }}",
+    ""
+  ].join("\n");
+  files["templates/NOTES.txt"] = "{{ .Release.Name }} is installed.\n";
+  const r = verify(makeChart(t, files));
+  assertPass(r);
+  assert.match(r.out, /ok \(d\) no template file calls tpl, merge, mergeOverwrite, mustMerge or mustMergeOverwrite, or set or unset other than on a variable bound only to dict calls \(\d+ template files read, the vendored guard file aside\)/);
 });
 
 test("reports every failing check, not only the first", (t) => {

@@ -260,8 +260,10 @@ editing it:
    Helm would refuse, or a sparse entry, fails the check; every file is read
    without a leading UTF-8 BOM, as Helm reads it; a symbolic link anywhere
    inside the chart directory, to a file or a directory, fails it too, since
-   Helm loads the files of a link under every path that reaches them), and
-   (c) that every workload template runs the guard before it writes anything
+   Helm loads the files of a link under every path that reaches them), (c)
+   that every workload template runs the guard before it writes anything
+   (step 2), and (d) that no template file calls `tpl`, a merge function, or
+   `set`/`unset` on anything but a variable bound only to `dict` calls
    (step 2).
    The pod-free rule of (c) is strict on purpose, so that the script does
    not have to model YAML: a template counts as pod-free only when every
@@ -286,11 +288,12 @@ editing it:
    markers applied. The script reads the template text: text an action
    writes inside a value (a value holding a newline) is not followed, which
    step 3's quoting rule covers. So the checks catch a vendored copy that
-   differs, an `fbx.*` redefinition, and a workload template that does not
-   call the guard first, in conventional chart YAML and template code, and
-   refuse a chart with a symbolic link; text held in values, the adapter's
-   mapping and code after the guard call are review matters (step 2). The
-   guard is `fbx.guard` with the helpers it calls:
+   differs, an `fbx.*` redefinition, a workload template that does not call
+   the guard first and a template that changes the shared values with the
+   functions of step 2, in conventional chart YAML and template code, and
+   refuse a chart with a symbolic link; text an action writes inside a value
+   (step 3) and the adapter's mapping (step 2) are review matters. The guard
+   is `fbx.guard` with the helpers it calls:
    `fbx.validateEnvSources`, `fbx.validateDatabaseTls`, `fbx.validateKafkaTls`,
    `fbx.validateKafkaTlsValue`, `fbx.validateSecretNames`, `fbx.secretOnlyName`,
    `fbx.secretOnlyReason`, `fbx.validateKeyNames`, `fbx.validateDatabaseCa`,
@@ -304,25 +307,32 @@ editing it:
    changes, re-copy the file and re-pin its sha256 and commit in the CI step.
 2. Call it as the first action of every template that renders a workload
    (the Deployment, a migration Job, a CronJob, a test Pod, a template that
-   renders a file or a value with `tpl`, ...), directly or through an
-   adapter define of the chart (e.g. `<chart>.guard`, the simplest way to
-   share one adapter dict between several workload templates) that calls it
-   unconditionally before any output of its own. Only comments, variable
-   assignments, `fail` and `if`/`range`/`with` blocks that write nothing may
-   come before the call, and the script refuses there, also through an
-   included define (an include whose name is chosen at render time counts
-   with every template of the chart): `tpl`; `merge`, `mergeOverwrite`,
-   `mustMerge` and `mustMergeOverwrite`, whatever their arguments (sprig
-   merges nested maps in place, so a dict the template built that holds
-   `.Values` or one of its maps passes the write on); `set` and `unset`,
-   unless the first argument is a bare variable and every assignment to it
-   in the same template or define (`:=` or `=`, in any block, inside
-   parentheses too; a `range` variable counts) is a `dict` call with no pipe
-   after it (`$vals := dict ...`). An `{{ if }}` without `{{ else }}` may
-   enclose the whole template (an optional Job).
-   The script does not read what runs after the call: a template must not change `.Values` after the guard has run
-   (so that it renders a value the guard never saw); that, like the
-   adapter's mapping, is for review. With this chart's value
+   writes a file or a value where top-level keys go, ...), directly or
+   through an adapter define of the chart (e.g. `<chart>.guard`, the
+   simplest way to share one adapter dict between several workload
+   templates) that calls it unconditionally before any output of its own.
+   Only comments, variable assignments, `fail` and `if`/`range`/`with`
+   blocks that write nothing may come before the call. An `{{ if }}`
+   without `{{ else }}` may enclose the whole template (an optional Job).
+   No template of the chart may change the values the guard reads: Helm
+   renders every template of a chart and its subcharts against one shared
+   values map (and the templates of one chart against one root map, which
+   holds it as `$.Values`), the deepest path first and then by name in
+   reverse, so a ConfigMap template in `templates/config/` or named
+   `zz-*.yaml` renders before `deployment.yaml` and could change what its
+   guard sees. Check (d) refuses, in every action of every template
+   file (workload and pod-free templates, partials, `NOTES.txt`, defines,
+   subcharts, before or after a guard call alike; the vendored file aside):
+   `tpl`; `merge`, `mergeOverwrite`, `mustMerge` and `mustMergeOverwrite`,
+   whatever their arguments (sprig merges nested maps in place, so a dict
+   the template built that holds `.Values` or one of its maps passes the
+   write on); `set` and `unset`, unless the first argument is a bare
+   variable and every assignment to it in the same template, define or
+   block (`:=` or `=`, in any block, inside parentheses too; a `range`
+   variable counts) is a `dict` call with no pipe after it
+   (`$vals := dict ...`). Check (c) also names such an action when it runs
+   before the guard call, through an included define too. The adapter's
+   mapping is for review. With this chart's value
    names it is `{{- include "fbx.guard" . -}}`. With other names, pass an
    adapter dict; the guard reads only `.Values`, and every key is optional
    except `databaseCa.mountPath`, `key` and `configMapName` while
