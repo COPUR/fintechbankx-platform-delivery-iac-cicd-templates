@@ -673,6 +673,46 @@ test("the ten part-B services get only names their application.yml or Spring Boo
   }
 });
 
+// The short names the README uses for the 15 services.
+const SHORT = {
+  loan: "loan-lifecycle-service", initiation: "payment-initiation-settlement-service",
+  customer: "customer-profile-kyc-service", risk: "risk-decisioning-service", compliance: "compliance-evidence-service",
+  mandates: "payment-recurring-mandates-service", bulk: "payment-bulk-orchestration-service",
+  "request-to-pay": "payment-request-to-pay-service", consent: "consent-authorization-service",
+  payee: "payee-verification-service", retail: "personal-financial-data-service",
+  corporate: "business-financial-data-service", metadata: "banking-metadata-service",
+  products: "open-products-catalog-service", atm: "atm-directory-service"
+};
+const shortList = (text) => text.trim().split(/,\s*(?:and\s+)?|\s+and\s+/).map((n) => {
+  const key = SHORT[n.trim().toLowerCase()];
+  assert.ok(key, `README names an unknown service: ${n}`);
+  return key;
+}).sort();
+
+test("README: of the ten part-B services, the PostgreSQL ones run Flyway and five have an outbox relay", () => {
+  // Retail, corporate and metadata keep their data in MongoDB: no Flyway (they
+  // create their indexes at start-up). Only the five whose application.yml
+  // reads OUTBOX_RELAY_ENABLED have a relay; retail, corporate, metadata,
+  // products and atm publish nothing.
+  const readme = fs.readFileSync(path.join(composeDir, "README.md"), "utf8").replace(/\s+/g, " ");
+  const store = Object.fromEntries(services().map((r) => [r.key, r.store]));
+  const flyway = NEW_KEYS.filter((k) => store[k] === "postgresql").sort();
+  const relay = NEW_KEYS.filter((k) => YML_READS[k].split(" ").includes("OUTBOX_RELAY_ENABLED")).sort();
+  assert.doesNotMatch(readme, /All ten above run Flyway/, "the MongoDB services have no Flyway");
+  const pg = /The seven PostgreSQL ones \(([^)]+)\) run Flyway in-process/.exec(readme);
+  assert.ok(pg, "README names the part-B services that run Flyway");
+  assert.deepEqual(shortList(pg[1]), flyway);
+  const mongo = /([A-Za-z, -]+?) use MongoDB, have no Flyway/.exec(readme);
+  assert.ok(mongo, "README names the part-B services without Flyway");
+  assert.deepEqual(shortList(mongo[1]), [...MONGO_KEYS].sort());
+  const withRelay = /Outbox relays \(`OUTBOX_RELAY_ENABLED`, default false\) exist in ([^;.]+)[;.]/.exec(readme);
+  assert.ok(withRelay, "README names the part-B services with an outbox relay");
+  assert.deepEqual(shortList(withRelay[1]), relay);
+  const without = /([A-Za-z, -]+?) have no outbox relay/.exec(readme);
+  assert.ok(without, "README names the part-B services without a relay");
+  assert.deepEqual(shortList(without[1]), NEW_KEYS.filter((k) => !relay.includes(k)).sort());
+});
+
 test("profiles: openfinance starts the seven open-finance services and MongoDB, payments adds mandates, bulk, rtp and consent (D2), services all 15", () => {
   const s = composeDoc().services;
   const members = (p) => Object.keys(s).filter((k) => (s[k].profiles ?? []).includes(p)).sort();

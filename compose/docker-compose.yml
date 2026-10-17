@@ -616,8 +616,9 @@ services:
   # in their application.yml). Products and atm serve public data: no Keycloak, no
   # Kafka. The eight that ship an OTLP exporter and map
   # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT send to the collector (observability profile)
-  # once FBX_TRACING_ENABLED=true. Outbox relays stay off (OUTBOX_RELAY_ENABLED
-  # default false) except consent's (decision D4).
+  # once FBX_TRACING_ENABLED=true. Of these ten, mandates, bulk, request-to-pay,
+  # consent and payee have an outbox relay (OUTBOX_RELAY_ENABLED, default false);
+  # only consent's is on (decision D4). The other five publish no events.
   payment-recurring-mandates-service:
     image: ${FBX_IMAGE_PAY_RECURRING_MANDATES:-fintechbankx/payment-recurring-mandates-service:local}
     profiles: [payments, services]

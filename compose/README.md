@@ -147,11 +147,17 @@ What each service gets beyond the common database, Kafka (`kafka:9092`,
 | products | `OPEN_PRODUCTS_SEED_ENABLED=false` (D6); PostgreSQL only | public catalogue: no resource server, no Kafka client; no `SAMPLE-*` products |
 | atm | `ATM_DIRECTORY_SEED_ENABLED=false` (D6); PostgreSQL only | public directory: no resource server, no Kafka client, no tracing; Flyway uses its own connection (`FLYWAY_URL`, default `DB_URL`) |
 
-All ten above run Flyway in-process (no migrate one-shot). Every service that
-validates tokens gets the issuer `http://localhost:8180/realms/fintechbankx`
-(the one tokens carry) and the JWKS from `keycloak:8080`; products and atm get
-neither. Their outbox relays stay off (`OUTBOX_RELAY_ENABLED`, default false)
-except consent's; turn one on per run with `service-env`.
+None of the ten above has a migrate one-shot. The seven PostgreSQL ones
+(mandates, bulk, request-to-pay, consent, payee, products and atm) run Flyway
+in-process at start-up as the app role; retail, corporate and metadata use
+MongoDB, have no Flyway and create their indexes at start-up
+(`MongoIndexInitializer`). Every service that validates tokens gets the issuer
+`http://localhost:8180/realms/fintechbankx` (the one tokens carry) and the
+JWKS from `keycloak:8080`; products and atm get neither. Outbox relays
+(`OUTBOX_RELAY_ENABLED`, default false) exist in mandates, bulk,
+request-to-pay, consent and payee; all but consent's stay off (D4), and
+`service-env` turns one on per run. Retail, corporate, metadata, products and
+atm have no outbox relay: they publish no events.
 
 `payments` starts customer too: initiation reads the KYC status before every
 payment and refuses the payment when it cannot. It starts consent as well
