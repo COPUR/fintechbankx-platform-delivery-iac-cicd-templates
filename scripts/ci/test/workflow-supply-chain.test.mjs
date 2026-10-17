@@ -324,9 +324,19 @@ test("cosign step fails closed: failed verification, tag instead of digest, unan
 // before anything extracts, installs, moves or runs it (DevSecOps review
 // 2026-10-17). Piping a download (curl ... | tar, wget -O- | sh) or keeping it on
 // stdout fails. Applies to every workflow above, the legacy reference copy
-// included. PENDING_DOWNLOADS names "<file> job <id> step <name>" entries that are
-// not fixed yet; each must still be found, so the list only shrinks.
-const PENDING_DOWNLOADS = [];
+// included, and to the before_script, script and after_script lines of the GitLab
+// templates (each section is one shell session, checked as one block).
+// PENDING_DOWNLOADS lists the downloads allowed to fail the rule, each by the block
+// it is in and a part of its line, with the reason; every entry must still be
+// found, so the list only shrinks.
+const PENDING_DOWNLOADS = [
+  { where: "templates/ci/gitlab/java23-quality-gates.yml job quality_gates before_script", download: "https://deb.nodesource.com/setup_22.x",
+    reason: "an install script, not a release asset; replacing it changes how the template provisions Node" },
+];
+const gitlabFiles = fs
+  .readdirSync(path.join(repo, "templates/ci/gitlab"))
+  .filter((f) => /\.ya?ml$/.test(f))
+  .map((f) => path.join("templates/ci/gitlab", f));
 
 const DOWNLOAD = /(?:^|[;&|(!]\s*|\b(?:then|do|else|if|exec|time)\s+)(?:sudo\s+)?(curl|wget)\s/;
 const unquote = (s) => s.replace(/^(["'])(.*)\1$/, "$2");
@@ -363,24 +373,48 @@ function downloadProblems(run) {
   return problems;
 }
 
-test("every curl or wget download in a run: block is checked with sha256sum -c before it is extracted or installed", () => {
-  const problems = [];
-  const pendingSeen = new Set();
+// The shell blocks to check: each run: step of a GitHub workflow, and each script
+// section of a GitLab job (or the top-level and default sections).
+function downloadBlocks() {
+  const blocks = [];
   for (const file of allWorkflowFiles) {
     const wf = YAML.parse(fs.readFileSync(path.join(repo, file), "utf8"));
     for (const [id, job] of Object.entries(wf.jobs ?? {})) {
       for (const step of job.steps ?? []) {
-        if (typeof step.run !== "string") continue;
-        const where = `${file} job ${id} step ${step.name ?? "(unnamed)"}`;
-        const found = downloadProblems(step.run);
-        if (found.length === 0) continue;
-        if (PENDING_DOWNLOADS.includes(where)) { pendingSeen.add(where); continue; }
-        problems.push(...found.map((p) => `${where}: ${p}`));
+        if (typeof step.run === "string") blocks.push({ where: `${file} job ${id} step ${step.name ?? "(unnamed)"}`, run: step.run });
       }
     }
   }
+  const sections = ["before_script", "script", "after_script"];
+  const lines = (v) => (Array.isArray(v) ? v.flat(Infinity) : v === undefined ? [] : [v]).map(String).join("\n");
+  for (const file of gitlabFiles) {
+    const ci = YAML.parse(fs.readFileSync(path.join(repo, file), "utf8"));
+    for (const [key, value] of Object.entries(ci)) {
+      if (sections.includes(key)) blocks.push({ where: `${file} ${key}`, run: lines(value) });
+      else if (value && typeof value === "object" && !Array.isArray(value)) {
+        for (const sec of sections) if (value[sec] !== undefined) blocks.push({ where: `${file} job ${key} ${sec}`, run: lines(value[sec]) });
+      }
+    }
+  }
+  return blocks;
+}
+
+test("every curl or wget download in a run: block or GitLab script is checked with sha256sum -c before it is extracted or installed", () => {
+  assert.ok(gitlabFiles.length > 0, "the GitLab templates are scanned");
+  const blocks = downloadBlocks();
+  assert.ok(blocks.some((b) => b.where.startsWith("templates/ci/gitlab/") && /gitleaks/.test(b.run)), "the GitLab gitleaks install is among the scanned blocks");
+  const problems = [];
+  const pendingSeen = new Set();
+  for (const { where, run } of blocks) {
+    for (const p of downloadProblems(run)) {
+      const pending = PENDING_DOWNLOADS.find((e) => e.where === where && p.includes(e.download));
+      if (pending) pendingSeen.add(pending);
+      else problems.push(`${where}: ${p}`);
+    }
+  }
   assert.deepEqual(problems, []);
-  assert.deepEqual([...pendingSeen].sort(), [...PENDING_DOWNLOADS].sort(), "PENDING_DOWNLOADS lists a step that no longer needs it");
+  for (const e of PENDING_DOWNLOADS) assert.ok(e.reason, `PENDING_DOWNLOADS entry ${e.download} needs a reason`);
+  assert.deepEqual(PENDING_DOWNLOADS.filter((e) => !pendingSeen.has(e)), [], "PENDING_DOWNLOADS lists a download that no longer needs it; remove the entry");
 });
 
 test("the download check itself accepts a checked file and rejects pipes, missing, late or conditional checks", () => {

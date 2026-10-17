@@ -42,8 +42,10 @@ the default version; another `oasdiff-version`, `gitleaks-version` or
 `kubeconform-version` needs the sha256 of that asset in `oasdiff-sha256`,
 `gitleaks-sha256` or `kubeconform-sha256`, else the step fails before it
 downloads anything (checked by `scripts/ci/test/workflow-runners.test.mjs`).
-Every curl or wget download in a GitHub workflow here is checked with `sha256sum -c`
-before it is extracted (checked by `scripts/ci/test/workflow-supply-chain.test.mjs`).
+Every curl or wget download in a GitHub workflow or GitLab template here is
+checked with `sha256sum -c` before it is extracted, except the NodeSource install
+script of the GitLab template, listed in `PENDING_DOWNLOADS` (checked by
+`scripts/ci/test/workflow-supply-chain.test.mjs`).
 
 | Capability | Path | How a service uses it |
 |---|---|---|

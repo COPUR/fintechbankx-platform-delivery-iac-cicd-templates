@@ -212,7 +212,9 @@ const OWN_TOOLS = [
     sha: { x86_64: "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c", aarch64: "5f2edbe1f49f7b920f9e06e90759947d3c5dfc16f752fb93aaafc17e9d14cf07" } },
 ];
 
-// Stubs for uname, curl, sha256sum and tar that log their calls; tar creates the binary.
+// Stubs for uname, curl, sha256sum and tar that log their calls; tar creates the binary,
+// and refuses (exit 1) a -C directory outside the test root, so a step that extracts
+// into a system path fails here without touching that path.
 function stubs(arch, shaExit = 0) {
   const bin = fs.mkdtempSync(path.join(tmpRoot, "fbx-bin-"));
   const log = path.join(bin, "calls.log");
@@ -220,7 +222,7 @@ function stubs(arch, shaExit = 0) {
   write("uname", `[ "$1" = "-m" ] && echo ${arch} || echo Linux`);
   write("curl", `echo "curl $*" >> ${log}; out=""; while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done; [ -n "$out" ] && echo fake > "$out"; exit 0`);
   write("sha256sum", `echo "sha256sum $* <<$(cat)" >> ${log}; exit ${shaExit}`);
-  write("tar", `echo "tar $*" >> ${log}; dir=""; while [ $# -gt 0 ]; do [ "$1" = "-C" ] && dir="$2"; shift; done; for b in oasdiff gitleaks kubeconform actionlint; do touch "$dir/$b"; chmod +x "$dir/$b"; done`);
+  write("tar", `echo "tar $*" >> ${log}; dir=""; while [ $# -gt 0 ]; do [ "$1" = "-C" ] && dir="$2"; shift; done; case "$dir" in "${tmpRoot}"/*) ;; *) echo "tar stub: refusing -C '$dir' outside the test root" >&2; exit 1 ;; esac; for b in oasdiff gitleaks kubeconform actionlint; do touch "$dir/$b"; chmod +x "$dir/$b"; done`);
   return { bin, log: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "") };
 }
 const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -314,3 +316,44 @@ for (const t of OWN_TOOLS) {
     assert.equal(s.log(), "", "nothing is downloaded for a version without pins");
   });
 }
+
+// The GitLab template's gitleaks install: same asset, pins and fail-closed rules
+// as required-gates.yml. GitLab runs a job's script lines in one bash session with
+// errexit and pipefail, so the test runs the item the same way and then asks the
+// shell where gitleaks is.
+test("templates/ci/gitlab/java23-quality-gates.yml installs gitleaks 8.24.3 for the job architecture, checks its sha256 and refuses other versions", () => {
+  const ci = YAML.parse(fs.readFileSync(path.join(repo, "templates/ci/gitlab/java23-quality-gates.yml"), "utf8"));
+  const t = OWN_TOOLS.find((o) => o.file === "required-gates.yml");
+  assert.equal(String(ci.variables.GITLEAKS_VERSION), t.version);
+  const script = ci.quality_gates.script.map(String);
+  const at = script.findIndex((l) => l.includes("gitleaks/gitleaks/releases/download"));
+  assert.ok(at >= 0, "the gitleaks install item is in quality_gates.script");
+  assert.match(script[at + 1], /^gitleaks detect /, "the scan follows the install");
+  const run = `set -o pipefail\n${script[at]}\ncommand -v gitleaks >> "$GITHUB_PATH"\n`;
+  const exec = (arch, version, shaExit = 0) => {
+    const s = stubs(arch, shaExit);
+    const tmp = fs.mkdtempSync(path.join(tmpRoot, "fbx-tmpdir-"));
+    return { s, tmp, r: runScript(run, { GITLEAKS_VERSION: version, TMPDIR: tmp }, s.bin) };
+  };
+  for (const arch of ["x86_64", "aarch64"]) {
+    const { s, tmp, r } = exec(arch, t.version);
+    assert.equal(r.status, 0, r.out);
+    const calls = s.log();
+    assert.match(calls, new RegExp(`^curl .*-o [^ ]+ ${reEscape(t.url(t.version, t.archTok[arch]))}$`, "m"), calls);
+    assert.match(calls, new RegExp(`^sha256sum -c - <<${t.sha[arch]}  ${reEscape(tmp)}/`, "m"), calls);
+    assert.ok(calls.indexOf("sha256sum") < calls.indexOf("tar "), "checksum before extract");
+    assert.equal(r.path.length, 1, r.out);
+    assert.ok(r.path[0].startsWith(`${tmp}/`), `gitleaks comes from the checked download, got ${r.path[0]}`);
+  }
+  const mismatch = exec("aarch64", t.version, 1);
+  assert.notEqual(mismatch.r.status, 0, "a checksum mismatch fails the job");
+  assert.doesNotMatch(mismatch.s.log(), /^tar /m, "nothing is extracted after a mismatch");
+  const odd = exec("riscv64", t.version);
+  assert.notEqual(odd.r.status, 0);
+  assert.match(odd.r.out, /riscv64/);
+  assert.equal(odd.s.log(), "", "nothing is downloaded for an unsupported architecture");
+  const other = exec("aarch64", "8.25.0");
+  assert.notEqual(other.r.status, 0, "a version without pins fails");
+  assert.match(other.r.out, /8\.25\.0/);
+  assert.equal(other.s.log(), "", "nothing is downloaded for a version without pins");
+});

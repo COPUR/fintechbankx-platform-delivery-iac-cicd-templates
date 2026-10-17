@@ -25,7 +25,27 @@ quality_gates:
         echo "Generic Map<String,Object> payloads are disallowed in controllers."; exit 1
       fi
     - if ls api/openapi/*.yaml >/dev/null 2>&1; then npx -y @redocly/cli@1.27.1 lint api/openapi/*.yaml; fi
-    - curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz -C /usr/local/bin gitleaks
+    - |
+      # gitleaks: the release asset for the job's architecture, checked against the
+      # sha256 from the release's own checksums file before it is extracted (the same
+      # pins as required-gates.yml). Another version or architecture fails until its
+      # sha256 are added here. set -e: a failed check stops the job (GitLab sets it
+      # too; this keeps the block safe if the template is run another way).
+      set -e
+      case "$(uname -m)" in
+        x86_64) gitleaks_arch=x64; gitleaks_sha=9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c ;;
+        aarch64|arm64) gitleaks_arch=arm64; gitleaks_sha=5f2edbe1f49f7b920f9e06e90759947d3c5dfc16f752fb93aaafc17e9d14cf07 ;;
+        *) echo "ERROR: no gitleaks build for architecture $(uname -m)"; exit 1 ;;
+      esac
+      if [ "$GITLEAKS_VERSION" != "8.24.3" ]; then
+        echo "ERROR: no pinned sha256 for gitleaks $GITLEAKS_VERSION; add the release's sha256 for each architecture to this job"
+        exit 1
+      fi
+      gitleaks_dir="$(mktemp -d)"
+      curl -sSfL -o "$gitleaks_dir/gitleaks.tar.gz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${gitleaks_arch}.tar.gz"
+      echo "${gitleaks_sha}  $gitleaks_dir/gitleaks.tar.gz" | sha256sum -c -
+      tar -xz -C "$gitleaks_dir" -f "$gitleaks_dir/gitleaks.tar.gz" gitleaks
+      export PATH="$gitleaks_dir:$PATH"
     - gitleaks detect --source . --no-git --redact --no-banner $( [ -f .gitleaks.toml ] && echo --config .gitleaks.toml )
   artifacts:
     when: always
