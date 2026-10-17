@@ -258,6 +258,48 @@ test("service-env rejects unknown services, bad names and credential overrides",
   }
 });
 
+test("service-env rejects Spring profile, configuration-source and JVM option overrides, in any underscore spelling", () => {
+  // Each of these reaches the Spring Environment of the services (checked with
+  // a Spring Boot 3.3.6 probe on the services' own application*.yml): the JSON
+  // and -D forms override any property, the datastore URI included; the
+  // profile and config names add the aws profile or load its file, which turns
+  // on TLS to the plain local MongoDB. Spring Boot maps an environment name
+  // with runs of "_" (and a trailing "_") as if each run were one "_", so
+  // SPRING__DATA__MONGODB__URI binds spring.data.mongodb.uri.
+  const runtime = /Spring profile, configuration source or JVM option/;
+  for (const [line, why] of [
+    ['business-financial-data-service__SPRING_APPLICATION_JSON={"spring":{"data":{"mongodb":{"uri":"mongodb://mongo:27017/admin"}}}}', runtime],
+    ["business-financial-data-service__SPRING_PROFILES_ACTIVE=local,aws", runtime],
+    ["personal-financial-data-service__SPRING_PROFILES_INCLUDE=aws", runtime],
+    ["banking-metadata-service__SPRING_PROFILES_GROUP_LOCAL=aws", runtime],
+    ["svc-of-consent-authorization__SPRING_PROFILES_DEFAULT=aws", runtime],
+    ["business-financial-data-service__SPRING_CONFIG_IMPORT=classpath:application-aws.yml", runtime],
+    ["loan-lifecycle-service__SPRING_CONFIG_ADDITIONAL_LOCATION=classpath:application-aws.yml", runtime],
+    ["risk-decisioning-service__SPRING_CONFIG_LOCATION=classpath:/", runtime],
+    ["loan-lifecycle-service__JAVA_TOOL_OPTIONS=-Dspring.datasource.url=jdbc:postgresql://postgres:5432/postgres", runtime],
+    ["business-financial-data-service__JDK_JAVA_OPTIONS=-Dspring.data.mongodb.uri=mongodb://mongo:27017/admin", runtime],
+    // underscore runs: the names Spring Boot binds, not the literal prefix (each
+    // of these changed the Environment next to compose's SPRING_PROFILES_ACTIVE=local)
+    ["business-financial-data-service__SPRING__DATA__MONGODB__URI=mongodb://mongo:27017/admin", /credential/],
+    ["loan-lifecycle-service__SPRING__DATASOURCE__URL=jdbc:postgresql://postgres:5432/postgres", /credential/],
+    ['business-financial-data-service__SPRING__APPLICATION__JSON={"spring":{"profiles":{"include":"aws"}}}', runtime],
+    ["business-financial-data-service__SPRING__PROFILES__INCLUDE=aws", runtime],
+    ["personal-financial-data-service__SPRING_PROFILES_INCLUDE_=aws", runtime],
+    ["banking-metadata-service__SPRING__CONFIG__IMPORT=classpath:application-aws.yml", runtime]
+  ]) {
+    const { res, out } = renderServiceEnv([line]);
+    assert.notEqual(res.status, 0, `${line} must be rejected`);
+    assert.match(res.stderr, why, line);
+    assert.equal(fs.existsSync(out), false, `${line}: no override written`);
+  }
+  // Names that merely contain these words stay allowed.
+  const { res } = renderServiceEnv([
+    "payee-verification-service__TRACING_SAMPLING_PROBABILITY=1.0",
+    "payment-recurring-mandates-service__OUTBOX_RELAY_ENABLED=true"
+  ]);
+  assert.equal(res.status, 0, res.stderr);
+});
+
 test("service-env switches the part-B defaults: seeding (D6), outbox relays (D4), adapters (D3) and cache mode", () => {
   const { res, out } = renderServiceEnv([
     "payee-verification-service__PAYEE_DIRECTORY_SEED_ENABLED=true",

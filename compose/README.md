@@ -370,12 +370,21 @@ compose file, so a line can also replace a default. Names must be
 (`OIDC_*`, `DB_*`, `SPRING_DATASOURCE_*`, `SPRING_SECURITY_*`, `KEYCLOAK*`,
 `KC_*`, `MONGODB_*`, `SPRING_DATA_MONGODB_*`, `FLYWAY_*`, `SPRING_FLYWAY_*`,
 `SERVICE_CLIENT_*`, `REDIS_URL`, `SPRING_DATA_REDIS_*`, `DATABASE_CA_BUNDLE`)
-is rejected. `CRED` also matches loan's `CUSTOMER_CREDIT_*`: change those in
-the compose file. Example: `payment-initiation-settlement-service__OUTBOX_RELAY_ENABLED=true`
+is rejected, and so is anything that changes the Spring profiles, where the
+configuration comes from or the JVM options (`SPRING_PROFILES_*`,
+`SPRING_CONFIG_*`, `SPRING_APPLICATION_JSON`, `JAVA_TOOL_OPTIONS`,
+`JDK_JAVA_OPTIONS`): the JSON and `-D` forms set any property, a datastore URI
+included, the profile and config names add the `aws` profile or load its file
+(TLS to the plain local MongoDB), and the images set `JAVA_TOOL_OPTIONS`
+themselves (`MaxRAMPercentage`, D11). Names are compared the way Spring Boot
+maps them, with each run of `_` as one `_` and a trailing `_` dropped
+(`SPRING__DATA__MONGODB__URI` binds `spring.data.mongodb.uri`). `CRED` also
+matches loan's `CUSTOMER_CREDIT_*`: change those in the compose file. Example: `payment-initiation-settlement-service__OUTBOX_RELAY_ENABLED=true`
 (initiation already runs with `ACCOUNTS_ADAPTER=in-memory`).
 
 **Spring profile**: all 15 services and the migrate one-shots run with
-`SPRING_PROFILES_ACTIVE=local` and no other profile (never `aws`). The stack
+`SPRING_PROFILES_ACTIVE=local` and no other profile (never `aws`); `service-env`
+cannot change that (see above). The stack
 uses Kafka over `PLAINTEXT` on `kafka:9092`, PostgreSQL and MongoDB without
 TLS, which the service-side TLS assertion refuses unless that profile is
 active (fintechbankx-platform-event-streaming-kafka

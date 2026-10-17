@@ -7,11 +7,18 @@
 // Input lines: <service>__<VAR>=<value>; <service> is a services.tsv key
 // (payment-initiation-settlement-service) or service id (svc-pay-initiation-settlement).
 // Blank lines and # comments are ignored. Rejected: unknown services, names
-// that are not UPPER_SNAKE_CASE, and anything that looks like it overrides a
+// that are not UPPER_SNAKE_CASE, anything that looks like it overrides a
 // credential or the identity/datastore wiring (passwords, secrets, tokens, keys,
 // usernames, OIDC_*, DB_*, SPRING_DATASOURCE_*, SPRING_SECURITY_*, KEYCLOAK*,
 // MONGODB_*, SPRING_DATA_MONGODB_*, FLYWAY_*, SPRING_FLYWAY_*, SERVICE_CLIENT_*,
-// REDIS_URL, SPRING_DATA_REDIS_*, DATABASE_CA_BUNDLE).
+// REDIS_URL, SPRING_DATA_REDIS_*, DATABASE_CA_BUNDLE), and anything that changes
+// the Spring profiles, where the configuration comes from or the JVM options
+// (SPRING_PROFILES_*, SPRING_CONFIG_*, SPRING_APPLICATION_JSON, JAVA_TOOL_OPTIONS,
+// JDK_JAVA_OPTIONS): these carry any property, the datastore URIs included, or
+// add the aws profile; every service runs with SPRING_PROFILES_ACTIVE=local only.
+// Spring Boot maps an environment name with a run of "_" (or a trailing "_") as
+// if it were one "_" (SPRING__DATA__MONGODB__URI binds spring.data.mongodb.uri),
+// so names are matched in that form.
 // `$` in values is escaped so compose does not interpolate it.
 //
 // usage: service-env.mjs --in FILE --out FILE [--services services.tsv]
@@ -42,6 +49,11 @@ const WIRING = new RegExp("^(" + [
   "MONGODB_", "SPRING_DATA_MONGODB_", "FLYWAY_", "SPRING_FLYWAY_", "SERVICE_CLIENT_",
   "REDIS_URL$", "SPRING_DATA_REDIS_", "DATABASE_CA_BUNDLE$"
 ].join("|") + ")");
+// Generic property carriers, profile and config-location switches, JVM options.
+// The images set JAVA_TOOL_OPTIONS themselves (MaxRAMPercentage, decision D11).
+const RUNTIME = /^(SPRING_PROFILES_|SPRING_CONFIG_|SPRING_APPLICATION_JSON$|JAVA_TOOL_OPTIONS$|JDK_JAVA_OPTIONS$)/;
+// The name as Spring Boot's environment mapping sees it.
+const springForm = (name) => name.replace(/_+/g, "_").replace(/_$/, "");
 
 const services = {};
 const errors = [];
@@ -55,8 +67,14 @@ fs.readFileSync(input, "utf8").split("\n").forEach((raw, i) => {
   const key = keyOf.get(service);
   if (!key) { errors.push(`${where}: service ${service} is not in services.tsv`); return; }
   if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(name)) { errors.push(`${where}: variable name ${name} must be UPPER_SNAKE_CASE`); return; }
-  if (CREDENTIAL.test(name) || WIRING.test(name)) {
+  const canonical = springForm(name);
+  if (CREDENTIAL.test(canonical) || WIRING.test(canonical)) {
     errors.push(`${where}: ${name} looks like a credential or identity/database wiring override; not allowed`);
+    return;
+  }
+  if (RUNTIME.test(canonical)) {
+    errors.push(`${where}: ${name} would change a Spring profile, configuration source or JVM option ` +
+      "(every service runs with SPRING_PROFILES_ACTIVE=local only); not allowed");
     return;
   }
   ((services[key] ??= { environment: {} }).environment)[name] = value.replaceAll("$", () => "$$");

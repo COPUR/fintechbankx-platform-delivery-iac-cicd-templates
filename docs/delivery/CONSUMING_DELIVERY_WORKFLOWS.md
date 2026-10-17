@@ -122,7 +122,12 @@ Pinning (supply chain):
   - `service-env`: `<service>__<VAR>=<value>` lines (e.g.
     `payment-initiation-settlement-service__OUTBOX_RELAY_ENABLED=true`);
     credential-like and identity/datastore wiring names are rejected
-    (including `MONGODB_*`, `FLYWAY_*`, `SERVICE_CLIENT_*`, `REDIS_URL`).
+    (including `MONGODB_*`, `FLYWAY_*`, `SERVICE_CLIENT_*`, `REDIS_URL`), and
+    so are the names that change the Spring profiles, the configuration
+    sources or the JVM options (`SPRING_PROFILES_*`, `SPRING_CONFIG_*`,
+    `SPRING_APPLICATION_JSON`, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`): every
+    service runs with the `local` profile only. Names are matched the way
+    Spring Boot maps them (a run of `_` counts as one).
 - `container-image`: `boot-jar-task` for Dockerfiles that copy `build/libs`;
   leave empty for multi-stage Dockerfiles (all five extracted services).
   `trivy-severity` defaults to `CRITICAL,HIGH` with `ignore-unfixed`; reviewed
