@@ -19,7 +19,7 @@ tests:
   - it: rejects config SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE
     template: templates/deployment.yaml
     set:
-      config.SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE: file:/tmp/any-ca.pem
+      config.SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE: file:./any-ca.pem
     asserts:
       - failedTemplate:
           errorPattern: "config.SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE is not allowed: .*trust"
@@ -27,7 +27,7 @@ tests:
     template: templates/deployment.yaml
     set:
       config:
-        spring.ssl.bundle.pem.postgres.truststore.certificate: file:/tmp/any-ca.pem
+        spring.ssl.bundle.pem.postgres.truststore.certificate: file:./any-ca.pem
     asserts:
       - failedTemplate:
           errorPattern: "config.spring.ssl.bundle.pem.postgres.truststore.certificate is not allowed"
@@ -36,7 +36,7 @@ tests:
     set:
       extraEnv:
         - name: spring.ssl.bundle.jks.documentdb.truststore.location
-          value: file:/tmp/any.jks
+          value: file:./any.jks
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv must not set spring.ssl.bundle.jks.documentdb.truststore.location"
@@ -55,7 +55,7 @@ tests:
     set:
       extraEnv:
         - name: "spring.ssl[bundle].pem.x.truststore.certificate"
-          value: file:/tmp/any-ca.pem
+          value: file:./any-ca.pem
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv must not set spring.ssl\\[bundle\\].pem.x.truststore.certificate"
@@ -107,7 +107,7 @@ tests:
   - it: rejects javaToolOptions with -Dspring.ssl.bundle.pem.x.truststore.certificate
     template: templates/deployment.yaml
     set:
-      javaToolOptions: "-Dspring.ssl.bundle.pem.x.truststore.certificate=file:/tmp/any-ca.pem"
+      javaToolOptions: "-Dspring.ssl.bundle.pem.x.truststore.certificate=file:./any-ca.pem"
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention"
@@ -116,7 +116,7 @@ tests:
     set:
       extraEnv:
         - name: JAVA_TOOL_OPTIONS
-          value: "-Djavax.net.ssl.trustStore=/tmp/any.jks -Djavax.net.ssl.trustStorePassword=changeit"
+          value: "-Djavax.net.ssl.trustStore=./any.jks -Djavax.net.ssl.trustStorePassword=changeit"
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv.JAVA_TOOL_OPTIONS must not mention"

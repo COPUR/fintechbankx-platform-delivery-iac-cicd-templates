@@ -103,7 +103,7 @@ tests:
     template: templates/deployment.yaml
     set:
       config:
-        spring.main.sources[0]: file:/tmp/beans.xml
+        spring.main.sources[0]: file:./beans.xml
     asserts:
       - failedTemplate:
           errorPattern: "config.spring.main.sources\\[0\\] is not allowed: a spring.main.\\* property"
@@ -200,7 +200,7 @@ tests:
   - it: rejects config JDK_JAVA_OPTIONS with -Dspring.main.sources[0] (indexed)
     template: templates/deployment.yaml
     set:
-      config.JDK_JAVA_OPTIONS: "-Dspring.main.sources[0]=file:/tmp/beans.xml"
+      config.JDK_JAVA_OPTIONS: "-Dspring.main.sources[0]=file:./beans.xml"
     asserts:
       - failedTemplate:
           errorPattern: "config.JDK_JAVA_OPTIONS must not mention .*spring.main"

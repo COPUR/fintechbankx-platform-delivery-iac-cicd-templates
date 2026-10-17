@@ -93,7 +93,7 @@ tests:
     set:
       extraEnv:
         - name: "SPRING_CONFIG_IMPORT "
-          value: optional:file:/tmp/x.yml
+          value: optional:file:./x.yml
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv must not set SPRING_CONFIG_IMPORT"

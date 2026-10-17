@@ -132,7 +132,7 @@ tests:
   - it: rejects an sslrootcert other than the mounted CA bundle
     template: templates/deployment.yaml
     set:
-      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=/tmp/attacker.pem
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db_ln_loan_lifecycle_dev?sslmode=verify-full&sslrootcert=./attacker.pem
     asserts:
       - failedTemplate:
           errorPattern: "config.DB_URL must set sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem exactly once"

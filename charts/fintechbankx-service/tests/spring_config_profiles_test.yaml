@@ -55,7 +55,7 @@ tests:
     set:
       extraEnv:
         - name: spring-config-additionallocation
-          value: file:/tmp/
+          value: file:./
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv must not set spring-config-additionallocation"
@@ -95,7 +95,7 @@ tests:
     template: templates/deployment.yaml
     set:
       config:
-        "spring.config.import[0]": optional:file:/tmp/override.yml
+        "spring.config.import[0]": optional:file:./override.yml
     asserts:
       - failedTemplate:
           errorPattern: "config.spring.config.import\\[0\\] is not allowed: .*config"
@@ -104,7 +104,7 @@ tests:
     set:
       extraEnv:
         - name: SPRING_CONFIG_IMPORT_0_
-          value: optional:file:/tmp/override.yml
+          value: optional:file:./override.yml
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv must not set SPRING_CONFIG_IMPORT_0_"
@@ -146,7 +146,7 @@ tests:
     set:
       extraEnv:
         - name: "spring[config].import[0]"
-          value: optional:file:/tmp/override.yml
+          value: optional:file:./override.yml
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv must not set spring\\[config\\].import\\[0\\]"
@@ -155,7 +155,7 @@ tests:
     set:
       extraEnv:
         - name: Spring.Con-fig.Import
-          value: optional:file:/tmp/override.yml
+          value: optional:file:./override.yml
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv must not set Spring.Con-fig.Import"
@@ -236,7 +236,7 @@ tests:
   - it: rejects config JDK_JAVA_OPTIONS with -Dspring.config.import
     template: templates/deployment.yaml
     set:
-      config.JDK_JAVA_OPTIONS: "-Dspring.config.import=file:/tmp/override.yml"
+      config.JDK_JAVA_OPTIONS: "-Dspring.config.import=file:./override.yml"
     asserts:
       - failedTemplate:
           errorPattern: "config.JDK_JAVA_OPTIONS must not mention"
@@ -245,7 +245,7 @@ tests:
     set:
       extraEnv:
         - name: JDK_JAVA_OPTIONS
-          value: "-Xss512k @/tmp/jvm.args"
+          value: "-Xss512k @./jvm.args"
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not mention"
@@ -254,14 +254,14 @@ tests:
     set:
       extraEnv:
         - name: _JAVA_OPTIONS
-          value: "-XX:VMOptionsFile=/tmp/vm.options"
+          value: "-XX:VMOptionsFile=./vm.options"
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv._JAVA_OPTIONS must not mention"
   - it: rejects javaToolOptions with -XX:Flags
     template: templates/deployment.yaml
     set:
-      javaToolOptions: "-XX:Flags=/tmp/.hotspotrc"
+      javaToolOptions: "-XX:Flags=./.hotspotrc"
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention"

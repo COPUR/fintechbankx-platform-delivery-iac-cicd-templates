@@ -20,7 +20,7 @@ tests:
     template: templates/deployment.yaml
     set:
       config:
-        "LOG_LEVEL: \"INFO\"\n  SPRING_CONFIG_IMPORT": "optional:file:/tmp/x.yml"
+        "LOG_LEVEL: \"INFO\"\n  SPRING_CONFIG_IMPORT": "optional:file:./x.yml"
     asserts:
       - failedTemplate: {}
   - it: rejects a config key with a newline that injects an unchecked JDBC URL

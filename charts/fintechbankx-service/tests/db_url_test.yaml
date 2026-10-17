@@ -108,7 +108,7 @@ tests:
   - it: rejects a second sslrootcert after the mounted one
     template: templates/deployment.yaml
     set:
-      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslrootcert=/tmp/any-ca.pem
+      config.DB_URL: jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&sslrootcert=./any-ca.pem
     asserts:
       - failedTemplate:
           errorPattern: "config.DB_URL must set sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem exactly once"

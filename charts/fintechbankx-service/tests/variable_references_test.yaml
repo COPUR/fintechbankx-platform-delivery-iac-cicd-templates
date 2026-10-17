@@ -38,7 +38,7 @@ tests:
         - name: PART_B
           value: "s.enforce=false"
         - name: JDK_JAVA_OPTIONS
-          value: "$(PART_A)fig.import=optional:file:/tmp/x.yml -Dfintechbankx.tl$(PART_B)"
+          value: "$(PART_A)fig.import=optional:file:./x.yml -Dfintechbankx.tl$(PART_B)"
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not contain '\\$\\('"

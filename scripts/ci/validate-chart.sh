@@ -109,13 +109,13 @@ must_fail "javaToolOptions with -Dspring.datasource.url" --expect 'javaToolOptio
 must_fail "extraEnv SPRING_PROFILES_ACTIVE" --expect 'extraEnv must not set SPRING_PROFILES_ACTIVE' \
   --set 'extraEnv[0].name=SPRING_PROFILES_ACTIVE' --set-string 'extraEnv[0].value=local'
 must_fail "config SPRING_CONFIG_IMPORT" --expect 'config.SPRING_CONFIG_IMPORT is not allowed' \
-  --set-string 'config.SPRING_CONFIG_IMPORT=optional:file:/tmp/override.yml'
+  --set-string 'config.SPRING_CONFIG_IMPORT=optional:file:./override.yml'
 must_fail "config spring.config.activate.on-profile (every spring.config.* name)" --expect 'config.spring.config.activate.on-profile is not allowed' \
   --set-string 'config.spring\.config\.activate\.on-profile=local'
 must_fail "extraEnv SPRING_CONFIG_IMPORT_0_ (indexed spring.config.import)" --expect 'extraEnv must not set SPRING_CONFIG_IMPORT_0_' \
-  --set 'extraEnv[0].name=SPRING_CONFIG_IMPORT_0_' --set-string 'extraEnv[0].value=optional:file:/tmp/override.yml'
+  --set 'extraEnv[0].name=SPRING_CONFIG_IMPORT_0_' --set-string 'extraEnv[0].value=optional:file:./override.yml'
 must_fail "config SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE (trust anchor override)" --expect 'config.SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE is not allowed' \
-  --set-string 'config.SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE=file:/tmp/any-ca.pem'
+  --set-string 'config.SPRING_SSL_BUNDLE_PEM_DOCUMENTDB_TRUSTSTORE_CERTIFICATE=file:./any-ca.pem'
 must_fail "extraEnv DB_SSL_ROOT_CERT empty (replaces the chart's entry; TLS guard off switch)" --expect 'extraEnv must not set DB_SSL_ROOT_CERT' \
   --set 'extraEnv[0].name=DB_SSL_ROOT_CERT' --set-string 'extraEnv[0].value='
 must_fail "config PGJDBC_SSL_FACTORY (sslfactory with a separator)" --expect 'config.PGJDBC_SSL_FACTORY is not allowed' \
@@ -123,9 +123,9 @@ must_fail "config PGJDBC_SSL_FACTORY (sslfactory with a separator)" --expect 'co
 must_fail "extraEnvFrom ConfigMap (keys the guard never sees)" --expect 'extraEnvFrom is not supported' \
   --set-string 'extraEnvFrom[0].configMapRef.name=other'
 must_fail "javaToolOptions reading an argument file" --expect 'javaToolOptions must not mention' \
-  --set-string 'javaToolOptions=@/tmp/jvm.args'
+  --set-string 'javaToolOptions=@./jvm.args'
 must_fail "javaToolOptions with -Dspring..config.import (empty element binds like spring.config.import)" --expect 'javaToolOptions must not mention' \
-  --set-string 'javaToolOptions=-Dspring..config.import=optional:file:/tmp/override.yml'
+  --set-string 'javaToolOptions=-Dspring..config.import=optional:file:./override.yml'
 must_fail "extraEnv JDK_JAVA_OPTIONS reading another variable through \$(VAR)" --expect 'extraEnv.JDK_JAVA_OPTIONS must not contain .[$][(]' \
   --set 'extraEnv[0].name=FBX_Y' --set-string 'extraEnv[0].valueFrom.secretKeyRef.name=other' \
   --set-string 'extraEnv[0].valueFrom.secretKeyRef.key=flags' \
@@ -133,7 +133,7 @@ must_fail "extraEnv JDK_JAVA_OPTIONS reading another variable through \$(VAR)" -
 must_fail "config.DB_URL with a Spring placeholder (\${...} can append sslmode=disable)" --expect 'config.DB_URL must not contain' \
   --set-string 'config.DB_URL=jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem&x=${FBX_TAIL}'
 must_fail "javaToolOptions with -Djava.security.properties (security properties file)" --expect 'javaToolOptions must not mention' \
-  --set-string 'javaToolOptions=-Djava.security.properties==/tmp/override.security'
+  --set-string 'javaToolOptions=-Djava.security.properties==./override.security'
 must_fail "config FINTECHBANKX_TLS_ENFORCE (service TLS assertion off switch)" --expect 'config.FINTECHBANKX_TLS_ENFORCE is not allowed' \
   --set-string 'config.FINTECHBANKX_TLS_ENFORCE=false'
 must_fail "config SPRING_PROFILES_DEFAULT=local (every spring.profiles.* name)" --expect 'config.SPRING_PROFILES_DEFAULT is not allowed' \
@@ -195,7 +195,7 @@ must_fail "externalSecret.data SPRING_KAFKA_JAAS_ENABLED (JVM-wide JAAS login mo
   --set-string 'externalSecret.data[0].secretKey=SPRING_KAFKA_JAAS_ENABLED' --set-string 'externalSecret.data[0].property=jaas'
 must_fail "javaToolOptions with -Djava.security.auth.login.config (JVM-wide JAAS file)" \
   --expect 'javaToolOptions must not mention .*java.security.auth' \
-  --set-string 'javaToolOptions=-Djava.security.auth.login.config=/tmp/client.conf'
+  --set-string 'javaToolOptions=-Djava.security.auth.login.config=./client.conf'
 # The database CA mount is pinned (fbx.validateDatabaseCa): /app is the image
 # WORKDIR and Spring Boot loads optional:file:./config/application.yml, and
 # another ConfigMap or key replaces the database trust anchor.
@@ -237,7 +237,7 @@ vendored_must_fail() {
   expect_reason "$why" "$expect" "$err"
   echo "[vendored guard] rejected as expected: $why"
 }
-vendored_must_fail "SPRING_CONFIG_IMPORT_0_" --expect 'config.SPRING_CONFIG_IMPORT_0_ is not allowed' --set-string 'env.SPRING_CONFIG_IMPORT_0_=optional:file:/tmp/x.yml'
+vendored_must_fail "SPRING_CONFIG_IMPORT_0_" --expect 'config.SPRING_CONFIG_IMPORT_0_ is not allowed' --set-string 'env.SPRING_CONFIG_IMPORT_0_=optional:file:./x.yml'
 vendored_must_fail "DB_URL with sslmode=require" --expect 'config.DB_URL must use sslmode=verify-full' \
   --set-string 'env.DB_URL=jdbc:postgresql://db.example.internal:5432/db?sslmode=require'
 vendored_must_fail "additionalEnv SPRING_SSL_BUNDLE_* from valueFrom" --expect 'extraEnv must not set SPRING_SSL_BUNDLE_PEM_DB_TRUSTSTORE_CERTIFICATE' \
@@ -248,7 +248,7 @@ vendored_must_fail "secret key FINTECHBANKX_TLS_ENFORCE" --expect 'externalSecre
   --set 'secrets.keys[1].secretKey=FINTECHBANKX_TLS_ENFORCE' --set-string 'secrets.keys[1].property=enforce'
 cat > "$work/vg-config-key-newline.yaml" <<'VALUES'
 env:
-  "LOG_LEVEL: \"INFO\"\n  SPRING_CONFIG_IMPORT": "optional:file:/tmp/x.yml"
+  "LOG_LEVEL: \"INFO\"\n  SPRING_CONFIG_IMPORT": "optional:file:./x.yml"
 VALUES
 vendored_must_fail "env key with a newline (injects SPRING_CONFIG_IMPORT)" --expect 'is not a ConfigMap key' -f "$work/vg-config-key-newline.yaml"
 cat > "$work/vg-es-key-newline.yaml" <<'VALUES'
@@ -289,7 +289,7 @@ vendored_must_fail "env SPRING_MAIN_LAZYINITIALIZATION (spring.main.*)" \
   --set-string 'env.SPRING_MAIN_LAZYINITIALIZATION=true'
 vendored_must_fail "env spring.main.sources (an XML file of bean definitions)" \
   --expect 'config.spring.main.sources is not allowed: a spring.main.\* property' \
-  --set-string 'env.spring\.main\.sources=file:/tmp/beans.xml'
+  --set-string 'env.spring\.main\.sources=file:./beans.xml'
 vendored_must_fail "additionalEnv spring.ma_in.allow-bean-definition-overriding from valueFrom ('_' inside an element)" \
   --expect 'extraEnv must not set spring.ma_in.allow-bean-definition-overriding' \
   --set 'additionalEnv[0].name=spring.ma_in.allow-bean-definition-overriding' \
@@ -315,7 +315,7 @@ vendored_must_fail "secret key spring.kafka.jaas.options.password (JAAS login mo
   --set 'secrets.keys[1].secretKey=spring.kafka.jaas.options.password' --set-string 'secrets.keys[1].property=kafka_password'
 vendored_must_fail "jvmOptions with -Djava.security.auth.login.config (JVM-wide JAAS file)" \
   --expect 'javaToolOptions must not mention .*java.security.auth' \
-  --set-string 'jvmOptions=-Djava.security.auth.login.config=/tmp/client.conf'
+  --set-string 'jvmOptions=-Djava.security.auth.login.config=./client.conf'
 vendored_must_fail "databaseCaBundle.mountPath /app/config with key application.yml (a Spring Boot config file)" \
   --expect 'databaseCa.mountPath must be /etc/fintechbankx/rds-ca' \
   --set-string 'databaseCaBundle.mountPath=/app/config' --set-string 'databaseCaBundle.key=application.yml' \

@@ -23,21 +23,21 @@ tests:
     set:
       extraEnv:
         - name: JDK_JAVA_OPTIONS
-          value: '-Xss512k "@/tmp/jvm.args"'
+          value: '-Xss512k "@./jvm.args"'
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not mention"
   - it: rejects javaToolOptions with a single-quoted '@' argument file
     template: templates/deployment.yaml
     set:
-      javaToolOptions: "'@/tmp/jvm.args'"
+      javaToolOptions: "'@./jvm.args'"
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention"
   - it: rejects javaToolOptions with -Djava.security.properties (security properties file)
     template: templates/deployment.yaml
     set:
-      javaToolOptions: "-Djava.security.properties==/tmp/override.security"
+      javaToolOptions: "-Djava.security.properties==./override.security"
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention"
@@ -60,14 +60,14 @@ tests:
   - it: rejects javaToolOptions with -DSPRING_CONFIG_IMPORT_0_ (env spelling as a system property)
     template: templates/deployment.yaml
     set:
-      javaToolOptions: "-DSPRING_CONFIG_IMPORT_0_=optional:file:/tmp/x.yml"
+      javaToolOptions: "-DSPRING_CONFIG_IMPORT_0_=optional:file:./x.yml"
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention"
   - it: rejects javaToolOptions with -Dspring.ssl.bundle (ssl mention)
     template: templates/deployment.yaml
     set:
-      javaToolOptions: "-Dspring.ssl.bundle.pem.x.truststore.certificate=file:/tmp/ca.pem"
+      javaToolOptions: "-Dspring.ssl.bundle.pem.x.truststore.certificate=file:./ca.pem"
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention"
@@ -119,14 +119,14 @@ tests:
   - it: rejects javaToolOptions with -Dspring..config.import (empty element)
     template: templates/deployment.yaml
     set:
-      javaToolOptions: "-Dspring..config.import=optional:file:/tmp/x.yml"
+      javaToolOptions: "-Dspring..config.import=optional:file:./x.yml"
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention"
   - it: rejects javaToolOptions with -Dspring.[config].import (dot before a bracket)
     template: templates/deployment.yaml
     set:
-      javaToolOptions: "-Dspring.[config].import=optional:file:/tmp/x.yml"
+      javaToolOptions: "-Dspring.[config].import=optional:file:./x.yml"
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention"
@@ -166,7 +166,7 @@ tests:
     template: templates/deployment.yaml
     set:
       javaToolOptions: >-
-        -Dspring[application][json]='{"spring":{"config":{"import":"optional:file:/tmp/x.yml"}}}'
+        -Dspring[application][json]='{"spring":{"config":{"import":"optional:file:./x.yml"}}}'
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention"
@@ -188,7 +188,7 @@ tests:
   - it: rejects javaToolOptions with -Dspring.con:fig.import (':' inside an element)
     template: templates/deployment.yaml
     set:
-      javaToolOptions: "-Dspring.con:fig.import=optional:file:/tmp/x.yml"
+      javaToolOptions: "-Dspring.con:fig.import=optional:file:./x.yml"
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention"

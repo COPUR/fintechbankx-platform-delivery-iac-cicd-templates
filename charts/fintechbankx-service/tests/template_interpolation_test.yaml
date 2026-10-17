@@ -17,7 +17,7 @@ tests:
   - it: rejects preStopSleepSeconds that adds container args
     template: templates/deployment.yaml
     set:
-      preStopSleepSeconds: "10\"]\n          args: [\"--spring.config.import=optional:file:/tmp/x.yml"
+      preStopSleepSeconds: "10\"]\n          args: [\"--spring.config.import=optional:file:./x.yml"
     asserts:
       - failedTemplate:
           errorPattern: "preStopSleepSeconds: Invalid type"

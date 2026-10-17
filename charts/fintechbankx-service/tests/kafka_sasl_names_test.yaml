@@ -253,14 +253,14 @@ tests:
   - it: rejects javaToolOptions with -Djava.security.auth.login.config (JVM-wide JAAS file)
     template: templates/deployment.yaml
     set:
-      javaToolOptions: "-XX:MaxRAMPercentage=75 -Djava.security.auth.login.config=/tmp/client.conf"
+      javaToolOptions: "-XX:MaxRAMPercentage=75 -Djava.security.auth.login.config=./client.conf"
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention .*mongodb, spring.main, sasl, jaas, java.security.auth"
   - it: rejects config JDK_JAVA_OPTIONS with -Djava.security.auth.login.config== (replacing form)
     template: templates/deployment.yaml
     set:
-      config.JDK_JAVA_OPTIONS: "-Djava.security.auth.login.config==/tmp/client.conf"
+      config.JDK_JAVA_OPTIONS: "-Djava.security.auth.login.config==./client.conf"
     asserts:
       - failedTemplate:
           errorPattern: "config.JDK_JAVA_OPTIONS must not mention .*java.security.auth"
@@ -269,7 +269,7 @@ tests:
     set:
       extraEnv:
         - name: JAVA_TOOL_OPTIONS
-          value: "-Djava..security.auth.login.config=/tmp/client.conf"
+          value: "-Djava..security.auth.login.config=./client.conf"
     asserts:
       - failedTemplate:
           errorPattern: "extraEnv.JAVA_TOOL_OPTIONS must not mention .*java.security.auth"
@@ -285,7 +285,7 @@ tests:
   - it: rejects javaToolOptions with a jaas mention
     template: templates/deployment.yaml
     set:
-      javaToolOptions: "-Dapp.jaas.file=/tmp/client.conf"
+      javaToolOptions: "-Dapp.jaas.file=./client.conf"
     asserts:
       - failedTemplate:
           errorPattern: "javaToolOptions must not mention .*jaas"

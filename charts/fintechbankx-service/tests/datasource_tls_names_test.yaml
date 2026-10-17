@@ -106,7 +106,7 @@ tests:
   - it: rejects config PGSSLROOTCERT
     template: templates/deployment.yaml
     set:
-      config.PGSSLROOTCERT: /tmp/any-ca.pem
+      config.PGSSLROOTCERT: ./any-ca.pem
     asserts:
       - failedTemplate:
           errorPattern: "config.PGSSLROOTCERT is not allowed"
