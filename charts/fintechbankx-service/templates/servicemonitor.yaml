@@ -14,7 +14,7 @@ spec:
       {{- include "fbx.selectorLabels" . | nindent 6 }}
   namespaceSelector:
     matchNames:
-      - {{ .Release.Namespace }}
+      - {{ .Release.Namespace | quote }}
   endpoints:
     - port: http-management
       path: /actuator/prometheus
