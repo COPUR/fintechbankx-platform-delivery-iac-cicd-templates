@@ -40,7 +40,8 @@ name: helm-deploy
 # ECR images by digest plus image signature verification at admission
 # (proposed, not built).
 #
-# The image is always passed by digest and must carry a cosign keyless
+# The image is always passed by digest (image-repository is <registry>/<name>,
+# never with a tag or digest of its own) and must carry a cosign keyless
 # signature from container-image.yml: certificate identity = this repository's
 # .github/workflows/container-image.yml at a tag or commit SHA (dev/staging also
 # accept refs/heads/main), issuer https://token.actions.githubusercontent.com,
@@ -358,6 +359,14 @@ jobs:
           set -euo pipefail
           if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "::error::image-digest must be a sha256 digest"; exit 1
+          fi
+          # registry/name only (OCI reference grammar, optional registry with port): a tag or digest
+          # here would ride along in image-repository@image-digest, which the render guard admits and
+          # cosign verifies, without anything checking it.
+          name_re='[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*'
+          repo_re="^([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]+)?/)?${name_re}(/${name_re})*\$"
+          if ! [[ "$IMAGE_REPOSITORY" =~ $repo_re ]]; then
+            echo "::error::image-repository must be <registry>/<name> without a tag or digest, got '${IMAGE_REPOSITORY}'"; exit 1
           fi
           bundle=fbx-deploy-bundle
           rm -rf "$bundle"

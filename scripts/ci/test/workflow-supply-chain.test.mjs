@@ -225,6 +225,26 @@ test("helm-deploy render guard refuses any other image, an image in another YAML
   assert.match(r.stdout, /image: "123456789012\.dkr\.ecr\.me-central-1\.amazonaws\.com\/fintechbankx\/loan-lifecycle-service:v1"/);
 });
 
+// image-repository is registry/name only: a tag in it would make image-repository@image-digest
+// (what the render guard admits and cosign verifies) carry a tag that nothing checks.
+test("helm-deploy validate refuses an image-repository holding a tag or a digest", () => {
+  const bundleStep = stepById(helmDeploy().jobs.validate, "bundle");
+  const bin = fs.mkdtempSync(path.join(tmpRoot, "fbx-bin-"));
+  fs.writeFileSync(path.join(bin, "helm"), "#!/bin/sh\necho stub-helm-reached\nexit 7\n", { mode: 0o755 });
+  const run = (repository) => runStep(bundleStep, { IMAGE_REPOSITORY: repository, IMAGE_DIGEST: IMG_DIGEST, CHART_PATH: "chart", VALUES_FILES: "" }, { pathPrefix: bin });
+  for (const repository of [`${IMG_REPO}:v1`, `${IMG_REPO}@${IMG_DIGEST}`, `${IMG_REPO}:v1@${IMG_DIGEST}`, "loan-lifecycle-service:v1", `${IMG_REPO}/`, "", "Registry.example/App"]) {
+    const r = run(repository);
+    assert.notEqual(r.status, 0, repository);
+    assert.match(r.stdout, /::error::image-repository must be <registry>\/<name> without a tag or digest/, repository);
+    assert.doesNotMatch(r.stdout, /stub-helm-reached/, repository);
+  }
+  for (const repository of [IMG_REPO, "local/loan-lifecycle-service", "registry.example:5000/fintechbankx/loan-lifecycle-service"]) {
+    const r = run(repository);
+    assert.doesNotMatch(r.stdout, /::error::image-repository/, repository);
+    assert.match(r.stdout, /stub-helm-reached/, repository);
+  }
+});
+
 // The guard reads lines, not YAML: it is a check for charts that render images the usual way
 // (see the helm-deploy.yml header), and values with escapes, '?' or JSON (toPrettyJson | quote)
 // must not trip it.
