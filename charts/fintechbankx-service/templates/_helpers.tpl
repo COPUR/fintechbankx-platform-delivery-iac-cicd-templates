@@ -338,7 +338,9 @@ spring.pro:files and spring[profiles] bind like the plain name) and the
 property reading (fbx.propertyName: only '.' and '[...]' separate elements and
 '_' is skipped too, so spring.pro_files, spring.kafka.s_sl and
 spring.data.mongo_db bind as spring.profiles, spring.kafka.ssl and
-spring.data.mongodb). The helper prints the reason (non-empty means rejected).
+spring.data.mongodb), and against both readings of the name with its brackets
+removed (fbx.bracketlessName: spring.J]PA binds as spring.jpa). The helper
+prints the reason (non-empty means rejected).
 JVM options (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS and the chart's
 javaToolOptions) can set -Dspring.datasource.url=..., -Djavax.net.ssl.*,
 -Dspring.config.*, -Dspring.profiles.*, -Dspring.ssl.bundle.*,
@@ -415,6 +417,20 @@ collapsed, leading and trailing dots trimmed.
 {{- trimAll "." $c -}}
 {{- end -}}
 
+{{/*
+The name with every '[' and ']' removed, read through fbx.canonicalName and
+fbx.propertyName as two more forms: Spring Boot 3.3.6 skips a ']' that closes
+no '[' inside an element, and an element that is not plain [a-z0-9-] keeps
+only [a-z0-9], so the env names spring.J]PA.generate-ddl,
+-s]pring.sql.init.mode and S]PRING.profiles.active (Kubernetes 1.32+ accepts
+them; ConfigMap and Secret keys cannot hold a bracket) bind
+spring.jpa.generate-ddl, spring.sql.init.mode and spring.profiles.active,
+while both readings above turn the bracket into '.' (spring.j.pa).
+*/}}
+{{- define "fbx.bracketlessName" -}}
+{{- regexReplaceAll "[\\[\\]]+" (toString .) "" -}}
+{{- end -}}
+
 {{- define "fbx.datasourceOverrideName" -}}
 {{- $n := toString . -}}
 {{- if not (regexMatch "(?i)^SPRING_(DATASOURCE|DATA_MONGODB)_(USERNAME|PASSWORD)$" $n) -}}
@@ -424,6 +440,13 @@ collapsed, leading and trailing dots trimmed.
 {{- end -}}
 {{- if not $reason -}}
 {{- $reason = include "fbx.overrideNameReason" (include "fbx.propertyName" $n) -}}
+{{- end -}}
+{{- $nb := include "fbx.bracketlessName" $n -}}
+{{- if not $reason -}}
+{{- $reason = include "fbx.overrideNameReason" (include "fbx.canonicalName" $nb) -}}
+{{- end -}}
+{{- if not $reason -}}
+{{- $reason = include "fbx.overrideNameReason" (include "fbx.propertyName" $nb) -}}
 {{- end -}}
 {{- $reason -}}
 {{- end -}}
@@ -577,8 +600,10 @@ spring.kafka.security.pro_tocol, spring.kafka.properties[security.protocol]).
 {{- $n := toString . -}}
 {{- $c := include "fbx.canonicalName" $n -}}
 {{- $p := include "fbx.propertyName" $n -}}
-{{- if or (regexMatch "(?i)(^|[._-])security[._-]?protocol$" $n) (regexMatch "(^|\\.)security\\.?protocol$" $c) (regexMatch "(^|\\.)security\\.?protocol$" $p) -}}protocol
-{{- else if or (regexMatch "(?i)endpoint[._-]?identification[._-]?algorithm" $n) (regexMatch "endpoint\\.?identification\\.?algorithm" $c) (regexMatch "endpoint\\.?identification\\.?algorithm" $p) -}}endpoint
+{{- $cb := include "fbx.canonicalName" (include "fbx.bracketlessName" $n) -}}
+{{- $pb := include "fbx.propertyName" (include "fbx.bracketlessName" $n) -}}
+{{- if or (regexMatch "(?i)(^|[._-])security[._-]?protocol$" $n) (regexMatch "(^|\\.)security\\.?protocol$" $c) (regexMatch "(^|\\.)security\\.?protocol$" $p) (regexMatch "(^|\\.)security\\.?protocol$" $cb) (regexMatch "(^|\\.)security\\.?protocol$" $pb) -}}protocol
+{{- else if or (regexMatch "(?i)endpoint[._-]?identification[._-]?algorithm" $n) (regexMatch "endpoint\\.?identification\\.?algorithm" $c) (regexMatch "endpoint\\.?identification\\.?algorithm" $p) (regexMatch "endpoint\\.?identification\\.?algorithm" $cb) (regexMatch "endpoint\\.?identification\\.?algorithm" $pb) -}}endpoint
 {{- end -}}
 {{- end -}}
 

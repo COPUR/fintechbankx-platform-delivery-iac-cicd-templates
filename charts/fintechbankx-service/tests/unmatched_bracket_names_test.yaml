@@ -1,0 +1,72 @@
+suite: names with a bracket that closes or opens nothing
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # Spring Boot 3.3.6 skips a ']' that closes no '[' inside a name element, and
+  # an element that is not plain [a-z0-9-] keeps only [a-z0-9]: the env names
+  # spring.J]PA.generate-ddl, -s]pring.sql.init.mode, S]PRING.profiles.active
+  # and spring.kafka.security.proto]col bind spring.jpa.generate-ddl,
+  # spring.sql.init.mode, spring.profiles.active and
+  # spring.kafka.security.protocol. fbx.canonicalName and fbx.propertyName read
+  # every bracket as '.' (spring.j.pa), so every name rule is also checked
+  # against both readings of the name with its brackets removed. Only extraEnv
+  # can carry such a name: ConfigMap and Secret keys are [-._a-zA-Z0-9]+.
+  - it: rejects extraEnv spring.J]PA.generate-ddl
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.J]PA.generate-ddl
+          value: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.J\\]PA.generate-ddl \\(value or valueFrom\\): a schema-management setting"
+  - it: rejects extraEnv -s]pring.sql.init.mode
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: -s]pring.sql.init.mode
+          value: always
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set -s\\]pring.sql.init.mode \\(value or valueFrom\\): a schema-management setting"
+  - it: rejects extraEnv -SPRIN]G_JPA_HIBERNATE_DDLAUTO
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: -SPRIN]G_JPA_HIBERNATE_DDLAUTO
+          value: create-drop
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set -SPRIN\\]G_JPA_HIBERNATE_DDLAUTO \\(value or valueFrom\\): a schema-management setting"
+  - it: rejects extraEnv S]PRING.profiles.active
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: S]PRING.profiles.active
+          value: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set S\\]PRING.profiles.active \\(value or valueFrom\\): a profile can activate"
+  - it: checks the value of extraEnv spring.kafka.security.proto]col
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.security.proto]col
+          value: PLAINTEXT
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.spring.kafka.security.proto\\]col must be SASL_SSL or SSL"
+  - it: accepts a matched index, spring.kafka.properties[client.id]
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.properties[client.id]
+          value: loan-lifecycle
+    asserts:
+      - notFailedTemplate: {}

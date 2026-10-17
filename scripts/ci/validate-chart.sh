@@ -322,6 +322,10 @@ vendored_must_fail "additionalEnv spring.sql.init.mode from valueFrom" \
   --set-string 'additionalEnv[0].valueFrom.secretKeyRef.name=other' --set-string 'additionalEnv[0].valueFrom.secretKeyRef.key=mode'
 vendored_must_fail "jvmOptions with -Dhibernate.hbm2ddl.auto" --expect 'javaToolOptions must not mention .*hibernate' \
   --set-string 'jvmOptions=-Dhibernate.hbm2ddl.auto=update'
+# Spring skips a ']' that closes no '[': spring.J]PA.generate-ddl binds spring.jpa.generate-ddl.
+vendored_must_fail "additionalEnv spring.J]PA.generate-ddl (unmatched bracket)" \
+  --expect 'extraEnv must not set spring.J\]PA.generate-ddl' \
+  --set-string 'additionalEnv[0].name=spring.J]PA.generate-ddl' --set-string 'additionalEnv[0].value=true'
 vendored_must_fail "env SPRING_KAFKA_PROPERTIES_SASL_MECHANISM (Kafka SASL)" \
   --expect 'config.SPRING_KAFKA_PROPERTIES_SASL_MECHANISM is not allowed: a Kafka SASL or JAAS setting' \
   --set-string 'env.SPRING_KAFKA_PROPERTIES_SASL_MECHANISM=PLAIN'

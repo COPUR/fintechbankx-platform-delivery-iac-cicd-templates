@@ -58,7 +58,16 @@ inside a name element:
   `spring.data.mongo_db.host`, `spring.con_fig.import`,
   `spring.applica_tion.json`, `fintech_bankx.tls.enforce` and
   `spring.data_source.url` are caught; with Spring Boot 3.3.6 each of them
-  binds the plain name (`spring.pro_files.active=local` activates `local`).
+  binds the plain name (`spring.pro_files.active=local` activates `local`);
+- both readings again with every `[` and `]` removed
+  (`fbx.bracketlessName`): Spring Boot 3.3.6 skips a `]` that closes no `[`
+  inside an element, so the env names `spring.J]PA.generate-ddl`,
+  `-s]pring.sql.init.mode` and `S]PRING.profiles.active` (Kubernetes 1.32+
+  accepts them; ConfigMap and Secret keys cannot hold a bracket) bind
+  `spring.jpa.generate-ddl`, `spring.sql.init.mode` and
+  `spring.profiles.active`, while the two readings above read the bracket as
+  `.`. The Kafka `security.protocol` and `endpoint.identification.algorithm`
+  names are found the same way.
 
 
 1. `spring.config.*` by prefix, `(?i)^spring[._-]?config([._-]|$)` (import,
@@ -416,6 +425,7 @@ editing it:
    `database_override_names_test.yaml`, `datasource_tls_names_test.yaml`,
    `db_url_test.yaml`, `spring_config_profiles_test.yaml`,
    `spring_main_names_test.yaml`, `schema_management_names_test.yaml`,
+   `unmatched_bracket_names_test.yaml`,
    `relaxed_binding_names_test.yaml`,
    `property_reading_names_test.yaml`, `ssl_bundle_names_test.yaml`,
    `tls_enforce_switch_test.yaml`, `jvm_options_test.yaml`,
