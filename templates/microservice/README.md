@@ -17,7 +17,7 @@ platform contract.
 ├── src/main/resources/application.yml   API 8080, actuator 8081, probes, prometheus
 ├── deploy/helm/values*.yaml      values for the platform chart charts/fintechbankx-service
 ├── .github/workflows/service-pipeline.yml   caller of the reusable workflows
-└── .github/CODEOWNERS            owning squad; *.accepted-breaking.txt waivers -> data-contracts owners
+└── .github/CODEOWNERS            owning squad; vendored platform guard -> platform owners; *.accepted-breaking.txt waivers -> data-contracts owners
 ```
 Add `deploy/terraform/` from the terraform-modules repo examples (microservice-base) for the service's own database, KMS key, secrets and IRSA role.
 

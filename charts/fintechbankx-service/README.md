@@ -420,6 +420,36 @@ editing it:
    unchanged, runs `verify-vendored-guard.sh` on it, and checks that it
    renders and refuses every `vendored_must_fail` case through its adapter
    define, each for its expected reason.
+5. Route the vendored files to the platform owners in the service
+   repository's `CODEOWNERS` (required). The guard file, the verifier and
+   the file that pins the digest are what the service's CI trusts; without
+   this block the owning squad can change any of them, or the pin, in its
+   own pull request. The last matching rule wins, so the block goes below
+   every broader rule (`*`); it also owns `CODEOWNERS` itself, so that the
+   block cannot be dropped without the platform owners; and required
+   code-owner review must be on for the default branch, without which
+   `CODEOWNERS` only requests a review:
+
+   ```text
+   # Platform guard (fintechbankx-platform-delivery-iac-cicd-templates,
+   # charts/fintechbankx-service README, "Vendoring the guard"): only the
+   # platform owners approve a change to the vendored file, the verifier,
+   # the workflow that pins the digest, or this file. Keep below every
+   # broader rule (the last matching rule wins).
+   /deploy/helm/*/templates/_fbx_helpers.tpl   @<org>/<platform-owners>
+   /scripts/ci/verify-vendored-guard.sh        @<org>/<platform-owners>
+   /.github/workflows/deployability.yml        @<org>/<platform-owners>
+   /.github/CODEOWNERS                         @<org>/<platform-owners>
+   ```
+
+   Replace `@<org>/<platform-owners>` with the platform owners' team, the
+   file name `_fbx_helpers.tpl` with the vendored file's name if the chart
+   uses another, and `deployability.yml` with the workflow that runs
+   `verify-vendored-guard.sh` with the pinned digest. When the pin sits in a
+   script that workflow runs (consent-auth-service keeps it in
+   `scripts/ci/helm-chart-checks.sh`), add a line for that script too. The
+   microservice skeleton's `templates/microservice/.github/CODEOWNERS`
+   carries the same block.
 
 ## Required values
 

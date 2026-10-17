@@ -2,7 +2,9 @@
 // read by contract-checks.yml) to the data-contracts owners in CODEOWNERS, so a
 // provider squad cannot approve its own breaking change. CODEOWNERS is
 // last-match-wins: the waiver rule must be the last rule that matches a waiver
-// file anywhere in the tree (OpenAPI and AsyncAPI locations).
+// file anywhere in the tree (OpenAPI and AsyncAPI locations). It also routes
+// the vendored platform guard, its verifier, the workflow that pins its digest
+// and CODEOWNERS itself to the platform owners.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -62,6 +64,35 @@ test("every waiver location is owned by the data-contracts owners only (last mat
     "example-service.accepted-breaking.txt",
   ]) {
     assert.deepEqual(ownersOf(file), [DATA_CONTRACTS_OWNER], `${file} must be owned by ${DATA_CONTRACTS_OWNER}`);
+  }
+});
+
+// A service chart that vendors the platform guard (charts/fintechbankx-service
+// README, "Vendoring the guard") carries the guard file, the verifier and the
+// digest its CI pins; only the platform owners approve a change to them, or
+// to the CODEOWNERS file that says so.
+const PLATFORM_OWNER = "@<org>/<platform-owners>";
+
+test("the vendored guard, its verifier, the workflow that pins its digest and CODEOWNERS are owned by the platform owners only", () => {
+  for (const file of [
+    "deploy/helm/example-service/templates/_fbx_helpers.tpl",
+    "scripts/ci/verify-vendored-guard.sh",
+    ".github/workflows/deployability.yml",
+    ".github/CODEOWNERS",
+  ]) {
+    assert.deepEqual(ownersOf(file), [PLATFORM_OWNER], `${file} must be owned by ${PLATFORM_OWNER}`);
+  }
+});
+
+test("the platform rules do not capture the service's own chart, scripts or workflows (control)", () => {
+  for (const file of [
+    "deploy/helm/example-service/templates/deployment.yaml",
+    "deploy/helm/example-service/templates/_helpers.tpl",
+    "deploy/helm/example-service/values.yaml",
+    "scripts/ci/helm-checks.sh",
+    ".github/workflows/service-pipeline.yml",
+  ]) {
+    assert.notDeepEqual(ownersOf(file), [PLATFORM_OWNER], `${file} must stay with the owning squad`);
   }
 });
 
