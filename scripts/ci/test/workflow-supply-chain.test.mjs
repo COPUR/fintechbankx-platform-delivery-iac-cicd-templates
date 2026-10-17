@@ -94,14 +94,15 @@ test("every third-party action in every job is pinned to a full commit SHA with 
         const uses = step.uses;
         if (!uses || uses.startsWith("./") || uses.startsWith("docker://")) continue;
         if (PENDING_SHA.includes(uses)) { pendingSeen.add(uses); continue; }
-        if (!SHA_PIN.test(uses)) {
-          problems.push(`${file} job ${id}: ${uses} is not pinned to a 40-hex commit SHA`);
-          continue;
-        }
-        const line = text.split("\n").find((l) => l.includes(`uses: ${uses}`));
-        if (!/#\s*v?\d+(\.\d+)*\s*$/.test(line ?? "")) problems.push(`${file} job ${id}: ${uses} needs a trailing "# <version>" comment`);
+        if (!SHA_PIN.test(uses)) problems.push(`${file} job ${id}: ${uses} is not pinned to a 40-hex commit SHA`);
       }
     }
+    // The version comment is checked on every line, not on the first line that
+    // names the same pin: one SHA appears in many steps of a file.
+    text.split("\n").forEach((l, i) => {
+      const m = l.match(/^\s*(?:-\s+)?uses:\s*([^\s#]+)/);
+      if (m && /@[0-9a-f]{40}$/.test(m[1]) && !/#\s*v?\d+(\.\d+)*\s*$/.test(l)) problems.push(`${file}:${i + 1}: ${m[1]} needs a trailing "# <version>" comment`);
+    });
   }
   assert.deepEqual(problems, []);
   assert.deepEqual([...pendingSeen].sort(), [...PENDING_SHA].sort(), "PENDING_SHA lists a ref no workflow uses any more");

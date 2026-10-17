@@ -28,12 +28,13 @@ to a commit SHA with its version as a comment, except the refs listed in
 
 Runners: jobs that hold no cloud credentials run on the `runner` input, else
 the caller repository's `CI_RUNNER` variable, else `ubuntu-latest`. Jobs that
-hold AWS credentials (image push, Terraform plan and apply, Helm deploy) run on
-`cloud-runner`, else `CI_RUNNER_CLOUD`, else `ubuntu-latest`, so they land on
-the runner that pull request jobs share only when the caller says so.
-`ephemeral-env` uses `runner`, else `CI_RUNNER_ENV`. `container-image` builds
-`linux/amd64` by default, which an arm64 runner can only do with QEMU (binfmt)
-installed. Service containers publish only their container port: every fbx-ci
+hold AWS credentials (image push, Terraform plan and apply, Helm deploy) or read
+the saved plan (Terraform plan comment) run on `cloud-runner`, else
+`CI_RUNNER_CLOUD`, else `ubuntu-latest`, so they land on the runner that pull
+request jobs share only when the caller says so. `ephemeral-env` uses `runner`,
+else `CI_RUNNER_ENV`. `container-image` builds `linux/amd64` by default, which
+an arm64 runner can only do with QEMU (binfmt) installed. The default Flyway
+image of `db-migration-verify` is multi-arch; its `-alpine` tags are amd64 only. Service containers publish only their container port: every fbx-ci
 runner shares one Docker host, so a step reads the mapped port and sets
 `TEST_DB_URL`, `TEST_MONGO_URI`, `PGPORT` and `FLYWAY_URL`. Tool downloads pick
 the release asset for the runner's architecture and check the pinned sha256 of

@@ -44,9 +44,11 @@ on:
         type: string
         default: postgres:16-alpine
       flyway-image:
-        description: Flyway CLI image (pinned version).
+        description: >-
+          Flyway CLI image (pinned version). The default is multi-arch (amd64 and arm64);
+          the -alpine tags are amd64 only and fail on the arm64 fbx-ci runner.
         type: string
-        default: flyway/flyway:10.20.1-alpine
+        default: flyway/flyway:10.20.1
       verify-backfill-script:
         description: Backfill rehearsal script, run when the file exists.
         type: string

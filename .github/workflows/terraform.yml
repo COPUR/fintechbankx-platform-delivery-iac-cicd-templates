@@ -40,10 +40,10 @@ on:
         default: ""
       cloud-runner:
         description: >-
-          Runner label for the jobs that hold AWS credentials (OIDC). Empty = the caller
-          repository's CI_RUNNER_CLOUD variable, else ubuntu-latest. Deliberately not
-          CI_RUNNER: a credential job lands on the runner shared with pull request jobs
-          only when the caller says so.
+          Runner label for the jobs that hold AWS credentials (OIDC) or read the saved
+          plan (plan comment). Empty = the caller repository's CI_RUNNER_CLOUD variable,
+          else ubuntu-latest. Deliberately not CI_RUNNER: these jobs land on the runner
+          shared with pull request jobs only when the caller says so.
         type: string
         default: ""
       environment:
@@ -220,7 +220,9 @@ jobs:
     name: terraform/pr-comment-${{ inputs.environment }}
     needs: plan
     if: ${{ inputs.comment-on-pr && github.event_name == 'pull_request' }}
-    runs-on: ${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
+    # The plan artifact holds the binary tfplan (sensitive values in cleartext), so
+    # this job stays off the runner shared with pull request jobs, like the plan job.
+    runs-on: ${{ inputs.cloud-runner || vars.CI_RUNNER_CLOUD || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read

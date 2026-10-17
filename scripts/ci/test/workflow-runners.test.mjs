@@ -2,16 +2,19 @@
 // (DevSecOps review 2026-10-17):
 //   1. jobs without cloud credentials run on inputs.runner, else the caller's
 //      CI_RUNNER variable, else ubuntu-latest; jobs that hold AWS credentials
-//      (id-token: write) run on inputs.cloud-runner, else the caller's
+//      (id-token: write) or read the saved Terraform plan (it can hold sensitive
+//      values in cleartext) run on inputs.cloud-runner, else the caller's
 //      CI_RUNNER_CLOUD, else ubuntu-latest, so they never land on the runner
 //      that pull request jobs share unless the caller says so. ephemeral-env
 //      keeps its own CI_RUNNER_ENV (ephemeral-lanes.test.mjs);
 //   2. service containers publish only their container port and the job reads
 //      the mapped host port from job.services: every fbx-ci runner shares one
-//      Docker host, so a fixed host port collides between jobs;
+//      Docker host, so a fixed host port collides between jobs. The job env
+//      never sets a name a step writes to GITHUB_ENV (the job env would win);
 //   3. tool downloads pick the release asset for the runner's architecture
 //      (the fbx-ci runner is arm64) and check the pinned sha256 of the default
-//      version before anything is extracted.
+//      version before anything is extracted; container images a job runs by
+//      default have an arm64 variant.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -36,6 +39,9 @@ const reusable = fs
 const CI_RUNS_ON = "${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}";
 const CLOUD_RUNS_ON = "${{ inputs.cloud-runner || vars.CI_RUNNER_CLOUD || 'ubuntu-latest' }}";
 const holdsCloudCredentials = (wf, job) => (job.permissions ?? wf.permissions)?.["id-token"] === "write";
+const readsTerraformPlan = (job) =>
+  (job.steps ?? []).some((s) => /^actions\/download-artifact@/.test(s.uses ?? "") && /^tfplan-/.test(String(s.with?.name ?? "")));
+const needsCloudRunner = (wf, job) => holdsCloudCredentials(wf, job) || readsTerraformPlan(job);
 
 // --- 1. runners ------------------------------------------------------------------
 
@@ -46,37 +52,48 @@ test("the reusable workflows under test are the eight service workflows", () => 
   ]);
 });
 
-test("jobs without cloud credentials take inputs.runner or CI_RUNNER; jobs with AWS credentials take inputs.cloud-runner or CI_RUNNER_CLOUD", () => {
+test("jobs without cloud credentials take inputs.runner or CI_RUNNER; jobs with AWS credentials or the Terraform plan take inputs.cloud-runner or CI_RUNNER_CLOUD", () => {
   const problems = [];
   for (const file of reusable) {
     const wf = load(file);
     const inputs = wf.on.workflow_call.inputs ?? {};
     for (const [id, job] of Object.entries(wf.jobs)) {
-      const cloud = holdsCloudCredentials(wf, job);
+      const cloud = needsCloudRunner(wf, job);
       const want = cloud ? CLOUD_RUNS_ON : CI_RUNS_ON;
       if (job["runs-on"] !== want) problems.push(`${file} job ${id}: runs-on ${job["runs-on"]}, want ${want}`);
       const input = inputs[cloud ? "cloud-runner" : "runner"];
       if (!input || input.type !== "string" || input.default !== "") problems.push(`${file} job ${id}: needs input ${cloud ? "cloud-runner" : "runner"} (string, default "")`);
     }
     for (const name of ["runner", "cloud-runner"]) {
-      const used = Object.entries(wf.jobs).some(([, job]) => (name === "cloud-runner") === holdsCloudCredentials(wf, job));
+      const used = Object.entries(wf.jobs).some(([, job]) => (name === "cloud-runner") === needsCloudRunner(wf, job));
       if (inputs[name] && !used) problems.push(`${file}: input ${name} is declared but no job uses it`);
     }
   }
   assert.deepEqual(problems, []);
 });
 
-test("the credential jobs are the image push, Terraform plan and apply, and the Helm deploy", () => {
+test("the cloud-runner jobs are the image push, Terraform plan, plan comment and apply, and the Helm deploy", () => {
   const cloudJobs = reusable.flatMap((file) => {
     const wf = load(file);
-    return Object.entries(wf.jobs).filter(([, job]) => holdsCloudCredentials(wf, job)).map(([id]) => `${file}:${id}`);
+    return Object.entries(wf.jobs).filter(([, job]) => needsCloudRunner(wf, job)).map(([id]) => `${file}:${id}`);
   });
-  assert.deepEqual(cloudJobs.sort(), ["container-image.yml:image", "helm-deploy.yml:deploy", "terraform.yml:apply", "terraform.yml:plan"]);
+  assert.deepEqual(cloudJobs.sort(), [
+    "container-image.yml:image", "helm-deploy.yml:deploy", "terraform.yml:apply", "terraform.yml:comment", "terraform.yml:plan",
+  ]);
 });
 
 // --- 2. service ports ------------------------------------------------------------
 
-test("service containers publish only their container port, and no job env names a fixed localhost port", () => {
+// Names a job's steps write to GITHUB_ENV with: echo "NAME=..." >> "$GITHUB_ENV".
+const githubEnvNames = (job) =>
+  new Set((job.steps ?? []).flatMap((s) => [...String(s.run ?? "").matchAll(/echo\s+"([A-Za-z_][A-Za-z0-9_]*)=[^"\n]*"\s*>>\s*"\$GITHUB_ENV"/g)].map((m) => m[1])));
+
+test("the address steps' GITHUB_ENV names are the ones the jobs rely on", () => {
+  assert.deepEqual([...githubEnvNames(load("java-service-ci.yml").jobs["build-and-test"])].sort(), ["TEST_DB_URL", "TEST_MONGO_URI"]);
+  assert.deepEqual([...githubEnvNames(load("db-migration-verify.yml").jobs.migrate)].sort(), ["FLYWAY_URL", "PGPORT"]);
+});
+
+test("service containers publish only their container port, and no job env fixes a host port or shadows a GITHUB_ENV name", () => {
   const problems = [];
   for (const file of reusable) {
     const wf = load(file);
@@ -84,8 +101,10 @@ test("service containers publish only their container port, and no job env names
       for (const [svc, def] of Object.entries(job.services ?? {})) {
         for (const p of def.ports ?? []) if (!/^\d+$/.test(String(p))) problems.push(`${file} job ${id} service ${svc}: port ${p} binds a fixed host port`);
       }
+      const exported = githubEnvNames(job);
       for (const [k, v] of Object.entries(job.env ?? {})) {
-        if (/localhost:\d+/.test(String(v)) || /^(PGPORT|.*_PORT)$/.test(k)) problems.push(`${file} job ${id}: job env ${k}=${v} fixes a host port (job env would also override GITHUB_ENV)`);
+        if (/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d+/.test(String(v)) || /^(PGPORT|.*_PORT)$/.test(k)) problems.push(`${file} job ${id}: job env ${k}=${v} fixes a host port`);
+        if (exported.has(k)) problems.push(`${file} job ${id}: job env ${k} would override the value a step writes to GITHUB_ENV`);
       }
     }
   }
@@ -125,7 +144,11 @@ test("java-service-ci exports the mapped PostgreSQL and MongoDB ports as TEST_DB
   assert.deepEqual(off.env, ["TEST_DB_URL=", "TEST_MONGO_URI="]);
   const missing = runScript(step.run, { POSTGRES_ENABLED: "true", POSTGRES_PORT: "", POSTGRES_DB: "db_x", MONGO_ENABLED: "false", MONGO_PORT: "", MONGO_DB: "m_x" });
   assert.notEqual(missing.status, 0, "an enabled service without a mapped port must fail the step");
-  assert.match(missing.out, /::error::/);
+  assert.match(missing.out, /::error::postgres/);
+  const mongoMissing = runScript(step.run, { POSTGRES_ENABLED: "false", POSTGRES_PORT: "", POSTGRES_DB: "db_x", MONGO_ENABLED: "true", MONGO_PORT: "", MONGO_DB: "m_x" });
+  assert.notEqual(mongoMissing.status, 0, "an enabled MongoDB without a mapped port must fail the step");
+  assert.match(mongoMissing.out, /::error::mongo/);
+  assert.deepEqual(mongoMissing.env, []);
 });
 
 test("db-migration-verify exports the mapped PostgreSQL port as PGPORT and FLYWAY_URL", () => {
@@ -139,6 +162,13 @@ test("db-migration-verify exports the mapped PostgreSQL port as PGPORT and FLYWA
   assert.deepEqual(r.env, ["PGPORT=49155", "FLYWAY_URL=jdbc:postgresql://localhost:49155/migration_verify"]);
   const missing = runScript(step.run, { POSTGRES_PORT: "", DATABASE: "migration_verify" });
   assert.notEqual(missing.status, 0);
+});
+
+// flyway/flyway:<v>-alpine is published for linux/amd64 only; the plain tag is a
+// multi-arch index (amd64, arm64, arm/v7), checked on Docker Hub 2026-10-17.
+test("db-migration-verify's default Flyway image has an arm64 variant", () => {
+  const input = load("db-migration-verify.yml").on.workflow_call.inputs["flyway-image"];
+  assert.equal(input.default, "flyway/flyway:10.20.1");
 });
 
 // --- 3. tool downloads -----------------------------------------------------------
