@@ -159,13 +159,22 @@ Pinning (supply chain):
     `bind_platform_workflow_ref` (default `false`, rollout pending). Until it is
     on, any job in the service repository's environment can assume the role
     and run `kubectl` or `helm` without this workflow.
-  - Render guard: the validate job refuses a render in which any container
-    image (every `image:` key, in any YAML form) is not exactly
-    `image-repository@image-digest`, so a chart must take the image by digest
-    (a chart that renders `repository:tag` fails here), and refuses a chart
-    whose templates call `lookup`: validate renders without a cluster, so
+  - Render guard (a check, not a control): the validate job refuses an install
+    render (`helm template`, no cluster) in which any `image:` line is not
+    exactly `image-repository@image-digest`, so it catches a chart that renders
+    an image tag (`repository:tag`) or another digest; it refuses a chart whose
+    templates call `lookup` by name (validate renders without a cluster, so
     `lookup` returns nothing there, while in the deploy job a Secret lookup is
-    Forbidden for the deploy Role and aborts the upgrade.
+    Forbidden for the deploy Role and aborts the upgrade). It reads lines, not
+    YAML, and so also refuses mapping keys it cannot read on their line: an
+    explicit `?` key, an alias or tagged key, and a double-quoted key with a
+    backslash escape. It is not a control against a chart written to render
+    differently at deploy time: `helm upgrade` renders again against the
+    cluster, where `.Release.IsUpgrade`, `.Release.Revision` and
+    `.Capabilities` differ, and a `lookup` built through `tpl` passes the word
+    check. The durable control is admission in the service namespaces: a
+    policy requiring ECR images by digest plus image signature verification at
+    admission. That policy is proposed, not built.
   - Release storage: the deploy job sets `HELM_DRIVER=configmap`, so Helm keeps
     releases in ConfigMaps, not in its default Secrets; the deploy group's
     namespaced Role (mesh repository,

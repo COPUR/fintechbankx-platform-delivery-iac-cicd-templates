@@ -5,8 +5,7 @@ name: helm-deploy
 #   validate: resolve platform-ref to a commit (prod: commit SHA or tag only),
 #             check the chart out once, package chart + values into a bundle,
 #             helm lint + helm template + kubeconform on that bundle (no cloud access),
-#             refuse a render with any image but image-repository@image-digest or a
-#             chart that calls lookup, upload the bundle and publish its digest
+#             run the render guard (below), upload the bundle and publish its digest
 #   deploy:   GitHub environment gate -> download the bundle and check its digest
 #             -> AWS OIDC -> cosign verify of the image digest (keyless, fail closed)
 #             -> helm upgrade --install --atomic --wait with the bundled chart
@@ -20,6 +19,17 @@ name: helm-deploy
 #
 # The deploy job never checks anything out: it deploys exactly the bytes the
 # validate job checked (time-of-check equals time-of-use).
+#
+# The render guard (validate step render-guard) is a check, not a control. It
+# catches a chart whose install render (helm template, no cluster) has an image
+# tag or a digest other than image-digest, or whose templates call lookup by
+# name. It does not stop a chart written to render differently at deploy time:
+# helm upgrade renders again against the cluster, where .Release.IsUpgrade,
+# .Release.Revision and .Capabilities differ, and a lookup built through tpl
+# passes the word check. It reads lines, not YAML, and refuses mapping keys it
+# cannot read on their line. The durable control is admission in the service
+# namespaces: a policy requiring ECR images by digest plus image signature
+# verification at admission (proposed, not built).
 #
 # The image is always passed by digest and must carry a cosign keyless
 # signature from container-image.yml: certificate identity = this repository's
@@ -378,13 +388,24 @@ jobs:
             echo "- bundle digest: \`$digest\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Refuse a render the deploy would not reproduce or cosign did not verify
+      - name: Check the install render's images and lookup (a check, not a control; see header)
         id: render-guard
         env:
           IMAGE_REPOSITORY: ${{ inputs.image-repository }}
           IMAGE_DIGEST: ${{ inputs.image-digest }}
         run: |
           set -euo pipefail
+          # These checks read lines, not YAML, so a mapping key they cannot read on its line is
+          # refused: an explicit key ('? image' then ': x'), an alias or tagged key (*k, !!binary),
+          # and a double-quoted key holding an escape ("\x69mage").
+          if awk '
+            /(^[[:space:]]*(-[[:space:]]+)*|[{,[][[:space:]]*)(\?([[:space:]]|$)|\*[^[:space:],{}]+[[:space:]]*:([[:space:]]|$)|![^[:space:]]+[[:space:]]+[^#]*:([[:space:]]|$))/ ||
+            /"([^"\\]|\\.)*\\([^"\\]|\\.)*"[[:space:]]*:([[:space:]]|$)/ { print FILENAME ":" NR ": " $0; bad++ }
+            END { exit bad ? 0 : 1 }' rendered.yaml > key-lines.txt; then
+            echo "::error::the render writes a mapping key the guard cannot read on its line (explicit ? key, alias or tagged key, or a quoted key with an escape):"
+            cat key-lines.txt
+            exit 1
+          fi
           # cosign (deploy job) verifies only image-repository@image-digest, so every container
           # image of the render must be exactly that; any other form of an image key fails too.
           want="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
