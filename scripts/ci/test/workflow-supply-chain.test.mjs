@@ -76,6 +76,37 @@ test("actions in jobs with id-token: write are pinned to a full commit SHA with 
   assert.deepEqual(problems, []);
 });
 
+// Every third-party action, in any job, is pinned the same way (DevSecOps
+// review 2026-10-17), here and in the templates services copy. PENDING_SHA
+// names the refs whose commit has not been resolved in this repository yet;
+// each must still be in use, so the list only shrinks.
+const PENDING_SHA = ["actions/dependency-review-action@v4", "github/codeql-action/init@v4", "github/codeql-action/analyze@v4"];
+const allWorkflowFiles = [...workflowFiles, "templates/legacy/monorepo/github-ci.yml"];
+
+test("every third-party action in every job is pinned to a full commit SHA with a version comment", () => {
+  const problems = [];
+  const pendingSeen = new Set();
+  for (const file of allWorkflowFiles) {
+    const text = fs.readFileSync(path.join(repo, file), "utf8");
+    const wf = YAML.parse(text);
+    for (const [id, job] of Object.entries(wf.jobs ?? {})) {
+      for (const step of job.steps ?? []) {
+        const uses = step.uses;
+        if (!uses || uses.startsWith("./") || uses.startsWith("docker://")) continue;
+        if (PENDING_SHA.includes(uses)) { pendingSeen.add(uses); continue; }
+        if (!SHA_PIN.test(uses)) {
+          problems.push(`${file} job ${id}: ${uses} is not pinned to a 40-hex commit SHA`);
+          continue;
+        }
+        const line = text.split("\n").find((l) => l.includes(`uses: ${uses}`));
+        if (!/#\s*v?\d+(\.\d+)*\s*$/.test(line ?? "")) problems.push(`${file} job ${id}: ${uses} needs a trailing "# <version>" comment`);
+      }
+    }
+  }
+  assert.deepEqual(problems, []);
+  assert.deepEqual([...pendingSeen].sort(), [...PENDING_SHA].sort(), "PENDING_SHA lists a ref no workflow uses any more");
+});
+
 test("the pin check itself rejects tags, branches and short SHAs", () => {
   for (const bad of ["actions/checkout@v4", "actions/checkout@main", "actions/checkout@11d5960", "aquasecurity/trivy-action@0.28.0"]) {
     assert.equal(SHA_PIN.test(bad), false, bad);

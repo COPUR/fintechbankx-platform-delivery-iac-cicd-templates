@@ -21,6 +21,12 @@ name: db-migration-verify
 on:
   workflow_call:
     inputs:
+      runner:
+        description: >-
+          Runner label for the jobs that hold no cloud credentials. Empty = the caller
+          repository's CI_RUNNER variable, else ubuntu-latest.
+        type: string
+        default: ""
       migration-locations:
         description: >-
           Space separated directories with V*.sql files, relative to the repo root.
@@ -55,7 +61,7 @@ permissions:
 jobs:
   migrate:
     name: db/migration-verify
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
@@ -70,24 +76,37 @@ jobs:
           POSTGRES_USER: migration_verify
           POSTGRES_PASSWORD: migration_verify
         ports:
-          - 5432:5432
+          - 5432
         options: >-
           --health-cmd "pg_isready -U migration_verify"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
+    # PGPORT and FLYWAY_URL come from the step 'Service container address'
+    # (GITHUB_ENV): the container publishes only its own port. Never set them
+    # here; a job env would also override GITHUB_ENV.
     env:
       # Throwaway credentials for the job-scoped container only.
       PGHOST: localhost
-      PGPORT: "5432"
       PGUSER: migration_verify
       PGPASSWORD: migration_verify
       FLYWAY_USER: migration_verify
       FLYWAY_PASSWORD: migration_verify
-      FLYWAY_URL: jdbc:postgresql://localhost:5432/${{ inputs.database }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Service container address
+        # Every fbx-ci runner shares one Docker host, so the container publishes only
+        # its container port and the mapped host port is read here.
+        env:
+          POSTGRES_PORT: ${{ job.services.postgres.ports['5432'] }}
+          DATABASE: ${{ inputs.database }}
+        run: |
+          set -euo pipefail
+          [ -n "$POSTGRES_PORT" ] || { echo "::error::the postgres service has no mapped port"; exit 1; }
+          echo "PGPORT=${POSTGRES_PORT}" >> "$GITHUB_ENV"
+          echo "FLYWAY_URL=jdbc:postgresql://localhost:${POSTGRES_PORT}/${DATABASE}" >> "$GITHUB_ENV"
 
       - name: Resolve migration locations
         id: locations

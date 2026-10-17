@@ -21,9 +21,23 @@ deployed or released yet. Callers pin every reusable workflow to a release
 commit SHA (`@<sha> # v1.0.0`; the sample callers name the tag `v1.0.0`, which
 is cut on merge) and pass the same release as `platform-ref`; Renovate or
 Dependabot bumps them. `@main` is for dev experiments only; `helm-deploy`
-rejects a branch `platform-ref` for prod. Actions in jobs that hold OIDC
-credentials are pinned to commit SHAs (checked by
+rejects a branch `platform-ref` for prod. Every third-party action is pinned
+to a commit SHA with its version as a comment, except the refs listed in
+`PENDING_SHA` until their commit is resolved (checked by
 `scripts/ci/test/workflow-supply-chain.test.mjs`).
+
+Runners: jobs that hold no cloud credentials run on the `runner` input, else
+the caller repository's `CI_RUNNER` variable, else `ubuntu-latest`. Jobs that
+hold AWS credentials (image push, Terraform plan and apply, Helm deploy) run on
+`cloud-runner`, else `CI_RUNNER_CLOUD`, else `ubuntu-latest`, so they land on
+the runner that pull request jobs share only when the caller says so.
+`ephemeral-env` uses `runner`, else `CI_RUNNER_ENV`. `container-image` builds
+`linux/amd64` by default, which an arm64 runner can only do with QEMU (binfmt)
+installed. Service containers publish only their container port: every fbx-ci
+runner shares one Docker host, so a step reads the mapped port and sets
+`TEST_DB_URL`, `TEST_MONGO_URI`, `PGPORT` and `FLYWAY_URL`. Tool downloads pick
+the release asset for the runner's architecture and check the pinned sha256 of
+the default version (checked by `scripts/ci/test/workflow-runners.test.mjs`).
 
 | Capability | Path | How a service uses it |
 |---|---|---|

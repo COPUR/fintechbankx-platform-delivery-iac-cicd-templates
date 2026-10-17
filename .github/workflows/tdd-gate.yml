@@ -20,6 +20,12 @@ name: tdd-gate
 on:
   workflow_call:
     inputs:
+      runner:
+        description: >-
+          Runner label for the jobs that hold no cloud credentials. Empty = the caller
+          repository's CI_RUNNER variable, else ubuntu-latest.
+        type: string
+        default: ""
       platform-repository:
         type: string
         default: COPUR/fintechbankx-platform-delivery-iac-cicd-templates
@@ -34,25 +40,25 @@ jobs:
   tdd-gate:
     name: ci/tdd-gate
     if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
       - name: Checkout pull request
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
       - name: Checkout gate script
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ inputs.platform-repository }}
           ref: ${{ inputs.platform-ref }}
           path: .fbx-platform
           sparse-checkout: scripts/ci
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
 

@@ -35,6 +35,12 @@ name: contract-checks
 on:
   workflow_call:
     inputs:
+      runner:
+        description: >-
+          Runner label for the jobs that hold no cloud credentials. Empty = the caller
+          repository's CI_RUNNER variable, else ubuntu-latest.
+        type: string
+        default: ""
       openapi-globs:
         description: Space separated git pathspecs for OpenAPI specs.
         type: string
@@ -93,7 +99,7 @@ permissions:
 jobs:
   openapi:
     name: contracts/openapi
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
@@ -104,12 +110,12 @@ jobs:
       NPM_CONFIG_CACHE: ${{ github.workspace }}/.npm-cache
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
 
@@ -187,10 +193,26 @@ jobs:
           OASDIFF_VERSION: ${{ inputs.oasdiff-version }}
         run: |
           set -euo pipefail
-          tmpdir="$(mktemp -d)"
-          curl -sSfL "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz" \
-            | tar -xz -C "$tmpdir"
-          sudo install "$tmpdir/oasdiff" /usr/local/bin/oasdiff
+          # Release asset for the runner's architecture (the fbx-ci runner is arm64).
+          # The sha256 of the default version 1.12.1 come from the release's own
+          # checksums file; any other version is downloaded with a warning and no
+          # pinned checksum. Tools go under RUNNER_TEMP, never a shared system path.
+          case "$(uname -m)" in
+            x86_64) arch=amd64; pinned=85514a6044d9cce53816b3558b17be4f784e481e43bf345b1029a6ccc5c0e439 ;;
+            aarch64|arm64) arch=arm64; pinned=eff7c6d6d361fc29085925f6871d8b41406baadede6b87a4a055a2b640ac8a05 ;;
+            *) echo "::error::no oasdiff build for runner architecture $(uname -m)"; exit 1 ;;
+          esac
+          [ "$OASDIFF_VERSION" = "1.12.1" ] || pinned=""
+          dir="$RUNNER_TEMP/fbx-tools/oasdiff"
+          mkdir -p "$dir"
+          curl -sSfL -o "$dir/oasdiff.tar.gz" "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_linux_${arch}.tar.gz"
+          if [ -n "$pinned" ]; then
+            echo "${pinned}  $dir/oasdiff.tar.gz" | sha256sum -c -
+          else
+            echo "::warning::no pinned sha256 for oasdiff $OASDIFF_VERSION on ${arch}; the download is not checksum-verified"
+          fi
+          tar -xz -C "$dir" -f "$dir/oasdiff.tar.gz"
+          echo "$dir" >> "$GITHUB_PATH"
 
       - name: Breaking-change guard (oasdiff + accepted-breaking allowlist)
         if: ${{ steps.specs.outputs.count != '0' }}
@@ -241,7 +263,7 @@ jobs:
 
   asyncapi:
     name: contracts/asyncapi
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read

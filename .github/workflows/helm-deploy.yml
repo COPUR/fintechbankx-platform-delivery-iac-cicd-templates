@@ -58,6 +58,20 @@ name: helm-deploy
 on:
   workflow_call:
     inputs:
+      runner:
+        description: >-
+          Runner label for the jobs that hold no cloud credentials. Empty = the caller
+          repository's CI_RUNNER variable, else ubuntu-latest.
+        type: string
+        default: ""
+      cloud-runner:
+        description: >-
+          Runner label for the jobs that hold AWS credentials (OIDC). Empty = the caller
+          repository's CI_RUNNER_CLOUD variable, else ubuntu-latest. Deliberately not
+          CI_RUNNER: a credential job lands on the runner shared with pull request jobs
+          only when the caller says so.
+        type: string
+        default: ""
       environment:
         description: GitHub environment and target environment (dev, staging, prod).
         type: string
@@ -157,7 +171,7 @@ permissions:
 jobs:
   validate:
     name: deploy/validate-${{ inputs.environment }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -268,10 +282,26 @@ jobs:
           KUBECONFORM_VERSION: ${{ inputs.kubeconform-version }}
         run: |
           set -euo pipefail
-          tmpdir="$(mktemp -d)"
-          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
-            | tar -xz -C "$tmpdir"
-          sudo install "$tmpdir/kubeconform" /usr/local/bin/kubeconform
+          # Release asset for the runner's architecture (the fbx-ci runner is arm64).
+          # The sha256 of the default version v0.6.7 come from the release's own
+          # checksums file; any other version is downloaded with a warning and no
+          # pinned checksum. Tools go under RUNNER_TEMP, never a shared system path.
+          case "$(uname -m)" in
+            x86_64) arch=amd64; pinned=95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73 ;;
+            aarch64|arm64) arch=arm64; pinned=dc82f79bb03c5479b1ae5fd4af221e4b5a3111f62bf01a2795d9c5c20fa96644 ;;
+            *) echo "::error::no kubeconform build for runner architecture $(uname -m)"; exit 1 ;;
+          esac
+          [ "$KUBECONFORM_VERSION" = "v0.6.7" ] || pinned=""
+          dir="$RUNNER_TEMP/fbx-tools/kubeconform"
+          mkdir -p "$dir"
+          curl -sSfL -o "$dir/kubeconform.tar.gz" "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-${arch}.tar.gz"
+          if [ -n "$pinned" ]; then
+            echo "${pinned}  $dir/kubeconform.tar.gz" | sha256sum -c -
+          else
+            echo "::warning::no pinned sha256 for kubeconform $KUBECONFORM_VERSION on ${arch}; the download is not checksum-verified"
+          fi
+          tar -xz -C "$dir" -f "$dir/kubeconform.tar.gz"
+          echo "$dir" >> "$GITHUB_PATH"
 
       - name: Bundle, lint, render and validate manifests
         id: bundle
@@ -345,7 +375,7 @@ jobs:
   deploy:
     name: deploy/${{ inputs.environment }}
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.cloud-runner || vars.CI_RUNNER_CLOUD || 'ubuntu-latest' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     environment: ${{ inputs.environment }}
     permissions:
