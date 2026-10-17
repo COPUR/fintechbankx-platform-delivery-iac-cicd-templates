@@ -319,28 +319,131 @@ test("cosign step fails closed: failed verification, tag instead of digest, unan
 
 // --- 4. downloads -------------------------------------------------------------------
 
-// Every curl or wget in a run: block saves the download to a file, and the first
-// thing the same block does with that file is an unconditional `sha256sum -c`,
-// before anything extracts, installs, moves or runs it (DevSecOps review
-// 2026-10-17). Piping a download (curl ... | tar, wget -O- | sh) or keeping it on
-// stdout fails. Applies to every workflow above, the legacy reference copy
-// included, and to the before_script, script and after_script lines of the GitLab
-// templates (each section is one shell session, checked as one block).
-// PENDING_DOWNLOADS lists the downloads allowed to fail the rule, each by the block
-// it is in and a part of its line, with the reason; every entry must still be
-// found, so the list only shrinks.
+// Every curl or wget in a run: block saves the download to a file, nothing after it
+// on its line uses that file, and the next line of the block is an unconditional
+// `sha256sum -c` of that file, before anything extracts, installs, moves or runs it
+// (DevSecOps review 2026-10-17). The check is a plain pipeline (no if, elif, while,
+// until, !, &&, ||, ; or &) and the block does not turn errexit off before it.
+// Piping a download (curl ... | tar, wget -O- | sh) or keeping it on stdout fails.
+// A download is a curl or wget command with an http(s):// URL argument, wherever it
+// runs: after an assignment prefix, a wrapper (timeout, command, env, nice, time,
+// exec, sudo), a keyword, inside $( ), backticks or { }, by path or quoted.
+// Applies to every workflow above, the legacy reference copy included, and to the
+// before_script, script and after_script lines of every GitLab CI file (each
+// section is one shell session, checked as one block). PENDING_DOWNLOADS lists the
+// downloads allowed to fail the rule, each by its block and the URL of its download,
+// with the reason; every entry must match exactly one download, so the list only
+// shrinks.
 const PENDING_DOWNLOADS = [
   { where: "templates/ci/gitlab/java23-quality-gates.yml job quality_gates before_script", download: "https://deb.nodesource.com/setup_22.x",
     reason: "an install script, not a release asset; replacing it changes how the template provisions Node" },
 ];
-const gitlabFiles = fs
-  .readdirSync(path.join(repo, "templates/ci/gitlab"))
-  .filter((f) => /\.ya?ml$/.test(f))
-  .map((f) => path.join("templates/ci/gitlab", f));
 
-const DOWNLOAD = /(?:^|[;&|(!]\s*|\b(?:then|do|else|if|exec|time)\s+)(?:sudo\s+)?(curl|wget)\s/;
+// The GitLab CI files: the templates in templates/ci/gitlab and every *gitlab-ci*.yml
+// elsewhere in the repository (ci/templates/*/gitlab-ci.yml, a .gitlab-ci.yml).
+const SKIP_DIRS = new Set([".git", "node_modules", ".cache", ".gradle", "build"]);
+function findGitlabFiles(dir = "") {
+  return fs.readdirSync(path.join(repo, dir), { withFileTypes: true }).flatMap((d) => {
+    const rel = path.join(dir, d.name);
+    if (d.isDirectory()) return SKIP_DIRS.has(d.name) ? [] : findGitlabFiles(rel);
+    if (!d.isFile() || !/\.ya?ml$/.test(d.name)) return [];
+    return dir === path.join("templates", "ci", "gitlab") || /gitlab-ci/i.test(d.name) ? [rel] : [];
+  });
+}
+const gitlabFiles = findGitlabFiles().sort();
+
+// Index of the ")" or "`" closing the substitution whose body starts at k, or `to`.
+function substitutionEnd(line, k, to, close) {
+  let depth = 0;
+  let quote = "";
+  for (; k < to; k++) {
+    const c = line[k];
+    if (c === "\\") k++;
+    else if (quote) { if (c === quote) quote = ""; }
+    else if (c === "'" || c === '"') quote = c;
+    else if (close === "`") { if (c === "`") return k; }
+    else if (c === "(") depth++;
+    else if (c === ")") { if (depth === 0) return k; depth--; }
+  }
+  return to;
+}
+
+// Splits one logical shell line into simple commands: { words: [{ text, start }], end },
+// offsets into the line. The bodies of $( ), <( ), >( ) and backticks, also inside
+// double quotes, are commands of their own; an unquoted # starts a comment.
+function simpleCommands(line, from = 0, to = line.length, out = []) {
+  let words = [];
+  let word = null;
+  const add = (k, text) => { word ??= { text: "", start: k }; word.text += text; };
+  const endWord = () => { if (word) words.push(word); word = null; };
+  const endCommand = (k) => { endWord(); if (words.length) out.push({ words, end: k }); words = []; };
+  const substitution = (k) => {
+    const open = line[k] === "`" ? 1 : 2;
+    const end = substitutionEnd(line, k + open, to, line[k] === "`" ? "`" : ")");
+    simpleCommands(line, k + open, end, out);
+    add(k, "$(...)");
+    return Math.min(end + 1, to);
+  };
+  const opensSubstitution = (k) => line[k] === "`" || (/[$<>]/.test(line[k]) && line[k + 1] === "(" && line[k + 2] !== "(");
+  let k = from;
+  while (k < to) {
+    const c = line[k];
+    if (c === "\\") { add(k, line.slice(k, k + 2)); k += 2; }
+    else if (c === "'") {
+      const e = line.indexOf("'", k + 1);
+      const stop = e < 0 || e >= to ? to : e + 1;
+      add(k, line.slice(k, stop));
+      k = stop;
+    } else if (c === '"') {
+      add(k, c);
+      k++;
+      while (k < to && line[k] !== '"') {
+        if (line[k] === "\\") { add(k, line.slice(k, k + 2)); k += 2; }
+        else if (line[k] === "`" || (line[k] === "$" && line[k + 1] === "(" && line[k + 2] !== "(")) k = substitution(k);
+        else { add(k, line[k]); k++; }
+      }
+      if (k < to) { add(k, '"'); k++; }
+    } else if (opensSubstitution(k)) k = substitution(k);
+    else if (/\s/.test(c)) { endWord(); k++; }
+    else if (c === "#" && !word) break;
+    else if (c === "&" && (line[k - 1] === ">" || line[k - 1] === "<" || line[k + 1] === ">")) { add(k, c); k++; }
+    else if (";&|()".includes(c)) { endCommand(k); k++; }
+    else { add(k, c); k++; }
+  }
+  endCommand(to);
+  return out;
+}
+
+const DOWNLOAD_TOOLS = new Set(["curl", "wget"]);
+const COMMAND_KEYWORDS = new Set(["if", "elif", "while", "until", "then", "do", "else", "!", "{", "}"]);
+const COMMAND_WRAPPERS = new Set(["timeout", "command", "env", "nice", "time", "exec", "sudo", "nohup"]);
+const plainWord = (w) => w.text.replace(/\\(.)/g, "$1").replace(/["']/g, "");
+const commandName = (w) => plainWord(w).split("/").pop();
+
+// The downloads on one logical line: each curl or wget command (directly, or run by a
+// wrapper) that has an http(s):// URL argument.
+function lineDownloads(line) {
+  const downloads = [];
+  for (const { words, end } of simpleCommands(line)) {
+    let j = 0;
+    while (j < words.length && (COMMAND_KEYWORDS.has(plainWord(words[j])) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[j].text))) j++;
+    if (j >= words.length) continue;
+    let at = -1;
+    if (DOWNLOAD_TOOLS.has(commandName(words[j]))) at = j;
+    else if (COMMAND_WRAPPERS.has(commandName(words[j]))) at = words.findIndex((w, n) => n > j && DOWNLOAD_TOOLS.has(commandName(w)));
+    if (at < 0) continue;
+    const url = words.slice(at + 1).map((w) => plainWord(w).match(/https?:\/\/\S*/i)).find(Boolean);
+    if (url) downloads.push({ tool: commandName(words[at]), start: words[at].start, end, url: url[0] });
+  }
+  return downloads;
+}
+
 const unquote = (s) => s.replace(/^(["'])(.*)\1$/, "$2");
+// One spelling for a path: no quotes, ${name} written as $name.
+const samePath = (s) => s.replace(/["']/g, "").replace(/\$\{(\w+)\}/g, "$$$1");
+const ERREXIT_OFF = /(^|[\s;&|({])set\s+(?:-\S*\s+)*(?:\+[A-Za-z]*e|\+o\s+errexit\b)/;
 
+// One problem per download that breaks the rule: { url, message }.
 function downloadProblems(run) {
   const problems = [];
   const lines = String(run)
@@ -349,25 +452,28 @@ function downloadProblems(run) {
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("#"));
   lines.forEach((line, i) => {
-    const m = line.match(DOWNLOAD);
-    if (!m) return;
-    const rest = line.slice(m.index + m[0].length - 1);
-    const tool = m[1];
-    if (/(^|[^|])\|(?!\|)/.test(rest)) return problems.push(`${tool} pipes the download into another command: ${line}`);
-    const out = tool === "curl"
-      ? rest.match(/\s(?:--output[ =]|-[A-Za-z]*o\s+)("[^"]+"|'[^']+'|[^\s;&|)]+)/)
-      : rest.match(/\s(?:--output-document[ =]|-[A-Za-z]*O\s*)("[^"]+"|'[^']+'|[^\s;&|)]+)/);
-    const file = out ? unquote(out[1]) : "";
-    if (!file || file === "-") return problems.push(`${tool} does not save the download to a file: ${line}`);
-    const next = lines.findIndex((l, k) => k > i && l.includes(file));
-    const check = next < 0 ? "" : lines[next];
-    if (next < 0 || !/\bsha256sum\b.*(\s-c\b|\s--check\b)/.test(check)) {
-      return problems.push(`${file} is ${next < 0 ? "never checked" : `used before it is checked: ${check}`}`);
-    }
-    if (/&&|\|\|/.test(check)) return problems.push(`the check of ${file} is conditional or its failure is ignored: ${check}`);
-    const between = lines.slice(i + 1, next);
-    if (between.some((l) => /^(if|elif|else|fi|case|esac|then)\b|;;\s*$/.test(l))) {
-      return problems.push(`the check of ${file} sits in a branch, so a path can skip it: ${between.join(" / ")}`);
+    for (const { tool, start, end, url } of lineDownloads(line)) {
+      const problem = (message) => problems.push({ url, message });
+      const rest = line.slice(start);
+      if (/(^|[^|])\|(?!\|)/.test(rest)) { problem(`${tool} pipes the download into another command: ${line}`); continue; }
+      const command = line.slice(start, end);
+      const out = tool === "curl"
+        ? command.match(/\s(?:--output[ =]|-[A-Za-z]*o\s+)("[^"]+"|'[^']+'|[^\s;&|)]+)/)
+        : command.match(/\s(?:--output-document[ =]|-[A-Za-z]*O\s*)("[^"]+"|'[^']+'|[^\s;&|)]+)/);
+      const file = out ? samePath(unquote(out[1])) : "";
+      if (!file || file === "-") { problem(`${tool} does not save the download to a file: ${line}`); continue; }
+      if (samePath(line.slice(end)).includes(file.split("/").pop())) { problem(`${file} is used on the download's own line, before it is checked: ${line}`); continue; }
+      const check = lines[i + 1] ?? "";
+      if (!/\bsha256sum\b.*(\s-c\b|\s--check\b)/.test(check) || !samePath(check).includes(file)) {
+        problem(`the line after the download of ${file} is not its sha256sum -c check: ${check || "(none)"}`);
+        continue;
+      }
+      if (/^(if|elif|while|until)\b|(^|\s)!(\s|$)|&&|\|\||;|(^|[^&<>])&(?![&>])/.test(check)) {
+        problem(`the check of ${file} is not a plain sha256sum -c pipeline, so its failure can be ignored: ${check}`);
+        continue;
+      }
+      const off = lines.slice(0, i + 2).find((l) => ERREXIT_OFF.test(l));
+      if (off) problem(`the block turns errexit off before the check of ${file}: ${off}`);
     }
   });
   return problems;
@@ -399,22 +505,33 @@ function downloadBlocks() {
   return blocks;
 }
 
-test("every curl or wget download in a run: block or GitLab script is checked with sha256sum -c before it is extracted or installed", () => {
-  assert.ok(gitlabFiles.length > 0, "the GitLab templates are scanned");
-  const blocks = downloadBlocks();
-  assert.ok(blocks.some((b) => b.where.startsWith("templates/ci/gitlab/") && /gitleaks/.test(b.run)), "the GitLab gitleaks install is among the scanned blocks");
+// The problems left once PENDING_DOWNLOADS is applied: each entry suppresses the one
+// download in its block whose URL is the entry's, and is itself a problem when it
+// matches no download or more than one.
+function unlistedDownloadProblems(blocks, pendingList = PENDING_DOWNLOADS) {
   const problems = [];
-  const pendingSeen = new Set();
+  const matched = new Map(pendingList.map((e) => [e, 0]));
   for (const { where, run } of blocks) {
     for (const p of downloadProblems(run)) {
-      const pending = PENDING_DOWNLOADS.find((e) => e.where === where && p.includes(e.download));
-      if (pending) pendingSeen.add(pending);
-      else problems.push(`${where}: ${p}`);
+      const pending = pendingList.find((e) => e.where === where && e.download === p.url);
+      if (pending) matched.set(pending, matched.get(pending) + 1);
+      else problems.push(`${where}: ${p.message}`);
     }
   }
-  assert.deepEqual(problems, []);
+  for (const [e, n] of matched) {
+    if (n !== 1) problems.push(`PENDING_DOWNLOADS entry ${e.download} matches ${n} downloads in ${e.where}, not exactly one${n === 0 ? "; remove the entry" : ""}`);
+  }
+  return problems;
+}
+
+test("every curl or wget download in a run: block or GitLab script is checked with sha256sum -c before it is extracted or installed", () => {
+  for (const f of ["templates/ci/gitlab/java23-quality-gates.yml", "ci/templates/microservice/gitlab-ci.yml", "ci/templates/bounded-context/gitlab-ci.yml"]) {
+    assert.ok(gitlabFiles.includes(f), `the GitLab CI file ${f} is scanned`);
+  }
+  const blocks = downloadBlocks();
+  assert.ok(blocks.some((b) => b.where.startsWith("templates/ci/gitlab/") && /gitleaks/.test(b.run)), "the GitLab gitleaks install is among the scanned blocks");
+  assert.deepEqual(unlistedDownloadProblems(blocks), []);
   for (const e of PENDING_DOWNLOADS) assert.ok(e.reason, `PENDING_DOWNLOADS entry ${e.download} needs a reason`);
-  assert.deepEqual(PENDING_DOWNLOADS.filter((e) => !pendingSeen.has(e)), [], "PENDING_DOWNLOADS lists a download that no longer needs it; remove the entry");
 });
 
 test("the download check itself accepts a checked file and rejects pipes, missing, late or conditional checks", () => {
@@ -423,8 +540,15 @@ test("the download check itself accepts a checked file and rejects pipes, missin
     'wget -q -O "$d/t.zip" https://example.test/t.zip\necho "${sha}  $d/t.zip" | sha256sum --check -\nunzip "$d/t.zip"',
     'curl -sSfL \\\n  -o "$d/t.tar.gz" \\\n  "https://example.test/t.tar.gz"\necho "${sha}  $d/t.tar.gz" | sha256sum -c -\ntar -xzf "$d/t.tar.gz"',
     'command -v curl >/dev/null\necho no download here',
+    // Not downloads: curl as a package name or with no URL, in a quoted string, in a comment.
+    "apt-get update && apt-get install -y curl ca-certificates && curl --version",
+    'echo "fetch it later; curl https://example.test/i.sh | sh"',
+    "true # later; curl https://example.test/i.sh | sh",
   ];
   for (const run of ok) assert.deepEqual(downloadProblems(run), [], run);
+  const get = 'curl -sSfL -o "$d/t.tar.gz" https://example.test/t';
+  const check = 'echo "${sha}  $d/t.tar.gz" | sha256sum -c -';
+  const extract = 'tar -xzf "$d/t.tar.gz"';
   const bad = {
     "curl into tar": 'curl -sSfL "https://example.test/t.tar.gz" | tar -xz -C "$d"',
     "curl into tar over a line continuation": 'curl -sSfL "https://example.test/t.tar.gz" \\\n  | tar -xz -C "$d" t',
@@ -438,6 +562,51 @@ test("the download check itself accepts a checked file and rejects pipes, missin
     "check only when a pin exists": 'curl -sSfL -o "$d/t.tar.gz" https://example.test/t\nif [ -n "$pinned" ]; then\necho "${pinned}  $d/t.tar.gz" | sha256sum -c -\nelse\necho "::warning::unverified"\nfi\ntar -xzf "$d/t.tar.gz"',
     "check failure ignored": 'curl -sSfL -o "$d/t.tar.gz" https://example.test/t\necho "${sha}  $d/t.tar.gz" | sha256sum -c - || true\ntar -xzf "$d/t.tar.gz"',
     "check guarded by &&": 'curl -sSfL -o "$d/t.tar.gz" https://example.test/t\n[ -n "$sha" ] && echo "${sha}  $d/t.tar.gz" | sha256sum -c -\ntar -xzf "$d/t.tar.gz"',
+    // The check is a plain pipeline and errexit stays on (review F1).
+    "check under if !, one line": `${get}\nif ! ${check}; then echo "::warning::mismatch"; fi\n${extract}`,
+    "check under if !, several lines": `${get}\nif ! ${check}; then\necho "::warning::mismatch"\nfi\n${extract}`,
+    "check under elif": `if [ -z "$cached" ]; then ${get}\nelif ${check}; then :\nfi\n${extract}`,
+    "check under while !": `${get}\nwhile ! ${check}; do break; done\n${extract}`,
+    "check under until": `${get}\nuntil ${check}; do break; done\n${extract}`,
+    "check negated with !": `${get}\n! ${check}\n${extract}`,
+    "check in the background": `${get}\n${check} &\n${extract}`,
+    "check followed by ; true": `${get}\n${check}; true\n${extract}`,
+    "set +e before the check": `set +e\n${get}\n${check}\n${extract}`,
+    "set +o errexit before the check": `set +o errexit\n${get}\n${check}\n${extract}`,
+    // A curl or wget command anywhere on the line is a download (review F2).
+    "assignment prefix": 'GH_HOST=github.com curl -sSfL "https://example.test/t.tar.gz" | tar -xz -C "$d"',
+    "timeout": "timeout 60 curl -sSfL https://example.test/i.sh | sh",
+    "command": "command curl -sSfL https://example.test/i.sh | sh",
+    "env": "env FOO=1 wget -qO- https://example.test/i.sh | sh",
+    "nice": "nice -n 5 curl -sSfL https://example.test/i.sh | sh",
+    "time -p": "time -p curl -sSfL https://example.test/i.sh | sh",
+    "sudo with an option": "sudo -E curl -sSfL https://example.test/i.sh | sh",
+    "path": "/usr/bin/curl -sSfL https://example.test/i.sh | sh",
+    "leading backslash": "\\curl -sSfL https://example.test/i.sh | sh",
+    "quoted command": '"curl" -sSfL https://example.test/i.sh | sh',
+    "backticks": "v=`curl -sSf https://example.test/t`",
+    "brace group": "{ curl -sSfL https://example.test/i.sh; } | bash",
+    "elif": "if [ -n \"$x\" ]; then :; elif curl -sSfL https://example.test/i.sh | sh; then :; fi",
+    "while": "while curl -sSfL https://example.test/i.sh | sh; do break; done",
+    "until": "until curl -sSfL https://example.test/i.sh | sh; do sleep 1; done",
+    // The check is the next line; nothing after the download on its line uses it (review F3).
+    "use spelled ${d} before the check": `${get}\ntar -xzf "\${d}/t.tar.gz"\n${check}`,
+    'use spelled "$d"/ before the check': `${get}\ntar -xzf "$d"/t.tar.gz\n${check}`,
+    "use from inside the directory before the check": `${get}\n(cd "$d" && tar -xzf t.tar.gz)\n${check}`,
+    "use on the download's own line": `${get} && tar -xzf "$d"/t.tar.gz\n${check}`,
+    // Every download on a line is checked (review F4).
+    "second download on the line, unchecked": 'curl -sSfL -o "$d/a.tgz" https://example.test/a; curl -sSfL -o "$d/b.tgz" https://example.test/b\necho "${sha}  $d/a.tgz" | sha256sum -c -\ntar -xzf "$d/a.tgz"; tar -xzf "$d/b.tgz"',
   };
   for (const [name, run] of Object.entries(bad)) assert.notDeepEqual(downloadProblems(run), [], name);
+});
+
+test("a PENDING_DOWNLOADS entry suppresses exactly the one download it names", () => {
+  const where = "templates/ci/gitlab/java23-quality-gates.yml job quality_gates before_script";
+  const nodesource = "curl -fsSL https://deb.nodesource.com/setup_22.x | bash -";
+  assert.deepEqual(unlistedDownloadProblems([{ where, run: nodesource }]), []);
+  const cases = {
+    "a second download on the NodeSource line": `${nodesource} && curl -fsSL https://get.example.test/install.sh | sh`,
+    "the NodeSource download twice": `${nodesource}\n${nodesource}`,
+  };
+  for (const [name, run] of Object.entries(cases)) assert.notDeepEqual(unlistedDownloadProblems([{ where, run }]), [], name);
 });
