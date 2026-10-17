@@ -37,10 +37,24 @@ jobs:
       - name: Install actionlint
         run: |
           set -euo pipefail
-          tmpdir="$(mktemp -d)"
-          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
-            | tar -xz -C "$tmpdir" actionlint
-          sudo install "$tmpdir/actionlint" /usr/local/bin/actionlint
+          # Release asset for the runner's architecture, checked against the sha256
+          # from the release's own checksums file before it is extracted. Another
+          # version or architecture fails until its sha256 are added here.
+          case "$(uname -m)" in
+            x86_64) arch=amd64; sha=023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757 ;;
+            aarch64|arm64) arch=arm64; sha=401942f9c24ed71e4fe71b76c7d638f66d8633575c4016efd2977ce7c28317d0 ;;
+            *) echo "::error::no actionlint build for runner architecture $(uname -m)"; exit 1 ;;
+          esac
+          if [ "$ACTIONLINT_VERSION" != "1.7.7" ]; then
+            echo "::error::no pinned sha256 for actionlint $ACTIONLINT_VERSION; add the release's sha256 for each architecture to this step"
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/fbx-tools/actionlint"
+          mkdir -p "$dir"
+          curl -sSfL -o "$dir/actionlint.tar.gz" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_${arch}.tar.gz"
+          echo "${sha}  $dir/actionlint.tar.gz" | sha256sum -c -
+          tar -xz -C "$dir" -f "$dir/actionlint.tar.gz" actionlint
+          echo "$dir" >> "$GITHUB_PATH"
       - name: Lint workflows (shellcheck is preinstalled on the runner)
         run: bash scripts/ci/lint-workflows.sh
 
@@ -59,10 +73,24 @@ jobs:
       - name: Install kubeconform
         run: |
           set -euo pipefail
-          tmpdir="$(mktemp -d)"
-          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
-            | tar -xz -C "$tmpdir"
-          sudo install "$tmpdir/kubeconform" /usr/local/bin/kubeconform
+          # Release asset for the runner's architecture, checked against the sha256
+          # from the release's own checksums file before it is extracted. Another
+          # version or architecture fails until its sha256 are added here.
+          case "$(uname -m)" in
+            x86_64) arch=amd64; sha=95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73 ;;
+            aarch64|arm64) arch=arm64; sha=dc82f79bb03c5479b1ae5fd4af221e4b5a3111f62bf01a2795d9c5c20fa96644 ;;
+            *) echo "::error::no kubeconform build for runner architecture $(uname -m)"; exit 1 ;;
+          esac
+          if [ "$KUBECONFORM_VERSION" != "v0.6.7" ]; then
+            echo "::error::no pinned sha256 for kubeconform $KUBECONFORM_VERSION; add the release's sha256 for each architecture to this step"
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/fbx-tools/kubeconform"
+          mkdir -p "$dir"
+          curl -sSfL -o "$dir/kubeconform.tar.gz" "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-${arch}.tar.gz"
+          echo "${sha}  $dir/kubeconform.tar.gz" | sha256sum -c -
+          tar -xz -C "$dir" -f "$dir/kubeconform.tar.gz"
+          echo "$dir" >> "$GITHUB_PATH"
       - name: Install helm-unittest
         run: helm plugin install https://github.com/helm-unittest/helm-unittest --version "${HELM_UNITTEST_VERSION}"
       - run: npm ci

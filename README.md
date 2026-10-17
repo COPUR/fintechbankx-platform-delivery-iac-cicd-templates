@@ -38,7 +38,12 @@ image of `db-migration-verify` is multi-arch; its `-alpine` tags are amd64 only.
 runner shares one Docker host, so a step reads the mapped port and sets
 `TEST_DB_URL`, `TEST_MONGO_URI`, `PGPORT` and `FLYWAY_URL`. Tool downloads pick
 the release asset for the runner's architecture and check the pinned sha256 of
-the default version (checked by `scripts/ci/test/workflow-runners.test.mjs`).
+the default version; another `oasdiff-version`, `gitleaks-version` or
+`kubeconform-version` needs the sha256 of that asset in `oasdiff-sha256`,
+`gitleaks-sha256` or `kubeconform-sha256`, else the step fails before it
+downloads anything (checked by `scripts/ci/test/workflow-runners.test.mjs`).
+Every curl or wget download in a GitHub workflow here is checked with `sha256sum -c`
+before it is extracted (checked by `scripts/ci/test/workflow-supply-chain.test.mjs`).
 
 | Capability | Path | How a service uses it |
 |---|---|---|

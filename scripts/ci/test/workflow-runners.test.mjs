@@ -13,8 +13,11 @@
 //      never sets a name a step writes to GITHUB_ENV (the job env would win);
 //   3. tool downloads pick the release asset for the runner's architecture
 //      (the fbx-ci runner is arm64) and check the pinned sha256 of the default
-//      version before anything is extracted; container images a job runs by
-//      default have an arm64 variant.
+//      version before anything is extracted. Another version is checked against
+//      the tool's <tool>-sha256 input, and fails closed before any download when
+//      that input is empty; this repository's own install steps (actionlint,
+//      kubeconform, gitleaks) accept no other version. Container images a job
+//      runs by default have an arm64 variant.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -175,16 +178,38 @@ test("db-migration-verify's default Flyway image has an arm64 variant", () => {
 
 // Release sha256 of each default version, from the releases' own checksum files
 // (the same pins as the governance runner snippet tool-downloads-by-arch).
+// url(version, assetArch) is the release asset; archTok maps uname -m to assetArch.
 const TOOLS = [
-  { file: "contract-checks.yml", job: "openapi", step: "Install oasdiff", versionEnv: "OASDIFF_VERSION", version: "1.12.1", bin: "oasdiff",
-    asset: { x86_64: "oasdiff_1.12.1_linux_amd64.tar.gz", aarch64: "oasdiff_1.12.1_linux_arm64.tar.gz" },
+  { file: "contract-checks.yml", job: "openapi", step: "Install oasdiff", versionEnv: "OASDIFF_VERSION", version: "1.12.1", override: "1.13.0",
+    shaEnv: "OASDIFF_SHA256", shaInput: "oasdiff-sha256", bin: "oasdiff", archTok: { x86_64: "amd64", aarch64: "arm64" },
+    url: (v, a) => `https://github.com/oasdiff/oasdiff/releases/download/v${v}/oasdiff_${v}_linux_${a}.tar.gz`,
     sha: { x86_64: "85514a6044d9cce53816b3558b17be4f784e481e43bf345b1029a6ccc5c0e439", aarch64: "eff7c6d6d361fc29085925f6871d8b41406baadede6b87a4a055a2b640ac8a05" } },
-  { file: "security.yml", job: "gitleaks", step: "Install gitleaks", versionEnv: "GITLEAKS_VERSION", version: "8.24.3", bin: "gitleaks",
-    asset: { x86_64: "gitleaks_8.24.3_linux_x64.tar.gz", aarch64: "gitleaks_8.24.3_linux_arm64.tar.gz" },
+  { file: "security.yml", job: "gitleaks", step: "Install gitleaks", versionEnv: "GITLEAKS_VERSION", version: "8.24.3", override: "8.25.0",
+    shaEnv: "GITLEAKS_SHA256", shaInput: "gitleaks-sha256", bin: "gitleaks", archTok: { x86_64: "x64", aarch64: "arm64" },
+    url: (v, a) => `https://github.com/gitleaks/gitleaks/releases/download/v${v}/gitleaks_${v}_linux_${a}.tar.gz`,
     sha: { x86_64: "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c", aarch64: "5f2edbe1f49f7b920f9e06e90759947d3c5dfc16f752fb93aaafc17e9d14cf07" } },
-  { file: "helm-deploy.yml", job: "validate", step: "Install kubeconform", versionEnv: "KUBECONFORM_VERSION", version: "v0.6.7", bin: "kubeconform",
-    asset: { x86_64: "kubeconform-linux-amd64.tar.gz", aarch64: "kubeconform-linux-arm64.tar.gz" },
+  { file: "helm-deploy.yml", job: "validate", step: "Install kubeconform", versionEnv: "KUBECONFORM_VERSION", version: "v0.6.7", override: "v0.7.0",
+    shaEnv: "KUBECONFORM_SHA256", shaInput: "kubeconform-sha256", bin: "kubeconform", archTok: { x86_64: "amd64", aarch64: "arm64" },
+    url: (v, a) => `https://github.com/yannh/kubeconform/releases/download/${v}/kubeconform-linux-${a}.tar.gz`,
     sha: { x86_64: "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73", aarch64: "dc82f79bb03c5479b1ae5fd4af221e4b5a3111f62bf01a2795d9c5c20fa96644" } },
+];
+
+// The install steps of this repository's own workflows (delivery-templates-ci and
+// required-gates): the version is fixed in the workflow and has no override, so any
+// other version fails until its pins are added. Pins from each release's checksum file.
+const OWN_TOOLS = [
+  { file: "delivery-templates-ci.yml", job: "actionlint", step: "Install actionlint", versionEnv: "ACTIONLINT_VERSION", version: "1.7.7", bin: "actionlint",
+    archTok: { x86_64: "amd64", aarch64: "arm64" },
+    url: (v, a) => `https://github.com/rhysd/actionlint/releases/download/v${v}/actionlint_${v}_linux_${a}.tar.gz`,
+    sha: { x86_64: "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757", aarch64: "401942f9c24ed71e4fe71b76c7d638f66d8633575c4016efd2977ce7c28317d0" } },
+  { file: "delivery-templates-ci.yml", job: "helm-chart", step: "Install kubeconform", versionEnv: "KUBECONFORM_VERSION", version: "v0.6.7", bin: "kubeconform",
+    archTok: { x86_64: "amd64", aarch64: "arm64" },
+    url: (v, a) => `https://github.com/yannh/kubeconform/releases/download/${v}/kubeconform-linux-${a}.tar.gz`,
+    sha: { x86_64: "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73", aarch64: "dc82f79bb03c5479b1ae5fd4af221e4b5a3111f62bf01a2795d9c5c20fa96644" } },
+  { file: "required-gates.yml", job: "security", step: "Install gitleaks", versionEnv: "GITLEAKS_VERSION", version: "8.24.3", bin: "gitleaks",
+    archTok: { x86_64: "x64", aarch64: "arm64" },
+    url: (v, a) => `https://github.com/gitleaks/gitleaks/releases/download/v${v}/gitleaks_${v}_linux_${a}.tar.gz`,
+    sha: { x86_64: "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c", aarch64: "5f2edbe1f49f7b920f9e06e90759947d3c5dfc16f752fb93aaafc17e9d14cf07" } },
 ];
 
 // Stubs for uname, curl, sha256sum and tar that log their calls; tar creates the binary.
@@ -195,40 +220,97 @@ function stubs(arch, shaExit = 0) {
   write("uname", `[ "$1" = "-m" ] && echo ${arch} || echo Linux`);
   write("curl", `echo "curl $*" >> ${log}; out=""; while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done; [ -n "$out" ] && echo fake > "$out"; exit 0`);
   write("sha256sum", `echo "sha256sum $* <<$(cat)" >> ${log}; exit ${shaExit}`);
-  write("tar", `echo "tar $*" >> ${log}; dir=""; while [ $# -gt 0 ]; do [ "$1" = "-C" ] && dir="$2"; shift; done; for b in oasdiff gitleaks kubeconform; do touch "$dir/$b"; chmod +x "$dir/$b"; done`);
+  write("tar", `echo "tar $*" >> ${log}; dir=""; while [ $# -gt 0 ]; do [ "$1" = "-C" ] && dir="$2"; shift; done; for b in oasdiff gitleaks kubeconform actionlint; do touch "$dir/$b"; chmod +x "$dir/$b"; done`);
   return { bin, log: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "") };
+}
+const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Runs the step on both architectures and checks: the asset for the architecture is
+// downloaded to a file under RUNNER_TEMP, checked against wantSha before tar runs,
+// and the tool directory is added to GITHUB_PATH.
+function assertVerifiedInstall(t, run, env, version, wantSha) {
+  for (const arch of ["x86_64", "aarch64"]) {
+    const s = stubs(arch);
+    const r = runScript(run, env, s.bin);
+    assert.equal(r.status, 0, r.out);
+    const calls = s.log();
+    assert.match(calls, new RegExp(`^curl .*-o [^ ]+ ${reEscape(t.url(version, t.archTok[arch]))}$`, "m"), calls);
+    assert.match(calls, new RegExp(`^sha256sum -c - <<${wantSha[arch]}  ${reEscape(r.dir)}/runner-temp/`, "m"), calls);
+    assert.ok(calls.indexOf("sha256sum") < calls.indexOf("tar "), "checksum before extract");
+    assert.equal(r.path.length, 1, "the tool directory is added to GITHUB_PATH");
+    assert.ok(r.path[0].startsWith(path.join(r.dir, "runner-temp")), `tools go under RUNNER_TEMP, got ${r.path[0]}`);
+    assert.ok(fs.existsSync(path.join(r.path[0], t.bin)), `${t.bin} is in the GITHUB_PATH directory`);
+  }
+}
+// A checksum mismatch and an unsupported architecture fail before anything is extracted.
+function assertFailsClosed(run, env) {
+  const bad = stubs("aarch64", 1);
+  const mismatch = runScript(run, env, bad.bin);
+  assert.notEqual(mismatch.status, 0, "a checksum mismatch fails the step");
+  assert.doesNotMatch(bad.log(), /^tar /m, "nothing is extracted after a mismatch");
+  const odd = stubs("riscv64");
+  const unsupported = runScript(run, env, odd.bin);
+  assert.notEqual(unsupported.status, 0);
+  assert.match(unsupported.out, /::error::.*riscv64/);
+  assert.equal(odd.log(), "", "nothing is downloaded for an unsupported architecture");
 }
 
 for (const t of TOOLS) {
-  test(`${t.file} '${t.step}' downloads the ${t.bin} asset for the runner architecture and checks its pinned sha256`, () => {
+  const stepOf = () => {
     const wf = load(t.file);
     const step = stepNamed(wf.jobs[t.job], t.step);
     assert.ok(step, `${t.file} job ${t.job}: step '${t.step}' missing`);
+    return { wf, step };
+  };
+
+  test(`${t.file} '${t.step}' downloads the default ${t.bin} for the runner architecture and checks its pinned sha256`, () => {
+    const { step } = stepOf();
     assert.match(String(step.env?.[t.versionEnv]), /\$\{\{ inputs\.[a-z-]+-version \}\}/, `${t.step} reads its version from an input`);
-    for (const arch of ["x86_64", "aarch64"]) {
-      const s = stubs(arch);
-      const r = runScript(step.run, { [t.versionEnv]: t.version }, s.bin);
-      assert.equal(r.status, 0, r.out);
-      const calls = s.log();
-      assert.match(calls, new RegExp(`curl .*/${t.asset[arch].replace(/[.]/g, "\\.")}( |$)`, "m"), calls);
-      assert.match(calls, new RegExp(`sha256sum -c - <<${t.sha[arch]}  `), calls);
-      assert.ok(calls.indexOf("sha256sum") < calls.indexOf("tar "), "checksum before extract");
-      assert.equal(r.path.length, 1, "the tool directory is added to GITHUB_PATH");
-      assert.ok(r.path[0].startsWith(path.join(r.dir, "runner-temp")), `tools go under RUNNER_TEMP, got ${r.path[0]}`);
-      assert.ok(fs.existsSync(path.join(r.path[0], t.bin)), `${t.bin} is in the GITHUB_PATH directory`);
+    assertVerifiedInstall(t, step.run, { [t.versionEnv]: t.version, [t.shaEnv]: "" }, t.version, t.sha);
+    assertFailsClosed(step.run, { [t.versionEnv]: t.version, [t.shaEnv]: "" });
+    // The sha input does not replace the pin of the default version.
+    const other = "0".repeat(64);
+    assertVerifiedInstall(t, step.run, { [t.versionEnv]: t.version, [t.shaEnv]: other }, t.version, t.sha);
+  });
+
+  test(`${t.file} '${t.step}': another ${t.bin} version is checked against the ${t.shaInput} input and fails closed without it`, () => {
+    const { wf, step } = stepOf();
+    const input = wf.on.workflow_call.inputs[t.shaInput];
+    assert.ok(input, `${t.file}: input ${t.shaInput} missing`);
+    assert.equal(input.type, "string");
+    assert.equal(input.default, "");
+    assert.match(String(input.description ?? ""), /sha256/);
+    assert.equal(step.env?.[t.shaEnv], `\${{ inputs.${t.shaInput} }}`, `${t.step} reads the sha256 from input ${t.shaInput}`);
+
+    for (const sha of ["", "   ", "not-a-sha", "a".repeat(63), `${"a".repeat(64)} x`]) {
+      const s = stubs("aarch64");
+      const r = runScript(step.run, { [t.versionEnv]: t.override, [t.shaEnv]: sha }, s.bin);
+      assert.notEqual(r.status, 0, `an override with sha ${JSON.stringify(sha)} must fail`);
+      assert.match(r.out, new RegExp(`::error::.*${t.shaInput}`), r.out);
+      assert.equal(s.log(), "", `nothing is downloaded, checked or extracted for sha ${JSON.stringify(sha)}`);
+      assert.deepEqual(r.path, []);
     }
-    const bad = stubs("aarch64", 1);
-    const mismatch = runScript(step.run, { [t.versionEnv]: t.version }, bad.bin);
-    assert.notEqual(mismatch.status, 0, "a checksum mismatch fails the step");
-    assert.doesNotMatch(bad.log(), /^tar /m, "nothing is extracted after a mismatch");
-    const odd = stubs("riscv64");
-    const unsupported = runScript(step.run, { [t.versionEnv]: t.version }, odd.bin);
-    assert.notEqual(unsupported.status, 0);
-    assert.match(unsupported.out, /::error::.*riscv64/);
-    const other = stubs("aarch64");
-    const unpinned = runScript(step.run, { [t.versionEnv]: "9.9.9" }, other.bin);
-    assert.equal(unpinned.status, 0, unpinned.out);
-    assert.match(unpinned.out, /::warning::.*no pinned sha256/);
-    assert.doesNotMatch(other.log(), /sha256sum/);
+
+    // The caller passes the sha256 of the asset for its runner's architecture.
+    const given = "1a".repeat(32);
+    assertVerifiedInstall(t, step.run, { [t.versionEnv]: t.override, [t.shaEnv]: given }, t.override, { x86_64: given, aarch64: given });
+    assertFailsClosed(step.run, { [t.versionEnv]: t.override, [t.shaEnv]: given });
+  });
+}
+
+for (const t of OWN_TOOLS) {
+  test(`${t.file} '${t.step}' downloads ${t.bin} ${t.version} for the runner architecture, checks its sha256 and refuses other versions`, () => {
+    const wf = load(t.file);
+    const step = stepNamed(wf.jobs[t.job], t.step);
+    assert.ok(step, `${t.file} job ${t.job}: step '${t.step}' missing`);
+    assert.equal(String(step.env?.[t.versionEnv] ?? wf.env?.[t.versionEnv]), t.version, `${t.versionEnv} is ${t.version}`);
+    assert.doesNotMatch(step.run, /\bsudo\b/, "the tool goes under RUNNER_TEMP and GITHUB_PATH, not a system path");
+    assertVerifiedInstall(t, step.run, { [t.versionEnv]: t.version }, t.version, t.sha);
+    assertFailsClosed(step.run, { [t.versionEnv]: t.version });
+    const s = stubs("aarch64");
+    const r = runScript(step.run, { [t.versionEnv]: "9.9.9" }, s.bin);
+    assert.notEqual(r.status, 0, "a version without pins fails");
+    assert.match(r.out, /::error::.*9\.9\.9/);
+    assert.equal(s.log(), "", "nothing is downloaded for a version without pins");
   });
 }

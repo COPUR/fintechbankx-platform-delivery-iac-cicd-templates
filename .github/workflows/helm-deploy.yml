@@ -146,6 +146,13 @@ on:
       kubeconform-version:
         type: string
         default: v0.6.7
+      kubeconform-sha256:
+        description: >-
+          sha256 of the kubeconform linux release asset for the runner's architecture. Required when
+          kubeconform-version is not the default v0.6.7, whose per-architecture sha256 are pinned here (this
+          input is then ignored); the step fails before downloading when it is empty or not a sha256.
+        type: string
+        default: ""
       kube-version:
         description: Kubernetes version used for helm template and kubeconform schemas.
         type: string
@@ -280,26 +287,30 @@ jobs:
       - name: Install kubeconform
         env:
           KUBECONFORM_VERSION: ${{ inputs.kubeconform-version }}
+          KUBECONFORM_SHA256: ${{ inputs.kubeconform-sha256 }}
         run: |
           set -euo pipefail
           # Release asset for the runner's architecture (the fbx-ci runner is arm64).
           # The sha256 of the default version v0.6.7 come from the release's own
-          # checksums file; any other version is downloaded with a warning and no
-          # pinned checksum. Tools go under RUNNER_TEMP, never a shared system path.
+          # checksums file; any other version is checked against the kubeconform-sha256
+          # input and fails before the download when that input is not a sha256.
+          # Tools go under RUNNER_TEMP, never a shared system path.
           case "$(uname -m)" in
             x86_64) arch=amd64; pinned=95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73 ;;
             aarch64|arm64) arch=arm64; pinned=dc82f79bb03c5479b1ae5fd4af221e4b5a3111f62bf01a2795d9c5c20fa96644 ;;
             *) echo "::error::no kubeconform build for runner architecture $(uname -m)"; exit 1 ;;
           esac
-          [ "$KUBECONFORM_VERSION" = "v0.6.7" ] || pinned=""
+          if [ "$KUBECONFORM_VERSION" != "v0.6.7" ]; then
+            pinned="$KUBECONFORM_SHA256"
+            if ! [[ "$pinned" =~ ^[0-9a-fA-F]{64}$ ]]; then
+              echo "::error::kubeconform $KUBECONFORM_VERSION is not the default v0.6.7: set the kubeconform-sha256 input to the sha256 of kubeconform-linux-${arch}.tar.gz"
+              exit 1
+            fi
+          fi
           dir="$RUNNER_TEMP/fbx-tools/kubeconform"
           mkdir -p "$dir"
           curl -sSfL -o "$dir/kubeconform.tar.gz" "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-${arch}.tar.gz"
-          if [ -n "$pinned" ]; then
-            echo "${pinned}  $dir/kubeconform.tar.gz" | sha256sum -c -
-          else
-            echo "::warning::no pinned sha256 for kubeconform $KUBECONFORM_VERSION on ${arch}; the download is not checksum-verified"
-          fi
+          echo "${pinned}  $dir/kubeconform.tar.gz" | sha256sum -c -
           tar -xz -C "$dir" -f "$dir/kubeconform.tar.gz"
           echo "$dir" >> "$GITHUB_PATH"
 

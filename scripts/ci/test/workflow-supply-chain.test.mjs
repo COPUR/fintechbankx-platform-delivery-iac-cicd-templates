@@ -316,3 +316,94 @@ test("cosign step fails closed: failed verification, tag instead of digest, unan
   const custom = runStep(verifyStep(), { ...cosignEnv, IDENTITY_REGEXP: "^https://github\\.com/COPUR/x/\\.github/workflows/image\\.yml@refs/tags/.+$" }, { pathPrefix: stubCosign(0) });
   assert.equal(custom.status, 0, custom.stdout + custom.stderr);
 });
+
+// --- 4. downloads -------------------------------------------------------------------
+
+// Every curl or wget in a run: block saves the download to a file, and the first
+// thing the same block does with that file is an unconditional `sha256sum -c`,
+// before anything extracts, installs, moves or runs it (DevSecOps review
+// 2026-10-17). Piping a download (curl ... | tar, wget -O- | sh) or keeping it on
+// stdout fails. Applies to every workflow above, the legacy reference copy
+// included. PENDING_DOWNLOADS names "<file> job <id> step <name>" entries that are
+// not fixed yet; each must still be found, so the list only shrinks.
+const PENDING_DOWNLOADS = [];
+
+const DOWNLOAD = /(?:^|[;&|(!]\s*|\b(?:then|do|else|if|exec|time)\s+)(?:sudo\s+)?(curl|wget)\s/;
+const unquote = (s) => s.replace(/^(["'])(.*)\1$/, "$2");
+
+function downloadProblems(run) {
+  const problems = [];
+  const lines = String(run)
+    .replace(/\\\n\s*/g, " ")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"));
+  lines.forEach((line, i) => {
+    const m = line.match(DOWNLOAD);
+    if (!m) return;
+    const rest = line.slice(m.index + m[0].length - 1);
+    const tool = m[1];
+    if (/(^|[^|])\|(?!\|)/.test(rest)) return problems.push(`${tool} pipes the download into another command: ${line}`);
+    const out = tool === "curl"
+      ? rest.match(/\s(?:--output[ =]|-[A-Za-z]*o\s+)("[^"]+"|'[^']+'|[^\s;&|)]+)/)
+      : rest.match(/\s(?:--output-document[ =]|-[A-Za-z]*O\s*)("[^"]+"|'[^']+'|[^\s;&|)]+)/);
+    const file = out ? unquote(out[1]) : "";
+    if (!file || file === "-") return problems.push(`${tool} does not save the download to a file: ${line}`);
+    const next = lines.findIndex((l, k) => k > i && l.includes(file));
+    const check = next < 0 ? "" : lines[next];
+    if (next < 0 || !/\bsha256sum\b.*(\s-c\b|\s--check\b)/.test(check)) {
+      return problems.push(`${file} is ${next < 0 ? "never checked" : `used before it is checked: ${check}`}`);
+    }
+    if (/&&|\|\|/.test(check)) return problems.push(`the check of ${file} is conditional or its failure is ignored: ${check}`);
+    const between = lines.slice(i + 1, next);
+    if (between.some((l) => /^(if|elif|else|fi|case|esac|then)\b|;;\s*$/.test(l))) {
+      return problems.push(`the check of ${file} sits in a branch, so a path can skip it: ${between.join(" / ")}`);
+    }
+  });
+  return problems;
+}
+
+test("every curl or wget download in a run: block is checked with sha256sum -c before it is extracted or installed", () => {
+  const problems = [];
+  const pendingSeen = new Set();
+  for (const file of allWorkflowFiles) {
+    const wf = YAML.parse(fs.readFileSync(path.join(repo, file), "utf8"));
+    for (const [id, job] of Object.entries(wf.jobs ?? {})) {
+      for (const step of job.steps ?? []) {
+        if (typeof step.run !== "string") continue;
+        const where = `${file} job ${id} step ${step.name ?? "(unnamed)"}`;
+        const found = downloadProblems(step.run);
+        if (found.length === 0) continue;
+        if (PENDING_DOWNLOADS.includes(where)) { pendingSeen.add(where); continue; }
+        problems.push(...found.map((p) => `${where}: ${p}`));
+      }
+    }
+  }
+  assert.deepEqual(problems, []);
+  assert.deepEqual([...pendingSeen].sort(), [...PENDING_DOWNLOADS].sort(), "PENDING_DOWNLOADS lists a step that no longer needs it");
+});
+
+test("the download check itself accepts a checked file and rejects pipes, missing, late or conditional checks", () => {
+  const ok = [
+    'curl -sSfL -o "$d/t.tar.gz" "https://example.test/t.tar.gz"\necho "${sha}  $d/t.tar.gz" | sha256sum -c -\ntar -xz -C "$d" -f "$d/t.tar.gz"',
+    'wget -q -O "$d/t.zip" https://example.test/t.zip\necho "${sha}  $d/t.zip" | sha256sum --check -\nunzip "$d/t.zip"',
+    'curl -sSfL \\\n  -o "$d/t.tar.gz" \\\n  "https://example.test/t.tar.gz"\necho "${sha}  $d/t.tar.gz" | sha256sum -c -\ntar -xzf "$d/t.tar.gz"',
+    'command -v curl >/dev/null\necho no download here',
+  ];
+  for (const run of ok) assert.deepEqual(downloadProblems(run), [], run);
+  const bad = {
+    "curl into tar": 'curl -sSfL "https://example.test/t.tar.gz" | tar -xz -C "$d"',
+    "curl into tar over a line continuation": 'curl -sSfL "https://example.test/t.tar.gz" \\\n  | tar -xz -C "$d" t',
+    "wget into sh": "wget -qO- https://example.test/i.sh | sh",
+    "curl to stdout": 'v="$(curl -sSf https://example.test/t)"',
+    "curl -o -": "curl -sSfL -o - https://example.test/t.tar.gz > t.tar.gz",
+    "no check": 'curl -sSfL -o "$d/t.tar.gz" https://example.test/t\ntar -xzf "$d/t.tar.gz"',
+    "check after extract": 'curl -sSfL -o "$d/t.tar.gz" https://example.test/t\ntar -xzf "$d/t.tar.gz"\necho "${sha}  $d/t.tar.gz" | sha256sum -c -',
+    "hash without -c": 'curl -sSfL -o "$d/t.tar.gz" https://example.test/t\nsha256sum "$d/t.tar.gz"\ntar -xzf "$d/t.tar.gz"',
+    "check of another file": 'curl -sSfL -o "$d/t.tar.gz" https://example.test/t\necho "${sha}  $d/other.tar.gz" | sha256sum -c -\ntar -xzf "$d/t.tar.gz"',
+    "check only when a pin exists": 'curl -sSfL -o "$d/t.tar.gz" https://example.test/t\nif [ -n "$pinned" ]; then\necho "${pinned}  $d/t.tar.gz" | sha256sum -c -\nelse\necho "::warning::unverified"\nfi\ntar -xzf "$d/t.tar.gz"',
+    "check failure ignored": 'curl -sSfL -o "$d/t.tar.gz" https://example.test/t\necho "${sha}  $d/t.tar.gz" | sha256sum -c - || true\ntar -xzf "$d/t.tar.gz"',
+    "check guarded by &&": 'curl -sSfL -o "$d/t.tar.gz" https://example.test/t\n[ -n "$sha" ] && echo "${sha}  $d/t.tar.gz" | sha256sum -c -\ntar -xzf "$d/t.tar.gz"',
+  };
+  for (const [name, run] of Object.entries(bad)) assert.notDeepEqual(downloadProblems(run), [], name);
+});

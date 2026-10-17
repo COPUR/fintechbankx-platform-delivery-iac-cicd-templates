@@ -136,13 +136,28 @@ jobs:
 
       - name: Install gitleaks
         shell: bash
+        env:
+          GITLEAKS_VERSION: 8.24.3
         run: |
           set -euo pipefail
-          tmpdir="$(mktemp -d)"
-          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
-            | tar -xz -C "$tmpdir"
-          sudo install "$tmpdir/gitleaks" /usr/local/bin/gitleaks
-          rm -rf "$tmpdir"
+          # Release asset for the runner's architecture, checked against the sha256
+          # from the release's own checksums file before it is extracted. Another
+          # version or architecture fails until its sha256 are added here.
+          case "$(uname -m)" in
+            x86_64) arch=x64; sha=9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c ;;
+            aarch64|arm64) arch=arm64; sha=5f2edbe1f49f7b920f9e06e90759947d3c5dfc16f752fb93aaafc17e9d14cf07 ;;
+            *) echo "::error::no gitleaks build for runner architecture $(uname -m)"; exit 1 ;;
+          esac
+          if [ "$GITLEAKS_VERSION" != "8.24.3" ]; then
+            echo "::error::no pinned sha256 for gitleaks $GITLEAKS_VERSION; add the release's sha256 for each architecture to this step"
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/fbx-tools/gitleaks"
+          mkdir -p "$dir"
+          curl -sSfL -o "$dir/gitleaks.tar.gz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz"
+          echo "${sha}  $dir/gitleaks.tar.gz" | sha256sum -c -
+          tar -xz -C "$dir" -f "$dir/gitleaks.tar.gz"
+          echo "$dir" >> "$GITHUB_PATH"
 
       - name: Run gitleaks (workspace scan)
         shell: bash
