@@ -319,15 +319,17 @@ test("cosign step fails closed: failed verification, tag instead of digest, unan
 
 // --- 4. downloads -------------------------------------------------------------------
 
-// Every curl or wget in a run: block saves the download to a file, nothing after it
-// on its line uses that file, and the next line of the block is an unconditional
-// `sha256sum -c` of that file, before anything extracts, installs, moves or runs it
-// (DevSecOps review 2026-10-17). The check is a plain pipeline (no if, elif, while,
-// until, !, &&, ||, ; or &) and the block does not turn errexit off before it.
-// Piping a download (curl ... | tar, wget -O- | sh) or keeping it on stdout fails.
-// A download is a curl or wget command with an http(s):// URL argument, wherever it
-// runs: after an assignment prefix, a wrapper (timeout, command, env, nice, time,
-// exec, sudo), a keyword, inside $( ), backticks or { }, by path or quoted.
+// Every curl or wget in a run: block saves the download to a file, only echo, printf,
+// exit or true follow it on its line, and the next line of the block is an
+// unconditional `sha256sum -c` of that file, before anything extracts, installs,
+// moves or runs it (DevSecOps review 2026-10-17). The check is a plain echo or printf
+// pipeline ending in sha256sum (no if, elif, while, until, !, &&, ||, ;, &, $( ) or
+// backticks) and the block does not turn errexit off before it. Piping a download
+// (curl ... | tar, wget -O- | sh) or keeping it on stdout fails. A download is each
+// http(s):// URL argument of a curl or wget command, wherever it runs: after an
+// assignment prefix, a wrapper (timeout, command, env, nice, time, exec, sudo), a
+// keyword, inside $( ), backticks or { }, by path or quoted, or in the command
+// string of sh -c, bash -c or eval (always refused there).
 // Applies to every workflow above, the legacy reference copy included, and to the
 // before_script, script and after_script lines of every GitLab CI file (each
 // section is one shell session, checked as one block). PENDING_DOWNLOADS lists the
@@ -415,33 +417,93 @@ function simpleCommands(line, from = 0, to = line.length, out = []) {
 }
 
 const DOWNLOAD_TOOLS = new Set(["curl", "wget"]);
+// Commands whose argument is shell code of its own: sh -c '...', eval '...'.
+const CODE_RUNNERS = new Set(["sh", "bash", "dash", "ksh", "zsh", "eval"]);
 const COMMAND_KEYWORDS = new Set(["if", "elif", "while", "until", "then", "do", "else", "!", "{", "}"]);
 const COMMAND_WRAPPERS = new Set(["timeout", "command", "env", "nice", "time", "exec", "sudo", "nohup"]);
 const plainWord = (w) => w.text.replace(/\\(.)/g, "$1").replace(/["']/g, "");
 const commandName = (w) => plainWord(w).split("/").pop();
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-// The downloads on one logical line: each curl or wget command (directly, or run by a
-// wrapper) that has an http(s):// URL argument.
+// One spelling for a path: no quotes, ${name} written as $name.
+const samePath = (s) => s.replace(/["']/g, "").replace(/\$\{(\w+)\}/g, "$$$1");
+
+// The output files of a curl or wget command, in order, and the index of the last
+// word each option takes: curl -o FILE / --output FILE / --output=FILE, wget -O FILE /
+// -OFILE / --output-document FILE / --output-document=FILE. curl -o"$f" (no space) and
+// curl -O name no file.
+function outputOption(tool, words, n) {
+  const s = samePath(words[n].text);
+  const joined = tool === "curl" ? /^--output=(.*)$/ : /^(?:--output-document=|-[A-Za-z]*O)(.+)$/;
+  const separate = tool === "curl" ? /^(?:--output|-[A-Za-z]*o)$/ : /^(?:--output-document|-[A-Za-z]*O)$/;
+  if (separate.test(s)) return n + 1 < words.length ? { file: samePath(words[n + 1].text), last: n + 1 } : null;
+  const m = s.match(joined);
+  return m ? { file: m[1], last: n } : null;
+}
+
+// The downloads on one logical line: one per http(s):// URL argument of each curl or
+// wget command (directly, or run by a wrapper), paired with that command's output
+// file in the same position (curl writes its n-th -o to its n-th URL; a URL with no
+// output of its own is not saved). A curl or wget in the command string of sh -c,
+// bash -c or eval is a download too, marked nested.
 function lineDownloads(line) {
   const downloads = [];
   for (const { words, end } of simpleCommands(line)) {
     let j = 0;
-    while (j < words.length && (COMMAND_KEYWORDS.has(plainWord(words[j])) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[j].text))) j++;
+    while (j < words.length && (COMMAND_KEYWORDS.has(plainWord(words[j])) || ASSIGNMENT.test(words[j].text))) j++;
     if (j >= words.length) continue;
+    const runs = (w) => DOWNLOAD_TOOLS.has(commandName(w)) || CODE_RUNNERS.has(commandName(w));
     let at = -1;
-    if (DOWNLOAD_TOOLS.has(commandName(words[j]))) at = j;
-    else if (COMMAND_WRAPPERS.has(commandName(words[j]))) at = words.findIndex((w, n) => n > j && DOWNLOAD_TOOLS.has(commandName(w)));
+    if (runs(words[j])) at = j;
+    else if (COMMAND_WRAPPERS.has(commandName(words[j]))) at = words.findIndex((w, n) => n > j && runs(w));
     if (at < 0) continue;
-    const url = words.slice(at + 1).map((w) => plainWord(w).match(/https?:\/\/\S*/i)).find(Boolean);
-    if (url) downloads.push({ tool: commandName(words[at]), start: words[at].start, end, url: url[0] });
+    const tool = commandName(words[at]);
+    if (CODE_RUNNERS.has(tool)) {
+      const c = tool === "eval" ? at : words.findIndex((w, n) => n > at && /^-[A-Za-z]*c[A-Za-z]*$/.test(plainWord(w)));
+      if (c < 0) continue;
+      const code = words.slice(c + 1).map(plainWord).join(" ");
+      downloads.push(...lineDownloads(code).map((d) => ({ ...d, nested: true })));
+      continue;
+    }
+    const files = [];
+    const urls = [];
+    for (let n = at + 1; n < words.length; n++) {
+      const out = outputOption(tool, words, n);
+      if (out) { files.push(out.file); n = out.last; continue; }
+      const url = plainWord(words[n]).match(/https?:\/\/\S*/i);
+      if (url) urls.push(url[0]);
+    }
+    urls.forEach((url, n) => downloads.push({ tool, start: words[at].start, end, url, file: files[n] ?? "" }));
   }
   return downloads;
 }
 
-const unquote = (s) => s.replace(/^(["'])(.*)\1$/, "$2");
-// One spelling for a path: no quotes, ${name} written as $name.
-const samePath = (s) => s.replace(/["']/g, "").replace(/\$\{(\w+)\}/g, "$$$1");
-const ERREXIT_OFF = /(^|[\s;&|({])set\s+(?:-\S*\s+)*(?:\+[A-Za-z]*e|\+o\s+errexit\b)/;
+// What may follow a download on its own line: echo, printf, exit, true and : (their
+// $( ) bodies are commands of their own) and bare keywords such as the } closing
+// `|| { echo ...; exit 1; }`. Anything else might use the file before its check.
+const AFTER_DOWNLOAD = new Set(["echo", "printf", "exit", "true", ":"]);
+function harmlessAfterDownload({ words }) {
+  const j = words.findIndex((w) => !COMMAND_KEYWORDS.has(plainWord(w)));
+  return j < 0 || AFTER_DOWNLOAD.has(commandName(words[j]));
+}
+
+// A plain checksum line: echo or printf piped into sha256sum -c (or sha256sum -c
+// alone, with a here-string), sha256sum the last command, no $( ) or backticks, no
+// keyword, no other operator. Under errexit its failure always stops the block.
+function plainCheck(line) {
+  const commands = simpleCommands(line);
+  if (!commands.length || commands.some(({ words }) => words.some((w) => w.text.includes("$(...)")))) return false;
+  return commands.every(({ words, end }, n) => {
+    const j = words.findIndex((w) => !ASSIGNMENT.test(w.text));
+    if (j < 0) return false;
+    const name = commandName(words[j]);
+    if (n < commands.length - 1) return (name === "echo" || name === "printf") && line[end] === "|" && !"|&".includes(line[end + 1] ?? "");
+    return name === "sha256sum" && words.slice(j + 1).some((w) => ["-c", "--check"].includes(plainWord(w))) && line.slice(end).trim() === "";
+  });
+}
+
+// set +e, set +o errexit, also after other option groups (set +x +e, set +o nounset +o errexit).
+const ERREXIT_OFF = /(^|[\s;&|({])set(?:\s+(?:[-+]o\s+\w+|[-+][A-Za-z]+))*?\s+(?:\+[A-Za-z]*e[A-Za-z]*\b|\+o\s+errexit\b)/;
 
 // One problem per download that breaks the rule: { url, message }.
 function downloadProblems(run) {
@@ -452,24 +514,24 @@ function downloadProblems(run) {
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("#"));
   lines.forEach((line, i) => {
-    for (const { tool, start, end, url } of lineDownloads(line)) {
+    const commands = simpleCommands(line);
+    for (const { tool, start, end, url, file, nested } of lineDownloads(line)) {
       const problem = (message) => problems.push({ url, message });
+      if (nested) { problem(`${tool} runs inside the command string of sh -c or eval, where its check cannot be followed: ${line}`); continue; }
       const rest = line.slice(start);
       if (/(^|[^|])\|(?!\|)/.test(rest)) { problem(`${tool} pipes the download into another command: ${line}`); continue; }
-      const command = line.slice(start, end);
-      const out = tool === "curl"
-        ? command.match(/\s(?:--output[ =]|-[A-Za-z]*o\s+)("[^"]+"|'[^']+'|[^\s;&|)]+)/)
-        : command.match(/\s(?:--output-document[ =]|-[A-Za-z]*O\s*)("[^"]+"|'[^']+'|[^\s;&|)]+)/);
-      const file = out ? samePath(unquote(out[1])) : "";
-      if (!file || file === "-") { problem(`${tool} does not save the download to a file: ${line}`); continue; }
-      if (samePath(line.slice(end)).includes(file.split("/").pop())) { problem(`${file} is used on the download's own line, before it is checked: ${line}`); continue; }
+      if (!file || file === "-") { problem(`${tool} does not save the download of ${url} to a file of its own: ${line}`); continue; }
+      if (commands.some((c) => c.words[0].start >= end && !harmlessAfterDownload(c))) {
+        problem(`a command after the download of ${file} on its own line may use it before it is checked (only echo, printf, exit and true may follow): ${line}`);
+        continue;
+      }
       const check = lines[i + 1] ?? "";
       if (!/\bsha256sum\b.*(\s-c\b|\s--check\b)/.test(check) || !samePath(check).includes(file)) {
         problem(`the line after the download of ${file} is not its sha256sum -c check: ${check || "(none)"}`);
         continue;
       }
-      if (/^(if|elif|while|until)\b|(^|\s)!(\s|$)|&&|\|\||;|(^|[^&<>])&(?![&>])/.test(check)) {
-        problem(`the check of ${file} is not a plain sha256sum -c pipeline, so its failure can be ignored: ${check}`);
+      if (!plainCheck(check)) {
+        problem(`the check of ${file} is not a plain echo | sha256sum -c pipeline, so its failure can be ignored or the file used first: ${check}`);
         continue;
       }
       const off = lines.slice(0, i + 2).find((l) => ERREXIT_OFF.test(l));
@@ -544,6 +606,13 @@ test("the download check itself accepts a checked file and rejects pipes, missin
     "apt-get update && apt-get install -y curl ca-certificates && curl --version",
     'echo "fetch it later; curl https://example.test/i.sh | sh"',
     "true # later; curl https://example.test/i.sh | sh",
+    // A failure message or a log line after the download names the file but does not use it.
+    'curl -sSfL -o "$d/jq" https://example.test/jq-linux64 || { echo "jq download failed" >&2; exit 1; }\necho "${sha}  $d/jq" | sha256sum -c -\nchmod +x "$d/jq"',
+    'curl -sSfL -o "$d/t" https://example.test/t; echo fetched\necho "${sha}  $d/t" | sha256sum -c -',
+    'curl -sSfL -o "$d/t.tar.gz" https://example.test/t && echo "fetched t.tar.gz"\necho "${sha}  $d/t.tar.gz" | sha256sum -c -',
+    // Other plain checks: a here-string, printf, --check --status, 2>&1, a trailing comment.
+    'curl -sSfL -o "$d/t.tar.gz" https://example.test/t\nsha256sum -c <<< "${sha}  $d/t.tar.gz"',
+    'set -e +x\ncurl -sSfL -o "$d/t.tar.gz" https://example.test/t\nprintf \'%s  %s\\n\' "$sha" "$d/t.tar.gz" | sha256sum --check --status - 2>&1 # pinned',
   ];
   for (const run of ok) assert.deepEqual(downloadProblems(run), [], run);
   const get = 'curl -sSfL -o "$d/t.tar.gz" https://example.test/t';
@@ -573,6 +642,15 @@ test("the download check itself accepts a checked file and rejects pipes, missin
     "check followed by ; true": `${get}\n${check}; true\n${extract}`,
     "set +e before the check": `set +e\n${get}\n${check}\n${extract}`,
     "set +o errexit before the check": `set +o errexit\n${get}\n${check}\n${extract}`,
+    // The check is the last command of the pipeline, outside any $( ) (verification V2).
+    "check inside $( ) of an echo": `${get}\necho "checksum: $(${check})"\n${extract}`,
+    "check inside $( ) of an export": `${get}\nexport r="$(${check})"\n${extract}`,
+    "check inside backticks": `${get}\necho "checksum: \`${check}\`"\n${extract}`,
+    "check piped on to tee": `${get}\n${check} | tee "$d/check.log"\n${extract}`,
+    "file run inside the check pipeline": `${get}\nsh "$d/t.tar.gz" | sha256sum -c -\n${extract}`,
+    "set +x +e before the check": `set +x +e\n${get}\n${check}\n${extract}`,
+    "set +o nounset +o errexit before the check": `set +o nounset +o errexit\n${get}\n${check}\n${extract}`,
+    "set -o pipefail +e before the check": `set -o pipefail +e\n${get}\n${check}\n${extract}`,
     // A curl or wget command anywhere on the line is a download (review F2).
     "assignment prefix": 'GH_HOST=github.com curl -sSfL "https://example.test/t.tar.gz" | tar -xz -C "$d"',
     "timeout": "timeout 60 curl -sSfL https://example.test/i.sh | sh",
@@ -594,8 +672,23 @@ test("the download check itself accepts a checked file and rejects pipes, missin
     'use spelled "$d"/ before the check': `${get}\ntar -xzf "$d"/t.tar.gz\n${check}`,
     "use from inside the directory before the check": `${get}\n(cd "$d" && tar -xzf t.tar.gz)\n${check}`,
     "use on the download's own line": `${get} && tar -xzf "$d"/t.tar.gz\n${check}`,
+    // Only echo, printf, exit and true may follow the download on its line (verification V3).
+    "use by glob on the download's own line": `${get} && tar -xz -C "$d" -f "$d"/t.*\n${check}`,
+    "run by glob on the download's own line": `${get}; sh "$d"/t.*\n${check}`,
+    "use through another name on the download's own line": 'f="$d/t.tar.gz"; curl -sSfL -o "$f" https://example.test/t && tar -xzf "$d/t.tar.gz"\necho "${sha}  $f" | sha256sum -c -',
+    "use inside $( ) of a later echo": `${get} && echo "$(sh "$d"/t.*)"\n${check}`,
     // Every download on a line is checked (review F4).
     "second download on the line, unchecked": 'curl -sSfL -o "$d/a.tgz" https://example.test/a; curl -sSfL -o "$d/b.tgz" https://example.test/b\necho "${sha}  $d/a.tgz" | sha256sum -c -\ntar -xzf "$d/a.tgz"; tar -xzf "$d/b.tgz"',
+    // Every URL of a curl or wget command is a download of its own (verification V1).
+    "second URL with its own -o, unchecked": 'curl -sSfL -o "$d/a.tgz" https://example.test/a -o "$d/b.sh" https://example.test/b\necho "${sha}  $d/a.tgz" | sha256sum -c -\ntar -xzf "$d/a.tgz"\nbash "$d/b.sh"',
+    "second URL with no -o": 'curl -sSfL -o "$d/a.tgz" https://example.test/a https://example.test/b\necho "${sha}  $d/a.tgz" | sha256sum -c -\ntar -xzf "$d/a.tgz"',
+    "wget with two URLs into one file": 'wget -q -O "$d/a.tgz" https://example.test/a https://example.test/b\necho "${sha}  $d/a.tgz" | sha256sum -c -\ntar -xzf "$d/a.tgz"',
+    // A download in the command string of sh -c, bash -c or eval (verification V4).
+    "sh -c": `sh -c "curl -sSfL 'https://example.test/t.tar.gz' | tar -xz -C '$d'"`,
+    "bash -ec": "bash -ec 'curl -sSfL https://example.test/i.sh | sh'",
+    "sudo sh -c": "sudo sh -c 'curl -sSfL https://example.test/i.sh | sh'",
+    "eval": 'eval "curl -sSfL https://example.test/i.sh | sh"',
+    "sh -c even when it saves and checks": `sh -c '${get}'\n${check}\n${extract}`,
   };
   for (const [name, run] of Object.entries(bad)) assert.notDeepEqual(downloadProblems(run), [], name);
 });
@@ -607,6 +700,9 @@ test("a PENDING_DOWNLOADS entry suppresses exactly the one download it names", (
   const cases = {
     "a second download on the NodeSource line": `${nodesource} && curl -fsSL https://get.example.test/install.sh | sh`,
     "the NodeSource download twice": `${nodesource}\n${nodesource}`,
+    // A second URL on the NodeSource curl itself (verification V1).
+    "a second URL on the NodeSource curl": "curl -fsSL https://deb.nodesource.com/setup_22.x https://get.example.test/install.sh | bash -",
+    "a second URL with its own -o on the NodeSource curl": 'curl -fsSL https://deb.nodesource.com/setup_22.x -o "$d/i.sh" https://get.example.test/i.sh | bash -',
   };
   for (const [name, run] of Object.entries(cases)) assert.notDeepEqual(unlistedDownloadProblems([{ where, run }]), [], name);
 });
