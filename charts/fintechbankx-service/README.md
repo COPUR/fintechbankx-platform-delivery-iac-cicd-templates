@@ -258,8 +258,11 @@ editing it:
    loads it: every entry that is not a directory, whatever its typeflag, by
    its pax or GNU long name, `\` separators and cleaned paths; an archive
    Helm would refuse, or a sparse entry, fails the check; every file is read
-   without a leading UTF-8 BOM, as Helm reads it), and (c) that every
-   workload template runs the guard before it writes anything (step 2).
+   without a leading UTF-8 BOM, as Helm reads it; a symbolic link anywhere
+   inside the chart directory, to a file or a directory, fails it too, since
+   Helm loads the files of a link under every path that reaches them), and
+   (c) that every workload template runs the guard before it writes anything
+   (step 2).
    The pod-free rule of (c) is strict on purpose, so that the script does
    not have to model YAML: a template counts as pod-free only when every
    document it writes, itself or through a define it includes at the top
@@ -284,9 +287,10 @@ editing it:
    writes inside a value (a value holding a newline) is not followed, which
    step 3's quoting rule covers. So the checks catch a vendored copy that
    differs, an `fbx.*` redefinition, and a workload template that does not
-   call the guard first, in conventional chart YAML and template code; text
-   held in values, the adapter's mapping and code after the guard call are
-   review matters (step 2). The guard is `fbx.guard` with the helpers it calls:
+   call the guard first, in conventional chart YAML and template code, and
+   refuse a chart with a symbolic link; text held in values, the adapter's
+   mapping and code after the guard call are review matters (step 2). The
+   guard is `fbx.guard` with the helpers it calls:
    `fbx.validateEnvSources`, `fbx.validateDatabaseTls`, `fbx.validateKafkaTls`,
    `fbx.validateKafkaTlsValue`, `fbx.validateSecretNames`, `fbx.secretOnlyName`,
    `fbx.secretOnlyReason`, `fbx.validateKeyNames`, `fbx.validateDatabaseCa`,

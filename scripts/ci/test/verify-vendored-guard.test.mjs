@@ -7,7 +7,8 @@
 //       provenance header changes the digest);
 //   (b) an fbx.* redefinition: no other file of the chart, subchart
 //       directories and .tgz archives included (an archive read the way Helm
-//       loads it), has a define or block of an fbx.* name;
+//       loads it), has a define or block of an fbx.* name; a symbolic link
+//       anywhere inside the chart directory fails here too;
 //   (c) a workload template that does not call the guard first: a template
 //       is pod-free only when every top-level line of each YAML document it
 //       writes is a plain key and its kind is a plain name from the pod-free
@@ -232,10 +233,56 @@ test("(b) fails for an fbx.* definition in a .tgz nested in a subchart .tgz", (t
   assertFail(verify(dir), /FAIL \(b\) charts\/outer-0\.1\.0\.tgz!outer\/charts\/inner-0\.1\.0\.tgz!inner\/templates\/_x\.tpl defines fbx\.guard/);
 });
 
-test("(b) fails closed on a file it cannot read (a dangling symbolic link)", (t) => {
+// A symbolic link anywhere in the chart directory fails (b). Helm's loader
+// follows links to files and directories and loads the files under every path
+// that reaches them (helm template renders the Job below, linked or not), so a
+// link can file a template under a path the checks do not read as one.
+const SYMLINK_MESSAGE = /is a symbolic link .*: the script reads no symbolic links in a chart/;
+
+test("(b) refuses a symbolic link to a directory of templates/ that sorts before it, and (c) reads the Job under templates/", (t) => {
+  const files = baseFiles();
+  files["templates/workloads/job.yaml"] = workload("Job");
+  const dir = makeChart(t, files);
+  fs.symlinkSync("templates/workloads", path.join(dir, "aaa"));
+  const r = verify(dir);
+  assertFail(r, /FAIL \(b\) aaa is a symbolic link \(to templates\/workloads\)/, SYMLINK_MESSAGE);
+  assert.match(r.out, /FAIL \(c\) templates\/workloads\/job\.yaml \(Job\): no fbx\.guard call/);
+});
+
+test("(b) refuses a symbolic link to a file, even to a template that calls the guard first", (t) => {
+  const files = baseFiles();
+  files["templates/deployment.yaml"] = null;
+  files["files/deployment.yaml"] = '{{- include "fbx.guard" . -}}\n' + DEPLOYMENT_BODY;
+  const dir = makeChart(t, files);
+  fs.symlinkSync("../files/deployment.yaml", path.join(dir, "templates", "deployment.yaml"));
+  assertFail(verify(dir), /FAIL \(b\) templates\/deployment\.yaml is a symbolic link \(to \.\.\/files\/deployment\.yaml\)/);
+});
+
+test("(b) refuses a symbolic link inside a subchart directory and a linked subchart directory", (t) => {
+  const files = baseFiles();
+  files["charts/sub/Chart.yaml"] = "apiVersion: v2\nname: sub\nversion: 0.1.0\n";
+  files["charts/sub/files/cm.yaml"] = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n";
+  files["vendor/other/Chart.yaml"] = "apiVersion: v2\nname: other\nversion: 0.1.0\n";
+  const dir = makeChart(t, files);
+  fs.mkdirSync(path.join(dir, "charts", "sub", "templates"));
+  fs.symlinkSync("../files/cm.yaml", path.join(dir, "charts", "sub", "templates", "cm.yaml"));
+  fs.symlinkSync("../vendor/other", path.join(dir, "charts", "other"));
+  const r = verify(dir);
+  assertFail(r, /FAIL \(b\) charts\/sub\/templates\/cm\.yaml is a symbolic link/, /FAIL \(b\) charts\/other is a symbolic link/);
+});
+
+test("(b) fails closed on a dangling symbolic link", (t) => {
   const dir = makeChart(t, baseFiles());
   fs.symlinkSync("missing-target.tpl", path.join(dir, "templates", "_dangling.tpl"));
-  assertFail(verify(dir), /FAIL \(b\) cannot read templates\/_dangling\.tpl: ENOENT, so it may define fbx\.\* templates/);
+  assertFail(verify(dir), /FAIL \(b\) templates\/_dangling\.tpl is a symbolic link \(to missing-target\.tpl\)/);
+});
+
+test("(b) passes when the chart directory itself is given through a symbolic link (control)", (t) => {
+  const dir = makeChart(t, baseFiles());
+  const link = `${dir}-link`;
+  fs.symlinkSync(dir, link);
+  t.after(() => fs.rmSync(link, { force: true }));
+  assertPass(verify(link));
 });
 
 test("(b) passes when other files only call or mention fbx.* and define their own prefix", (t) => {
