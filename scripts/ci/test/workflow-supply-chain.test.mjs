@@ -158,6 +158,72 @@ test("helm-deploy deploy job verifies the bundle digest and deploys the packaged
   assert.match(deploy.steps[helm].run, /fbx-deploy-bundle\/chart\//);
 });
 
+// Helm's default storage driver keeps every release in a Secret; the deploy roles'
+// namespaced Role (mesh repository) grants ConfigMaps and no Secrets at all.
+const HELM_CLUSTER_COMMAND = /\bhelm\s+(upgrade|install|rollback|history|uninstall|status|list|get|test)\b/;
+
+test("every job that runs helm against a cluster keeps releases in ConfigMaps (job-level HELM_DRIVER=configmap)", () => {
+  const problems = [];
+  let jobs = 0;
+  for (const file of workflowFiles) {
+    const wf = YAML.parse(fs.readFileSync(path.join(repo, file), "utf8"));
+    for (const [id, job] of Object.entries(wf.jobs ?? {})) {
+      const runs = (job.steps ?? []).map((s) => String(s.run ?? ""));
+      if (!runs.some((r) => HELM_CLUSTER_COMMAND.test(r))) continue;
+      jobs++;
+      if (job.env?.HELM_DRIVER !== "configmap") problems.push(`${file} job ${id}: env HELM_DRIVER is ${job.env?.HELM_DRIVER}, not configmap`);
+      for (const step of job.steps ?? []) {
+        if (step.env && "HELM_DRIVER" in step.env) problems.push(`${file} job ${id} step ${step.id ?? step.name}: overrides HELM_DRIVER`);
+        if (/HELM_DRIVER=(?!configmap\b)|(unset|export)\s+HELM_DRIVER\b/.test(String(step.run ?? ""))) {
+          problems.push(`${file} job ${id} step ${step.id ?? step.name}: changes HELM_DRIVER`);
+        }
+      }
+    }
+  }
+  assert.ok(jobs >= 1, "helm-deploy's deploy job runs helm upgrade");
+  assert.deepEqual(problems, []);
+  assert.equal(helmDeploy().jobs.deploy.env?.HELM_DRIVER, "configmap");
+});
+
+test("helm-deploy runs helm upgrade and helm history with HELM_DRIVER=configmap and says so in the rollback hint", () => {
+  const { deploy } = helmDeploy().jobs;
+  const dir = fs.mkdtempSync(path.join(tmpRoot, "fbx-helm-"));
+  fs.mkdirSync(path.join(dir, "fbx-deploy-bundle", "chart"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "fbx-deploy-bundle", "chart", "svc-1.0.0.tgz"), "");
+  const bin = fs.mkdtempSync(path.join(tmpRoot, "fbx-helm-bin-"));
+  fs.writeFileSync(
+    path.join(bin, "helm"),
+    `#!/usr/bin/env bash\nprintf '%s %s\\n' "\${HELM_DRIVER:-unset}" "$1" >> "${bin}/calls"\n` +
+      `if [ "$1" = history ]; then echo '[{"revision":7}]'; fi\n`,
+    { mode: 0o755 },
+  );
+  const r = runStep(
+    stepById(deploy, "deploy"),
+    {
+      ...deploy.env,
+      VALUES_FILES: "",
+      IMAGE_REPOSITORY: "123456789012.dkr.ecr.me-central-1.amazonaws.com/fintechbankx/loan-lifecycle-service",
+      IMAGE_DIGEST: `sha256:${"a".repeat(64)}`,
+      IMAGE_TAG: "",
+      RELEASE: "loan-lifecycle-service",
+      NAMESPACE: "lending",
+      HELM_TIMEOUT: "10m",
+      TARGET_ENV: "dev",
+      GITHUB_SHA: "0".repeat(40),
+      GITHUB_WORKFLOW: "deploy",
+      GITHUB_RUN_ID: "1",
+    },
+    { cwd: dir, pathPrefix: bin },
+  );
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.outputs.revision, "7");
+  assert.deepEqual(fs.readFileSync(path.join(bin, "calls"), "utf8").trim().split("\n"), ["configmap upgrade", "configmap history"]);
+  assert.match(
+    fs.readFileSync(path.join(dir, "summary"), "utf8"),
+    /`HELM_DRIVER=configmap helm rollback loan-lifecycle-service <revision> -n lending`/,
+  );
+});
+
 function runStep(step, env, { cwd, pathPrefix } = {}) {
   const dir = cwd ?? fs.mkdtempSync(path.join(tmpRoot, "fbx-step-"));
   const out = path.join(dir, "github-output");

@@ -10,6 +10,13 @@ name: helm-deploy
 #             -> AWS OIDC -> cosign verify of the image digest (keyless, fail closed)
 #             -> helm upgrade --install --atomic --wait with the bundled chart
 #
+# Releases are stored in ConfigMaps (job-level HELM_DRIVER=configmap on the
+# deploy job, so helm upgrade, its --atomic rollback and helm history all use
+# it), not in Helm's default Secrets: the deploy role's namespaced Role (mesh
+# repository, deploy/kustomize/base/generated/deploy-rbac.yaml) grants no
+# Secrets. Run helm rollback, history or status by hand with
+# HELM_DRIVER=configmap too, or Helm finds no release.
+#
 # The deploy job never checks anything out: it deploys exactly the bytes the
 # validate job checked (time-of-check equals time-of-use).
 #
@@ -392,6 +399,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      # Releases live in ConfigMaps; the deploy Role grants no Secrets (header).
+      HELM_DRIVER: configmap
     concurrency:
       # One deploy per release and environment at a time; never cancel a running rollout.
       group: helm-deploy-${{ github.repository }}-${{ inputs.environment }}-${{ inputs.release-name }}
@@ -533,5 +543,5 @@ jobs:
             echo "### Deployed ${RELEASE} to ${TARGET_ENV}"
             echo "- namespace: \`${NAMESPACE}\`"
             echo "- image: \`${IMAGE_REPOSITORY}@${IMAGE_DIGEST}\`"
-            echo "- helm revision: ${revision} (roll back with \`helm rollback ${RELEASE} <revision> -n ${NAMESPACE}\`)"
+            echo "- helm revision: ${revision} (roll back with \`HELM_DRIVER=configmap helm rollback ${RELEASE} <revision> -n ${NAMESPACE}\`)"
           } >> "$GITHUB_STEP_SUMMARY"

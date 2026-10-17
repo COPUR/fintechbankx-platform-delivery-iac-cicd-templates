@@ -154,6 +154,12 @@ Pinning (supply chain):
     stops the deploy. The EKS deploy role needs ECR read
     (`ecr:GetAuthorizationToken`, `ecr:BatchGetImage`,
     `ecr:GetDownloadUrlForLayer`) on the service repository.
+  - Release storage: the deploy job sets `HELM_DRIVER=configmap`, so Helm keeps
+    releases in ConfigMaps, not in its default Secrets; the deploy group's
+    namespaced Role (mesh repository,
+    `deploy/kustomize/base/generated/deploy-rbac.yaml`) grants no Secrets. Run
+    `helm rollback`, `helm history` or `helm status` by hand with
+    `HELM_DRIVER=configmap` as well.
 - `terraform`: backend from `environments/<env>.backend.hcl` or
   `state-bucket`/`state-key`/`lock-table`; apply runs the saved plan only.
 - `contract-checks`: allowlist file `<spec>.accepted-breaking.txt` next to the
