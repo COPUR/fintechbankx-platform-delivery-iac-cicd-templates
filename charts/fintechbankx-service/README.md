@@ -549,7 +549,19 @@ twelve charts with a PostgreSQL database; corporate-data, banking-metadata and
 retail-data, on DocumentDB, pass `enabled: false`). The guard here has
 since added the `spring.main.*` and Kafka SASL / JAAS refusals (name rules 1
 and 7, and the `spring.main`, `sasl`, `jaas` and `java.security.auth` JVM
-option words); the service charts run them from their next re-vendor on.
+option words); the service charts run them from their next re-vendor on. The
+script here has since added check (d) and the symbolic link refusal of check
+(b); as checked on 2026-10-17 at the same heads, all 15 charts pass it with
+the same digest (no symbolic link; `set` only on a local `dict` in
+banking-metadata, corporate-data and retail-data; no `tpl` or merge). None of
+the 15 repositories has the `CODEOWNERS` block of step 5 yet: five
+(atm-directory, products-catalog, retail-data, banking-metadata,
+corporate-data) have no `CODEOWNERS`, seven have rules only for the contract
+waiver files, and three (bulk-orchestration, initiation-settlement,
+recurring-mandates) also have a `*` rule naming the same single owner as
+their waiver rules. Fourteen pin the digest in
+`.github/workflows/deployability.yml`, consent-auth-service in
+`scripts/ci/helm-chart-checks.sh`, which that workflow runs.
 
 JVM options: the chart checks `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and
 `_JAVA_OPTIONS`, the variables the JVM reads itself (`fbx.isJvmOptionsName`).
