@@ -158,6 +158,85 @@ test("helm-deploy deploy job verifies the bundle digest and deploys the packaged
   assert.match(deploy.steps[helm].run, /fbx-deploy-bundle\/chart\//);
 });
 
+// validate refuses a render the deploy job would not reproduce or that would run an image
+// cosign never checked: every container image must be <image-repository>@<image-digest>, and
+// no chart template may call lookup (validate renders without a cluster, so lookup returns
+// empty there; in the deploy job it asks the cluster, and a Secret lookup is Forbidden for the
+// deploy Role, which aborts the upgrade).
+const IMG_REPO = "123456789012.dkr.ecr.me-central-1.amazonaws.com/fintechbankx/loan-lifecycle-service";
+const IMG_DIGEST = `sha256:${"a".repeat(64)}`;
+const renderGuard = () => stepById(helmDeploy().jobs.validate, "render-guard");
+
+function runRenderGuard(rendered, templates = { "templates/deployment.yaml": "kind: Deployment\n" }) {
+  const dir = fs.mkdtempSync(path.join(tmpRoot, "fbx-guard-"));
+  const src = path.join(dir, "src");
+  for (const [file, text] of Object.entries(templates)) {
+    fs.mkdirSync(path.dirname(path.join(src, "svc", file)), { recursive: true });
+    fs.writeFileSync(path.join(src, "svc", file), text);
+  }
+  fs.writeFileSync(path.join(src, "svc", "Chart.yaml"), "apiVersion: v2\nname: svc\nversion: 1.0.0\n");
+  fs.mkdirSync(path.join(dir, "fbx-deploy-bundle", "chart"), { recursive: true });
+  execFileSync("tar", ["-czf", path.join(dir, "fbx-deploy-bundle", "chart", "svc-1.0.0.tgz"), "-C", src, "svc"]);
+  fs.writeFileSync(path.join(dir, "rendered.yaml"), rendered);
+  return runStep(renderGuard(), { IMAGE_REPOSITORY: IMG_REPO, IMAGE_DIGEST: IMG_DIGEST }, { cwd: dir });
+}
+
+const pod = (...images) =>
+  "---\n# Source: svc/templates/deployment.yaml\napiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n" +
+  "      initContainers:\n" + images.slice(1).map((i) => `        - name: init\n          image: ${i}\n`).join("") +
+  `      containers:\n        - name: app\n          image: ${images[0]}\n          imagePullPolicy: IfNotPresent\n`;
+
+test("helm-deploy validate runs the render guard on the bundle before uploading it", () => {
+  const { validate } = helmDeploy().jobs;
+  const ids = validate.steps.map((s) => s.id ?? s.uses ?? s.name);
+  const bundle = ids.indexOf("bundle");
+  const guard = ids.indexOf("render-guard");
+  const upload = validate.steps.findIndex((s) => String(s.uses ?? "").startsWith("actions/upload-artifact@"));
+  assert.ok(bundle >= 0 && guard > bundle && upload > guard, `order bundle < render-guard < upload, got ${ids.join(", ")}`);
+  assert.equal(renderGuard().env.IMAGE_REPOSITORY, "${{ inputs.image-repository }}");
+  assert.equal(renderGuard().env.IMAGE_DIGEST, "${{ inputs.image-digest }}");
+});
+
+test("helm-deploy render guard admits a chart whose every image is the verified digest", () => {
+  for (const image of [`"${IMG_REPO}@${IMG_DIGEST}"`, `${IMG_REPO}@${IMG_DIGEST}`, `'${IMG_REPO}@${IMG_DIGEST}'`]) {
+    const r = runRenderGuard(pod(image, image));
+    assert.equal(r.status, 0, image + r.stdout + r.stderr);
+  }
+});
+
+test("helm-deploy render guard refuses any other image, an image in another YAML form, and a render without one", () => {
+  const ok = `"${IMG_REPO}@${IMG_DIGEST}"`;
+  const cases = {
+    tag: pod(`"${IMG_REPO}:v1"`),
+    "other digest": pod(`"${IMG_REPO}@sha256:${"b".repeat(64)}"`),
+    "extra init image": pod(ok, '"busybox:1.36"'),
+    "digest plus tag": pod(`"${IMG_REPO}:v1@${IMG_DIGEST}"`),
+    "flow style": pod(ok).replace("      containers:", `      containers: [{name: side, image: "busybox"}]\n      x:`),
+    "json key": pod(ok) + `---\n{"kind": "Pod", "spec": {"containers": [{"name": "x", "image": "busybox"}]}}\n`,
+    "no image": "---\napiVersion: v1\nkind: ConfigMap\n",
+  };
+  for (const [name, rendered] of Object.entries(cases)) {
+    const r = runRenderGuard(rendered);
+    assert.notEqual(r.status, 0, name);
+    assert.match(r.stdout + r.stderr, /::error::/, name);
+  }
+  const r = runRenderGuard(pod(`"${IMG_REPO}:v1"`));
+  assert.match(r.stdout, new RegExp(`::error::every container image must be ${IMG_REPO.replace(/\./g, "\\.")}@${IMG_DIGEST}`));
+  assert.match(r.stdout, /image: "123456789012\.dkr\.ecr\.me-central-1\.amazonaws\.com\/fintechbankx\/loan-lifecycle-service:v1"/);
+});
+
+test("helm-deploy render guard refuses a chart that calls lookup, in its own or a subchart's templates", () => {
+  const ok = pod(`"${IMG_REPO}@${IMG_DIGEST}"`);
+  const secretLookup = 'checksum/secret: {{ (lookup "v1" "Secret" .Release.Namespace "db").data | toJson | sha256sum }}\n';
+  for (const file of ["templates/deployment.yaml", "templates/_helpers.tpl", "charts/sub/templates/cm.yaml"]) {
+    const r = runRenderGuard(ok, { "templates/deployment.yaml": "kind: Deployment\n", [file]: secretLookup });
+    assert.notEqual(r.status, 0, file);
+    assert.match(r.stdout, new RegExp(`::error::the chart calls lookup.*svc/${file.replace(/\./g, "\\.")}`), file);
+  }
+  const r = runRenderGuard(ok, { "templates/deployment.yaml": "kind: Deployment\n", "README.md": "uses lookup\n" });
+  assert.equal(r.status, 0, "only templates count" + r.stdout + r.stderr);
+});
+
 // Helm's default storage driver keeps every release in a Secret; the deploy roles'
 // namespaced Role (mesh repository) grants ConfigMaps and no Secrets at all.
 const HELM_CLUSTER_COMMAND = /\bhelm\s+(upgrade|install|rollback|history|uninstall|status|list|get|test)\b/;

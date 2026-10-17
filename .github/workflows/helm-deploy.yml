@@ -5,7 +5,8 @@ name: helm-deploy
 #   validate: resolve platform-ref to a commit (prod: commit SHA or tag only),
 #             check the chart out once, package chart + values into a bundle,
 #             helm lint + helm template + kubeconform on that bundle (no cloud access),
-#             upload the bundle and publish its digest as a job output
+#             refuse a render with any image but image-repository@image-digest or a
+#             chart that calls lookup, upload the bundle and publish its digest
 #   deploy:   GitHub environment gate -> download the bundle and check its digest
 #             -> AWS OIDC -> cosign verify of the image digest (keyless, fail closed)
 #             -> helm upgrade --install --atomic --wait with the bundled chart
@@ -28,7 +29,9 @@ name: helm-deploy
 # Override with cosign-certificate-identity-regexp when the image is built by a
 # different workflow. The deploy role therefore also needs ECR read
 # (ecr:GetAuthorizationToken, ecr:BatchGetImage, ecr:GetDownloadUrlForLayer) on
-# the service repository to fetch the signature.
+# the service repository to fetch the signature. cosign checks that one image
+# only, and binds what runs only while the deploy role trusts this workflow alone
+# (terraform-modules github-oidc bind_platform_workflow_ref, default false).
 #
 # Environments are GitHub environments named after inputs.environment;
 # configure "Required reviewers" on staging and prod in the service repository
@@ -374,6 +377,42 @@ jobs:
             echo "- chart: \`$(basename "$chart")\` (sha256 \`$(sha256sum "$chart" | cut -d' ' -f1)\`)"
             echo "- bundle digest: \`$digest\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Refuse a render the deploy would not reproduce or cosign did not verify
+        id: render-guard
+        env:
+          IMAGE_REPOSITORY: ${{ inputs.image-repository }}
+          IMAGE_DIGEST: ${{ inputs.image-digest }}
+        run: |
+          set -euo pipefail
+          # cosign (deploy job) verifies only image-repository@image-digest, so every container
+          # image of the render must be exactly that; any other form of an image key fails too.
+          want="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+          if ! awk -v want="$want" -v q="'" '
+            $0 ~ ("image[\"" q "]?[[:space:]]*:") {
+              line = $0
+              sub(/^[[:space:]]+/, "", line); sub(/^-[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+              if (line == "image: \"" want "\"" || line == "image: " want || line == "image: " q want q) { ok++; next }
+              print FILENAME ":" NR ": " $0; bad++
+            }
+            END { exit (bad || !ok) ? 1 : 0 }' rendered.yaml > image-lines.txt; then
+            echo "::error::every container image must be ${want} (the digest cosign verifies); the render has none or also:"
+            cat image-lines.txt
+            exit 1
+          fi
+          # lookup: this job renders without a cluster, so lookup returns empty here; the deploy job
+          # renders against the cluster, where the deploy Role (mesh deploy-rbac.yaml) grants no
+          # Secrets and a Secret lookup aborts the upgrade. Either way the validated render is not
+          # the deployed one.
+          charts=(fbx-deploy-bundle/chart/*.tgz)
+          found=()
+          while IFS= read -r f; do
+            if tar -xzOf "${charts[0]}" "$f" | grep -qw lookup; then found+=("$f"); fi
+          done < <(tar -tzf "${charts[0]}" | grep -E '/templates/.*[^/]$')
+          if [ "${#found[@]}" -gt 0 ]; then
+            echo "::error::the chart calls lookup, which the deploy cannot reproduce: ${found[*]}"
+            exit 1
+          fi
 
       - name: Upload deploy bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
