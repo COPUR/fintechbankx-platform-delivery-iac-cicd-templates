@@ -8,7 +8,8 @@ stages:
 variables:
   GRADLE_OPTS: "-Dorg.gradle.daemon=false"
   GITLEAKS_VERSION: "8.24.3"
-  NODE_VERSION: "22.23.3"
+  # Namespaced: a consuming project's own NODE_VERSION variable must not change it.
+  FBX_NODE_VERSION: "22.23.3"
 
 quality_gates:
   stage: verify
@@ -26,12 +27,12 @@ quality_gates:
         aarch64|arm64) node_arch=arm64; node_sha=5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2 ;;
         *) echo "ERROR: no Node.js build for architecture $(uname -m)"; exit 1 ;;
       esac
-      if [ "$NODE_VERSION" != "22.23.3" ]; then
-        echo "ERROR: no pinned sha256 for Node.js $NODE_VERSION; add each architecture's sha256 from that release's SHASUMS256.txt to this job"
+      if [ "$FBX_NODE_VERSION" != "22.23.3" ]; then
+        echo "ERROR: no pinned sha256 for Node.js $FBX_NODE_VERSION; add each architecture's sha256 from that release's SHASUMS256.txt to this job"
         exit 1
       fi
       node_dir="$(mktemp -d)"
-      curl -sSfL -o "$node_dir/node.tar.gz" "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.gz"
+      curl -sSfL -o "$node_dir/node.tar.gz" "https://nodejs.org/dist/v${FBX_NODE_VERSION}/node-v${FBX_NODE_VERSION}-linux-${node_arch}.tar.gz"
       echo "${node_sha}  $node_dir/node.tar.gz" | sha256sum -c -
       tar -xz -C "$node_dir" -f "$node_dir/node.tar.gz" --strip-components=1
       export PATH="$node_dir/bin:$PATH"

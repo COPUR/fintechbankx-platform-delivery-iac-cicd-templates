@@ -369,7 +369,7 @@ const NODE = {
 };
 test("templates/ci/gitlab/java23-quality-gates.yml installs Node.js 22.23.3 for the job architecture, checks its sha256 and refuses other versions", () => {
   const ci = YAML.parse(fs.readFileSync(path.join(repo, "templates/ci/gitlab/java23-quality-gates.yml"), "utf8"));
-  assert.equal(String(ci.variables.NODE_VERSION), NODE.version);
+  assert.equal(String(ci.variables.FBX_NODE_VERSION), NODE.version);
   const before = ci.quality_gates.before_script.map(String);
   assert.ok(!before.some((l) => /nodesource|install -y[^\n]*\bnodejs\b/.test(l)), "no NodeSource or distribution Node.js install");
   const at = before.findIndex((l) => l.includes("https://nodejs.org/dist/"));
@@ -379,7 +379,7 @@ test("templates/ci/gitlab/java23-quality-gates.yml installs Node.js 22.23.3 for 
   const exec = (arch, version, shaExit = 0) => {
     const s = stubs(arch, shaExit);
     const tmp = fs.mkdtempSync(path.join(tmpRoot, "fbx-tmpdir-"));
-    return { s, tmp, r: runScript(run, { NODE_VERSION: version, TMPDIR: tmp }, s.bin) };
+    return { s, tmp, r: runScript(run, { FBX_NODE_VERSION: version, TMPDIR: tmp }, s.bin) };
   };
   for (const arch of ["x86_64", "aarch64"]) {
     const { s, tmp, r } = exec(arch, NODE.version);
