@@ -10,6 +10,10 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
+// Every temporary directory this file makes lives under tmpRoot, removed when its tests end.
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-test-"));
+after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const composeDir = path.resolve(here, "..");
 const repo = path.resolve(composeDir, "..");
@@ -21,7 +25,7 @@ const servicesTsv = path.join(composeDir, "services.tsv");
 const pgInit = path.join(composeDir, "postgres", "init", "10-service-databases.sh");
 const sqlFixtures = path.join(composeDir, "scripts", "apply-sql-fixtures.sh");
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "fbx-compose-"));
+const tmp = () => fs.mkdtempSync(path.join(tmpRoot, "fbx-compose-"));
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: "utf8", ...opts });
 const parseEnv = (file) => Object.fromEntries(
   fs.readFileSync(file, "utf8").split("\n").filter((l) => l && !l.startsWith("#"))
@@ -49,7 +53,7 @@ const MONGO_FIXTURE_ROWS = [
 const allMongoRows = () => [...mongoRows().map((r) => [r.key, r.serviceId, r.profiles.join(","), r.database, r.schema,
   r.role, r.credVar, r.imageVar, r.hostPort, r.store]), ...MONGO_FIXTURE_ROWS];
 function servicesWithMongo() {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fbx-services-")), "services.tsv");
+  const file = path.join(fs.mkdtempSync(path.join(tmpRoot, "fbx-services-")), "services.tsv");
   fs.writeFileSync(file, fs.readFileSync(servicesTsv, "utf8") + MONGO_FIXTURE_ROWS.map((r) => r.join("\t")).join("\n") + "\n");
   return file;
 }
@@ -57,7 +61,7 @@ function servicesWithMongo() {
 // the named environment variables) as one JSON line, so the init scripts can
 // be tested without a database server.
 function recordingStub(name, envNames = []) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `fbx-stub-${name}-`));
+  const dir = fs.mkdtempSync(path.join(tmpRoot, `fbx-stub-${name}-`));
   const log = path.join(dir, "calls.jsonl");
   fs.writeFileSync(path.join(dir, name), [
     "#!/usr/bin/env node",
@@ -968,16 +972,21 @@ function localPostgres() {
   if (!fs.existsSync(`${bin}/initdb`)) return null;
   const asUser = process.getuid && process.getuid() === 0 ? ["runuser", "-u", "postgres", "--"] : [];
   if (asUser.length && run("id", ["postgres"]).status !== 0) return null;
+  // Directly in the temp directory, not under tmpRoot: the postgres user has to reach it.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-pg-"));
+  const remove = () => fs.rmSync(dir, { recursive: true, force: true });
   fs.chmodSync(dir, 0o777);
   const data = path.join(dir, "data");
   const port = String(20000 + Math.floor(Math.random() * 20000));
   const sh = (args) => run(asUser[0] ?? args[0], asUser.length ? [...asUser.slice(1), ...args] : args.slice(1));
-  if (sh([`${bin}/initdb`, "-D", data, "-U", "postgres", "-A", "trust"]).status !== 0) return null;
-  if (sh([`${bin}/pg_ctl`, "-D", data, "-l", path.join(dir, "server.log"), "-o", `-p ${port} -k ${dir} -c listen_addresses=''`, "-w", "start"]).status !== 0) return null;
+  if (sh([`${bin}/initdb`, "-D", data, "-U", "postgres", "-A", "trust"]).status !== 0) return remove(), null;
+  if (sh([`${bin}/pg_ctl`, "-D", data, "-l", path.join(dir, "server.log"), "-o", `-p ${port} -k ${dir} -c listen_addresses=''`, "-w", "start"]).status !== 0) return remove(), null;
   return {
     host: dir, port, user: "postgres", cred: "",
-    stop: () => sh([`${bin}/pg_ctl`, "-D", data, "-m", "immediate", "stop"])
+    stop: () => {
+      sh([`${bin}/pg_ctl`, "-D", data, "-m", "immediate", "stop"]);
+      remove();
+    }
   };
 }
 

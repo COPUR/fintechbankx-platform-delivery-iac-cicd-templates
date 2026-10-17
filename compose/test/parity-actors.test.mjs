@@ -2,7 +2,7 @@
 // the staff/customer users: the customer owner, parity-suite's FGAP v2 grant on
 // /customers, the open-finance TPP clients TPP-001 and TPP-002, their PSU and
 // API client scopes, the first-party channel client, and the lighter reset.
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,6 +12,10 @@ import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import YAML from "yaml";
 
+// Every temporary directory this file makes lives under tmpRoot, removed when its tests end.
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-test-"));
+after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const composeDir = path.resolve(here, "..");
 const initEnv = path.join(composeDir, "scripts", "init-env.sh");
@@ -19,7 +23,7 @@ const realmFixture = path.join(here, "fixtures", "realm-minimal.json");
 const composeFile = path.join(composeDir, "docker-compose.yml");
 const paritySpecFile = path.join(composeDir, "keycloak", "parity-admin-permissions.json");
 
-const tmp = (p = "fbx-actors-") => fs.mkdtempSync(path.join(os.tmpdir(), p));
+const tmp = (p = "fbx-actors-") => fs.mkdtempSync(path.join(tmpRoot, p));
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: "utf8", ...opts });
 const parseEnv = (file) => Object.fromEntries(
   fs.readFileSync(file, "utf8").split("\n").filter((l) => l && !l.startsWith("#"))

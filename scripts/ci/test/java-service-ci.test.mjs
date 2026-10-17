@@ -1,7 +1,7 @@
 // Tests for the ArchUnit gate step of java-service-ci.yml. The step's run script
 // is executed for real (bash) against a stub gate (gradlew + archunit-gate that
 // record their arguments), so the package-root rule is checked as CI runs it.
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +9,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
+
+// Every temporary directory this file makes lives under tmpRoot, removed when its tests end.
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-test-"));
+after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const workflow = () => YAML.parse(fs.readFileSync(path.join(repo, ".github/workflows/java-service-ci.yml"), "utf8"));
@@ -22,7 +26,7 @@ const gateStep = () => {
 };
 
 function runGate({ packageRoot = "", reportOnly = "false", gateExit = 0, roots = "", generated = "" } = {}) {
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-archunit-"));
+  const ws = fs.mkdtempSync(path.join(tmpRoot, "fbx-archunit-"));
   const gateDir = path.join(ws, ".fbx-platform", "tools", "archunit-gate");
   const bin = path.join(gateDir, "build", "install", "archunit-gate", "bin");
   fs.mkdirSync(bin, { recursive: true });

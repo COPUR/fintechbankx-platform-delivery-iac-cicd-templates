@@ -1,7 +1,7 @@
 // Tests for the regression-parity additions to the local/ephemeral runtime:
 // opt-in parity test actors (users + suite client layered onto the realm),
 // per-service extra environment, caller allow-lists and the monolith-oracle wiring.
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +9,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
+
+// Every temporary directory this file makes lives under tmpRoot, removed when its tests end.
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-test-"));
+after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const composeDir = path.resolve(here, "..");
@@ -18,7 +22,7 @@ const serviceEnv = path.join(composeDir, "scripts", "service-env.mjs");
 const composeFile = path.join(composeDir, "docker-compose.yml");
 const realmFixture = path.join(fixtures, "realm-minimal.json");
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "fbx-parity-"));
+const tmp = () => fs.mkdtempSync(path.join(tmpRoot, "fbx-parity-"));
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: "utf8", ...opts });
 const parseEnv = (file) => Object.fromEntries(
   fs.readFileSync(file, "utf8").split("\n").filter((l) => l && !l.startsWith("#"))
@@ -353,12 +357,12 @@ test("docker compose config applies the service-env override and the parity prof
 });
 
 test("parity fixtures need an identity realm that declares every fixture group", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-realm-"));
+  const dir = fs.mkdtempSync(path.join(tmpRoot, "fbx-realm-"));
   const realm = JSON.parse(fs.readFileSync(realmFixture, "utf8"));
   realm.groups = realm.groups.filter((g) => g.path !== "/customers");
   const old = path.join(dir, "realm-without-customers-group.json");
   fs.writeFileSync(old, JSON.stringify(realm));
-  const out = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-env-"));
+  const out = fs.mkdtempSync(path.join(tmpRoot, "fbx-env-"));
   const res = run("bash", [initEnv, "--out-dir", out, "--realm", old, "--cache-dir", path.join(out, ".cache"), "--parity-fixtures"]);
   assert.notEqual(res.status, 0);
   assert.match(res.stderr, /\/customers/);
@@ -425,12 +429,12 @@ test("init-env --parity-fixtures creates the TPP-001 client (formerly parity-tpp
 });
 
 test("the TPP clients need the realm's TPP template", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-realm-"));
+  const dir = fs.mkdtempSync(path.join(tmpRoot, "fbx-realm-"));
   const realm = JSON.parse(fs.readFileSync(realmFixture, "utf8"));
   realm.clients = realm.clients.filter((x) => x.clientId !== "of-tpp-conformance-template");
   const file = path.join(dir, "realm-without-tpp-template.json");
   fs.writeFileSync(file, JSON.stringify(realm));
-  const out = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-env-"));
+  const out = fs.mkdtempSync(path.join(tmpRoot, "fbx-env-"));
   const res = run("bash", [initEnv, "--out-dir", out, "--realm", file, "--cache-dir", path.join(out, ".cache"), "--parity-fixtures"]);
   assert.notEqual(res.status, 0);
   assert.match(res.stderr, /of-tpp-conformance-template/);
@@ -461,13 +465,13 @@ test("parity fixtures and compose never use the customer web client for staff", 
 });
 
 test("parity fixtures need an identity realm that maps customer_id (identity PR #11 or later)", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-realm-"));
+  const dir = fs.mkdtempSync(path.join(tmpRoot, "fbx-realm-"));
   const realm = JSON.parse(fs.readFileSync(realmFixture, "utf8"));
   delete realm.clientScopes;
   delete realm.userProfile;
   const old = path.join(dir, "realm-without-customer-id.json");
   fs.writeFileSync(old, JSON.stringify(realm));
-  const out = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-env-"));
+  const out = fs.mkdtempSync(path.join(tmpRoot, "fbx-env-"));
   const res = run("bash", [initEnv, "--out-dir", out, "--realm", old, "--cache-dir", path.join(out, ".cache"), "--parity-fixtures"]);
   assert.notEqual(res.status, 0);
   assert.match(res.stderr, /customer_id/);

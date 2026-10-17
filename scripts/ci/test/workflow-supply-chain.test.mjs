@@ -7,7 +7,7 @@
 //   3. helm-deploy verifies the image signature with cosign before helm upgrade.
 // The platform-ref guard and the cosign step are executed for real (bash, a
 // local bare git repository and a stub cosign on PATH).
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -15,6 +15,10 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
+
+// Every temporary directory this file makes lives under tmpRoot, removed when its tests end.
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-test-"));
+after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -123,7 +127,7 @@ test("helm-deploy deploy job verifies the bundle digest and deploys the packaged
 });
 
 function runStep(step, env, { cwd, pathPrefix } = {}) {
-  const dir = cwd ?? fs.mkdtempSync(path.join(os.tmpdir(), "fbx-step-"));
+  const dir = cwd ?? fs.mkdtempSync(path.join(tmpRoot, "fbx-step-"));
   const out = path.join(dir, "github-output");
   fs.writeFileSync(out, "");
   const script = path.join(dir, "step.sh");
@@ -146,7 +150,7 @@ function runStep(step, env, { cwd, pathPrefix } = {}) {
 }
 
 function fixturePlatformRepo() {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-platform-"));
+  const base = fs.mkdtempSync(path.join(tmpRoot, "fbx-platform-"));
   const work = path.join(base, "work");
   const bare = path.join(base, "platform.git");
   const git = (...args) => execFileSync("git", args, { cwd: work, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } }).trim();
@@ -224,7 +228,7 @@ test("helm-deploy verifies the image signature with cosign before helm upgrade",
 });
 
 function stubCosign(exitCode) {
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-cosign-"));
+  const bin = fs.mkdtempSync(path.join(tmpRoot, "fbx-cosign-"));
   fs.writeFileSync(
     path.join(bin, "cosign"),
     `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${bin}/args"\nexit ${exitCode}\n`,

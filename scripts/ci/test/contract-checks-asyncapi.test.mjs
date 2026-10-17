@@ -4,7 +4,7 @@
 // (bash, a fixture service repository with a bare origin, a stub npx and a stub
 // catalog script that records what it was shown). Set FBX_ASYNCAPI_CATALOG_DIR to a
 // checkout of the asyncapi catalog (with npm ci done) to also run the real rules.
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,6 +12,10 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
+
+// Every temporary directory this file makes lives under tmpRoot, removed when its tests end.
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-test-"));
+after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const wfPath = path.join(repo, ".github/workflows/contract-checks.yml");
@@ -27,7 +31,7 @@ const PINNED_CATALOG = "b0e31eeef1fedff3344466f25c352ed93bd79eed";
 const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
 
 function runStep(s, env, { cwd, pathPrefix } = {}) {
-  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fbx-out-")), "github-output");
+  const out = path.join(fs.mkdtempSync(path.join(tmpRoot, "fbx-out-")), "github-output");
   fs.writeFileSync(out, "");
   const res = spawnSync("bash", ["--noprofile", "--norc", "-c", s.run], {
     cwd,
@@ -42,7 +46,7 @@ function runStep(s, env, { cwd, pathPrefix } = {}) {
 
 // A service repository: origin/main holds `main` files, the checked-out branch holds `branch` files.
 function serviceRepo({ main = {}, branch, mainOnly = false } = {}) {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-svc-"));
+  const base = fs.mkdtempSync(path.join(tmpRoot, "fbx-svc-"));
   const work = path.join(base, "work");
   const bare = path.join(base, "origin.git");
   fs.mkdirSync(work);
@@ -117,7 +121,7 @@ const ENV = `${D}/common/event-envelope.yaml`;
 // Stub catalog with the interface of asyncapi-breaking.mjs at the pinned commit (ASYNCAPI_DIR, BASE_REF, merge
 // base computed by the script): records what it was shown, fails when a head spec has "BREAK" or a base spec is gone.
 function stubCatalog() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-catalog-"));
+  const dir = fs.mkdtempSync(path.join(tmpRoot, "fbx-catalog-"));
   fs.mkdirSync(path.join(dir, "scripts", "ci"), { recursive: true });
   const log = path.join(dir, "seen.log");
   fs.writeFileSync(
@@ -144,7 +148,7 @@ console.log('asyncapi breaking check passed');
 }
 
 function stubNpx(exitCode = 0) {
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-npx-"));
+  const bin = fs.mkdtempSync(path.join(tmpRoot, "fbx-npx-"));
   fs.writeFileSync(path.join(bin, "npx"), `#!/usr/bin/env bash\necho "$*" >> "${bin}/calls"\nexit ${exitCode}\n`, { mode: 0o755 });
   return { bin, calls: () => (fs.existsSync(path.join(bin, "calls")) ? fs.readFileSync(path.join(bin, "calls"), "utf8") : "") };
 }
@@ -332,11 +336,11 @@ test("a finding fails the step; specs outside asyncapi-spec-dir are not the prov
 test("missing catalog script, or one without ASYNCAPI_DIR support, fails closed", () => {
   const svc = serviceRepo({ main: { [SPEC]: spec(), [ENV]: envelope } });
   const r = find(svc);
-  let b = breaking(svc, r, { dir: fs.mkdtempSync(path.join(os.tmpdir(), "fbx-empty-")) });
+  let b = breaking(svc, r, { dir: fs.mkdtempSync(path.join(tmpRoot, "fbx-empty-")) });
   assert.notEqual(b.status, 0);
   assert.match(b.log, /not found at the pinned catalog commit/);
   // A catalog commit from before ASYNCAPI_DIR would check asyncapi/ only and pass vacuously for api/asyncapi.
-  const old = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-old-catalog-"));
+  const old = fs.mkdtempSync(path.join(tmpRoot, "fbx-old-catalog-"));
   fs.mkdirSync(path.join(old, "scripts", "ci"), { recursive: true });
   fs.writeFileSync(path.join(old, "scripts", "ci", "asyncapi-breaking.mjs"), "console.log('asyncapi breaking check passed');\n");
   b = breaking(svc, r, { dir: old });

@@ -1,10 +1,15 @@
 // Structure tests for the ephemeral-env reusable workflow.
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
+
+// Every temporary directory this file makes lives under tmpRoot, removed when its tests end.
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-test-"));
+after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -98,10 +103,9 @@ test("ephemeral-env: monolith from a pinned image or built from the caller's con
 
 test("ephemeral-env: the exported base URLs carry each service's host port (services.tsv column 9, not the store column after it)", async () => {
   const { spawnSync } = await import("node:child_process");
-  const os = await import("node:os");
   const steps = workflow().jobs.ephemeral.steps;
   const step = steps[stepIndex(steps, /Export test environment/)];
-  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fbx-export-")), "github.env");
+  const out = path.join(fs.mkdtempSync(path.join(tmpRoot, "fbx-export-")), "github.env");
   const composeDir = path.join(repo, "compose");
   const res = spawnSync("bash", ["-c", step.run], { encoding: "utf8", env: { ...process.env, FBX_COMPOSE: composeDir, GITHUB_ENV: out } });
   assert.equal(res.status, 0, res.stderr);

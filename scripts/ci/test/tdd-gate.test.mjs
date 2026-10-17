@@ -1,5 +1,5 @@
 // Tests for the "tests travel with code" gate (ADR-029 decision 1.2).
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -7,6 +7,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { evaluate, OPT_OUT_LABEL } from "../tdd-gate.mjs";
+
+// Every temporary directory this file makes lives under tmpRoot, removed when its tests end.
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fbx-test-"));
+after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
 
 const script = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "tdd-gate.mjs");
 
@@ -87,7 +91,7 @@ test("source sets that only look like test sets do not count", () => {
 });
 
 test("CLI reads the diff between two refs of a git repo and the labels", () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "tdd-gate-"));
+  const repo = fs.mkdtempSync(path.join(tmpRoot, "tdd-gate-"));
   const git = (...a) => {
     const r = spawnSync("git", a, { cwd: repo, encoding: "utf8" });
     assert.equal(r.status, 0, r.stderr);
