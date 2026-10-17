@@ -300,23 +300,29 @@ test("service-env rejects Spring profile, configuration-source and JVM option ov
   assert.equal(res.status, 0, res.stderr);
 });
 
-test("service-env switches the part-B defaults: seeding (D6), outbox relays (D4), adapters (D3) and cache mode", () => {
-  const { res, out } = renderServiceEnv([
-    "payee-verification-service__PAYEE_DIRECTORY_SEED_ENABLED=true",
-    "svc-of-open-products-catalog__OPEN_PRODUCTS_SEED_ENABLED=true",
-    "atm-directory-service__ATM_DIRECTORY_SEED_ENABLED=true",
-    "consent-authorization-service__OUTBOX_RELAY_ENABLED=false",
-    "payment-recurring-mandates-service__OUTBOX_RELAY_ENABLED=true",
-    "payment-recurring-mandates-service__ACCOUNTS_ADAPTER=http",
-    "business-financial-data-service__OPENFINANCE_BFD_CACHE_MODE=inmemory"
-  ]);
+test("service-env switches the part-B defaults: seeding (D6), outbox relays (D4), adapters (D3) and a cache setting", () => {
+  // Every line differs from what compose gives that service, and every one must
+  // reach the override, so a name service-env dropped would fail here. The
+  // cache mode stays inmemory (D8): redis would need REDIS_URL, which
+  // service-env rejects, so the cache line is a TTL.
+  const lines = {
+    "payee-verification-service": { PAYEE_DIRECTORY_SEED_ENABLED: "true" },
+    "open-products-catalog-service": { OPEN_PRODUCTS_SEED_ENABLED: "true" },
+    "atm-directory-service": { ATM_DIRECTORY_SEED_ENABLED: "true" },
+    "consent-authorization-service": { OUTBOX_RELAY_ENABLED: "false" },
+    "payment-recurring-mandates-service": { OUTBOX_RELAY_ENABLED: "true", ACCOUNTS_ADAPTER: "http" },
+    "business-financial-data-service": { OPENFINANCE_BFD_CACHE_TTL: "5s" }
+  };
+  const ids = { "open-products-catalog-service": "svc-of-open-products-catalog" }; // one line by service id
+  const { res, out } = renderServiceEnv(Object.entries(lines).flatMap(([key, env]) =>
+    Object.entries(env).map(([k, v]) => `${ids[key] ?? key}__${k}=${v}`)));
   assert.equal(res.status, 0, res.stderr);
+  const compose = composeDoc().services;
+  for (const [key, env] of Object.entries(lines)) {
+    for (const [k, v] of Object.entries(env)) assert.notEqual(compose[key].environment[k], v, `${key}.${k}=${v} is the compose value, not a switch`);
+  }
   const doc = JSON.parse(fs.readFileSync(out, "utf8")).services;
-  assert.equal(doc["payee-verification-service"].environment.PAYEE_DIRECTORY_SEED_ENABLED, "true");
-  assert.equal(doc["open-products-catalog-service"].environment.OPEN_PRODUCTS_SEED_ENABLED, "true");
-  assert.equal(doc["atm-directory-service"].environment.ATM_DIRECTORY_SEED_ENABLED, "true");
-  assert.equal(doc["consent-authorization-service"].environment.OUTBOX_RELAY_ENABLED, "false");
-  assert.equal(doc["payment-recurring-mandates-service"].environment.ACCOUNTS_ADAPTER, "http");
+  assert.deepEqual(doc, Object.fromEntries(Object.entries(lines).map(([key, env]) => [key, { environment: env }])));
 });
 
 test("docker compose config applies the service-env override and the parity profile", { skip: !dockerCompose && "docker compose not available" }, () => {
