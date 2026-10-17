@@ -101,7 +101,7 @@ on:
         type: string
         default: ""
       service-env:
-        description: Newline separated <service>__<VAR>=<value> lines of extra service environment (credential, identity/database wiring, Spring profile, configuration source and JVM option names are rejected).
+        description: Newline separated <service>__<VAR>=<value> lines of extra service environment (credential, identity/database wiring, Spring profile, configuration source, JVM option, spring.main, Kafka security, spring.ssl and schema-management names are rejected).
         type: string
         default: ""
       seed-command:

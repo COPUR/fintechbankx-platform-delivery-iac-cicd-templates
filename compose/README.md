@@ -387,7 +387,14 @@ configuration comes from or the JVM options (`SPRING_PROFILES_*`,
 `JDK_JAVA_OPTIONS`): the JSON and `-D` forms set any property, a datastore URI
 included, the profile and config names add the `aws` profile or load its file
 (TLS to the plain local MongoDB), and the images set `JAVA_TOOL_OPTIONS`
-themselves (`MaxRAMPercentage`, D11). Names are compared the way Spring Boot
+themselves (`MaxRAMPercentage`, D11). Rejected as well, because the platform
+chart's `fbx.guard` refuses them on every route and a parity run must not rely
+on a setting a deployed service cannot have: Spring Boot's startup
+(`SPRING_MAIN_*`), Kafka security (a `KAFKA` name with `SASL`, `JAAS`,
+`SECURITY` or `SSL`, e.g. `KAFKA_SECURITY_PROTOCOL`,
+`SPRING_KAFKA_PROPERTIES_SASL_MECHANISM`), SSL bundles (`SPRING_SSL_*`) and
+schema management (`SPRING_JPA_*`, `SPRING_SQL_INIT_*`, `HIBERNATE_*`,
+`JAKARTA_PERSISTENCE_*`, `JAVAX_PERSISTENCE_*`). Names are compared the way Spring Boot
 maps them, with each run of `_` as one `_` and a trailing `_` dropped
 (`SPRING__DATA__MONGODB__URI` binds `spring.data.mongodb.uri`). `CRED` also
 matches loan's `CUSTOMER_CREDIT_*`: change those in the compose file. Example: `payment-initiation-settlement-service__OUTBOX_RELAY_ENABLED=true`

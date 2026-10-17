@@ -16,6 +16,11 @@
 // (SPRING_PROFILES_*, SPRING_CONFIG_*, SPRING_APPLICATION_JSON, JAVA_TOOL_OPTIONS,
 // JDK_JAVA_OPTIONS): these carry any property, the datastore URIs included, or
 // add the aws profile; every service runs with SPRING_PROFILES_ACTIVE=local only.
+// Also rejected, as the platform chart's fbx.guard refuses them: Spring Boot's
+// startup (SPRING_MAIN_*), Kafka security (any KAFKA name with SASL, JAAS,
+// SECURITY or SSL), SSL bundles (SPRING_SSL_*) and schema management
+// (SPRING_JPA_*, SPRING_SQL_INIT_*, HIBERNATE_*, JAKARTA_PERSISTENCE_*,
+// JAVAX_PERSISTENCE_*).
 // Spring Boot maps an environment name with a run of "_" (or a trailing "_") as
 // if it were one "_" (SPRING__DATA__MONGODB__URI binds spring.data.mongodb.uri),
 // so names are matched in that form.
@@ -52,6 +57,11 @@ const WIRING = new RegExp("^(" + [
 // Generic property carriers, profile and config-location switches, JVM options.
 // The images set JAVA_TOOL_OPTIONS themselves (MaxRAMPercentage, decision D11).
 const RUNTIME = /^(SPRING_PROFILES_|SPRING_CONFIG_|SPRING_APPLICATION_JSON$|JAVA_TOOL_OPTIONS$|JDK_JAVA_OPTIONS$)/;
+// Settings the platform chart refuses on every route (fbx.guard).
+const PLATFORM = new RegExp("(" + [
+  "^SPRING_MAIN(_|$)", "KAFKA(_.*)?_(SASL|JAAS|SECURITY|SSL)(_|$)", "^SPRING_SSL(_|$)",
+  "^SPRING_JPA(_|$)", "^SPRING_SQL_?INIT(_|$)", "^HIBERNATE(_|$)", "^(JAKARTA|JAVAX)_PERSISTENCE(_|$)"
+].join("|") + ")");
 // The name as Spring Boot's environment mapping sees it.
 const springForm = (name) => name.replace(/_+/g, "_").replace(/_$/, "");
 
@@ -70,6 +80,12 @@ fs.readFileSync(input, "utf8").split("\n").forEach((raw, i) => {
   const canonical = springForm(name);
   if (CREDENTIAL.test(canonical) || WIRING.test(canonical)) {
     errors.push(`${where}: ${name} looks like a credential or identity/database wiring override; not allowed`);
+    return;
+  }
+  if (PLATFORM.test(canonical)) {
+    errors.push(`${where}: ${name} would change Spring Boot's startup (spring.main), Kafka security, an SSL bundle (spring.ssl) ` +
+      "or schema management (spring.jpa, spring.sql.init, hibernate, jakarta/javax.persistence), which the platform chart " +
+      "refuses as well; not allowed");
     return;
   }
   if (RUNTIME.test(canonical)) {

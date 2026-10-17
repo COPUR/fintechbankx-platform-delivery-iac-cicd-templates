@@ -304,6 +304,46 @@ test("service-env rejects Spring profile, configuration-source and JVM option ov
   assert.equal(res.status, 0, res.stderr);
 });
 
+test("service-env rejects spring.main, Kafka security, SSL bundle and schema-management names, as the platform chart does", () => {
+  // fbx.guard refuses these on every route of the chart; a parity run must not
+  // depend on a setting a deployed service cannot have.
+  const platform = /startup \(spring\.main\), Kafka security, an SSL bundle \(spring\.ssl\) or schema management/;
+  for (const line of [
+    "loan-lifecycle-service__SPRING_MAIN_ALLOW_BEAN_DEFINITION_OVERRIDING=true",
+    "risk-decisioning-service__SPRING_MAIN_SOURCES=com.example.Other",
+    "customer-profile-kyc-service__SPRING__MAIN__LAZY_INITIALIZATION=true",
+    "payment-initiation-settlement-service__KAFKA_SECURITY_PROTOCOL=SASL_SSL",
+    "payment-initiation-settlement-service__SPRING_KAFKA_SECURITY_PROTOCOL=SSL",
+    "consent-authorization-service__SPRING_KAFKA_PROPERTIES_SASL_MECHANISM=PLAIN",
+    "consent-authorization-service__SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG=x",
+    "payment-bulk-orchestration-service__SPRING_KAFKA_PRODUCER_SSL_PROTOCOL=TLSv1.2",
+    "loan-lifecycle-service__SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM=",
+    "risk-decisioning-service__SPRING_SSL_BUNDLE_WATCH_FILE_QUIET_PERIOD=1s",
+    "customer-profile-kyc-service__SPRING_JPA_HIBERNATE_DDL_AUTO=create",
+    "compliance-evidence-service__SPRING_JPA_GENERATE_DDL=true",
+    "risk-decisioning-service__SPRING_SQL_INIT_MODE=always",
+    "loan-lifecycle-service__SPRING_JPA_PROPERTIES_HIBERNATE_HBM2DDL_AUTO=update",
+    "payee-verification-service__HIBERNATE_HBM2DDL_AUTO=create",
+    "atm-directory-service__JAKARTA_PERSISTENCE_SCHEMA_GENERATION_DATABASE_ACTION=drop-and-create",
+    "open-products-catalog-service__JAVAX_PERSISTENCE_SCHEMA_GENERATION_DATABASE_ACTION=create",
+    "banking-metadata-service__SPRING__JPA__SHOW_SQL=true"
+  ]) {
+    const { res, out } = renderServiceEnv([line]);
+    assert.notEqual(res.status, 0, `${line} must be rejected`);
+    assert.match(res.stderr, platform, line);
+    assert.equal(fs.existsSync(out), false, `${line}: no override written`);
+  }
+  // Names that only share a prefix stay allowed.
+  const { res } = renderServiceEnv([
+    "loan-lifecycle-service__SPRING_MAINTENANCE_WINDOW=sunday",
+    "customer-profile-kyc-service__SPRING_DATA_JPA_REPOSITORIES_BOOTSTRAP_MODE=deferred",
+    "risk-decisioning-service__APP_HIBERNATE_STATS=true",
+    "payment-initiation-settlement-service__KAFKA_TOPIC_PREFIX=parity",
+    "risk-decisioning-service__SPRING_SQLX_MODE=x"
+  ]);
+  assert.equal(res.status, 0, res.stderr);
+});
+
 test("service-env switches the part-B defaults: seeding (D6), outbox relays (D4), adapters (D3) and a cache setting", () => {
   // Every line differs from what compose gives that service, and every one must
   // reach the override, so a name service-env dropped would fail here. The
