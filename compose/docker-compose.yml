@@ -342,7 +342,10 @@ services:
   #     75 % of it (MaxRAMPercentage=75) instead of 75 % of the host.
   #   No OTEL_* variables for these five: Spring Boot 3.3.6 reads none and none
   #     of them maps one or ships an OTLP exporter (the part-B services below
-  #     that do get the collector's URL).
+  #     that do get the collector's URL). MANAGEMENT_TRACING_ENABLED only where a
+  #     micrometer-tracing bridge ships (of these five, loan only): without one
+  #     management.tracing.enabled does nothing.
+  #   No FINTECHBANKX_SERVICE_ID: the platform chart sets it, no service reads it.
   loan-lifecycle-service:
     image: ${FBX_IMAGE_LN_LOAN_LIFECYCLE:-fintechbankx/loan-lifecycle-service:local}
     profiles: [lending, services]
@@ -354,7 +357,6 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-ln-loan-lifecycle
       # local: application-local.yml sets fintechbankx.tls.enforce: false, so PLAINTEXT Kafka and PostgreSQL without TLS are allowed
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -399,7 +401,6 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-pay-initiation-settlement
       # local: application-local.yml sets fintechbankx.tls.enforce: false, so PLAINTEXT Kafka and PostgreSQL without TLS are allowed
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -416,7 +417,6 @@ services:
       # compliance and the customer KYC read.
       SERVICE_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_PAY_INITIATION_SETTLEMENT:?run compose/fbx-local.sh init}
       OIDC_TOKEN_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/token
-      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
       # Required, no default in the service; the same currency as loan's ledger.
       PAYMENT_DEFAULT_CURRENCY: USD
       # Decision D3: no accounts service exists; the default (http) needs
@@ -474,7 +474,6 @@ services:
       parity-admin-permissions: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-cus-profile-kyc
       # local: no application-local.yml; the TLS guards are off by the profile name (StartupAssertions)
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -497,7 +496,6 @@ services:
       IDENTITY_ADMIN_ENABLED: "true"
       KEYCLOAK_BASE_URL: http://keycloak:8080
       IDENTITY_ADMIN_CLIENT_SECRET: ${FBX_OIDC_SECRET_SVC_CUS_PROFILE_KYC:?run compose/fbx-local.sh init}
-      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
     ports:
       - "127.0.0.1:18030:8080"
     healthcheck:
@@ -533,7 +531,6 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-rsk-decisioning
       # local: no application-local.yml; the TLS guards are off by the profile name (StartupAssertions)
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -548,7 +545,6 @@ services:
       OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
       # token azp values allowed to call (read by the service as SERVICE_CALLERS)
       SERVICE_CALLERS: svc-pay-initiation-settlement
-      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
     ports:
       - "127.0.0.1:18040:8080"
     healthcheck:
@@ -584,7 +580,6 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-cmp-evidence
       # local: no application-local.yml; the profile name turns off the TLS guards
       # and the runtime role guard (one role owns and uses the schema here)
       SPRING_PROFILES_ACTIVE: local
@@ -600,7 +595,6 @@ services:
       OIDC_JWK_SET_URI: http://keycloak:8080/realms/fintechbankx/protocol/openid-connect/certs
       # token azp values allowed to call (read by the service as SERVICE_CALLERS)
       SERVICE_CALLERS: svc-pay-initiation-settlement
-      MANAGEMENT_TRACING_ENABLED: ${FBX_TRACING_ENABLED:-false}
     ports:
       - "127.0.0.1:18050:8080"
     healthcheck:
@@ -635,7 +629,6 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-pay-recurring-mandates
       # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, PostgreSQL without TLS)
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -682,7 +675,6 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-pay-bulk-orchestration
       # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, PostgreSQL without TLS)
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -723,7 +715,6 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-pay-request-to-pay
       # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, PostgreSQL without TLS)
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -759,7 +750,6 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-of-consent-authorization
       # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, PostgreSQL without TLS)
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -804,7 +794,6 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-of-payee-verification
       # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, PostgreSQL without TLS)
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -848,7 +837,6 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-of-personal-financial-data
       # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, MongoDB without TLS); never the aws profile
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -882,7 +870,6 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-of-business-financial-data
       # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, MongoDB without TLS); never the aws profile
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -916,7 +903,6 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       topic-init: {condition: service_completed_successfully}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-of-banking-metadata
       # local: application-local.yml sets fintechbankx.tls.enforce: false (PLAINTEXT Kafka, MongoDB without TLS); never the aws profile
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -948,7 +934,6 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-of-open-products-catalog
       # local: application-local.yml sets fintechbankx.tls.enforce: false (PostgreSQL without TLS)
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
@@ -978,7 +963,6 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
     environment:
-      FINTECHBANKX_SERVICE_ID: svc-of-atm-directory
       # local: application-local.yml sets fintechbankx.tls.enforce: false (PostgreSQL without TLS)
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"

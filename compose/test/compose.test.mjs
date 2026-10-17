@@ -354,7 +354,9 @@ test("every service waits for its own store, runs on 8080/8081 and is healthy on
   for (const r of services().filter((x) => x.key !== "monolith")) {
     const svc = s[r.key];
     const env = svc.environment;
-    assert.equal(env.FINTECHBANKX_SERVICE_ID, r.serviceId, `${r.key} service id`);
+    // The platform chart sets FINTECHBANKX_SERVICE_ID, but no service reads it
+    // (no application*.yml or class at the r8 heads); the id lives in services.tsv.
+    assert.equal(env.FINTECHBANKX_SERVICE_ID, undefined, `${r.key}: no service reads FINTECHBANKX_SERVICE_ID`);
     assert.equal(env.SERVER_PORT, "8080", r.key);
     assert.equal(env.MANAGEMENT_SERVER_PORT, "8081", r.key);
     assert.equal(svc.image, `\${${r.imageVar}:-fintechbankx/${r.key}:local}`, `${r.key} image default`);
@@ -475,11 +477,12 @@ test("loan, initiation, mandates and bulk get outbound client-credentials tokens
   const s = composeDoc().services;
   const callers = ["loan-lifecycle-service", "payment-initiation-settlement-service",
     "payment-recurring-mandates-service", "payment-bulk-orchestration-service"];
+  const serviceId = Object.fromEntries(services().map((r) => [r.key, r.serviceId]));
   for (const key of ALL_KEYS) {
     const env = s[key].environment;
     if (callers.includes(key)) {
       // The secret realm-import gives the client of the service id (SERVICE_CLIENT_ID keeps that default).
-      assert.equal(env.SERVICE_CLIENT_SECRET, required(oidcSecretVar(env.FINTECHBANKX_SERVICE_ID)), `${key} SERVICE_CLIENT_SECRET`);
+      assert.equal(env.SERVICE_CLIENT_SECRET, required(oidcSecretVar(serviceId[key])), `${key} SERVICE_CLIENT_SECRET`);
       assert.equal(env.OIDC_TOKEN_URI, TOKEN_URI, `${key} OIDC_TOKEN_URI (the default is localhost:8180)`);
       assert.equal(env.SERVICE_CLIENT_ID, undefined, `${key}: the client id defaults to the service id`);
     } else {
@@ -654,11 +657,11 @@ const YML_READS = {
     "DATABASE_CA_BUNDLE DB_POOL_MAX DB_POOL_MIN_IDLE DB_URL DB_USERNAME FLYWAY_PASSWORD FLYWAY_URL " +
     "FLYWAY_USER"
 };
-// Names Spring Boot 3.3.6 binds by relaxed binding (the profile, the two
-// ports, the datasource credential, management.tracing.enabled), and the
-// service id label every service container carries.
+// Names Spring Boot 3.3.6 binds by relaxed binding: the profile, the two
+// ports, the datasource credential and management.tracing.enabled (which only
+// does something with a tracing bridge; the tracing test below checks where).
 const BOOT_NAMES = ["SPRING_PROFILES_ACTIVE", "SERVER_PORT", "MANAGEMENT_SERVER_PORT", "SPRING_DATASOURCE_PASSWORD",
-  "MANAGEMENT_TRACING_ENABLED", "FINTECHBANKX_SERVICE_ID"];
+  "MANAGEMENT_TRACING_ENABLED"];
 
 test("the ten part-B services get only names their application.yml or Spring Boot reads", () => {
   const s = composeDoc().services;
@@ -757,21 +760,32 @@ test("MongoDB services: MongoDB persistence, in-memory cache and DPoP replay sto
   assert.match(s["banking-metadata-service"].environment.MONGODB_URI, /@mongo:27017\/db_of_banking_metadata_local$/);
 });
 
-test("tracing: off unless FBX_TRACING_ENABLED; services with an OTLP exporter send to the collector", () => {
-  // Mandates, bulk, rtp, consent, payee, retail, corporate and products ship
-  // micrometer-tracing-bridge-otel and map OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
-  // (defaults: cluster DNS or localhost). Metadata maps OTEL_EXPORTER_OTLP_ENDPOINT
-  // but has no tracing bridge; atm has neither.
+test("tracing: off unless FBX_TRACING_ENABLED, switched only where a tracing bridge exists; OTLP exporters send to the collector", () => {
+  // management.tracing.enabled only gates Spring Boot 3.3.6's tracing
+  // auto-configurations, and each of those needs micrometer-tracing (or a
+  // bridge) on the classpath. At the r8 heads micrometer-tracing-bridge-otel
+  // ships in loan (no OTLP exporter) and in the eight below, which also ship
+  // the OTLP exporter and map OTEL_EXPORTER_OTLP_TRACES_ENDPOINT (defaults:
+  // cluster DNS or localhost). Initiation, customer, risk, compliance,
+  // metadata and atm have no bridge (spring-boot-starter-actuator alone brings
+  // micrometer-observation, not micrometer-tracing), so they get no tracing
+  // setting at all. Metadata maps OTEL_EXPORTER_OTLP_ENDPOINT but has nothing
+  // that exports.
   const s = composeDoc().services;
   const exporting = [...PAYMENT_KEYS, "consent-authorization-service", "payee-verification-service",
     "personal-financial-data-service", "business-financial-data-service", "open-products-catalog-service"];
-  for (const key of NEW_KEYS) {
+  const bridged = ["loan-lifecycle-service", ...exporting];
+  for (const key of ALL_KEYS) {
     const env = s[key].environment;
-    if (exporting.includes(key)) {
+    if (bridged.includes(key)) {
       assert.equal(env.MANAGEMENT_TRACING_ENABLED, "${FBX_TRACING_ENABLED:-false}", key);
+    } else {
+      for (const k of Object.keys(env)) assert.doesNotMatch(k, /^(MANAGEMENT_TRACING|TRACING_)/, `${key}.${k}: no tracing bridge, the setting does nothing`);
+    }
+    if (exporting.includes(key)) {
       assert.equal(env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, COLLECTOR_TRACES, key);
     } else {
-      for (const k of Object.keys(env)) assert.doesNotMatch(k, /^(OTEL_|MANAGEMENT_TRACING)/, `${key}.${k}: no tracing bridge`);
+      for (const k of Object.keys(env)) assert.doesNotMatch(k, /^OTEL_/, `${key}.${k}: no OTLP exporter`);
     }
   }
 });

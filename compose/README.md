@@ -168,8 +168,13 @@ corporate, products), and compose points it at the collector
 (`http://otel-collector:4318/v1/traces`, `observability` profile). The five
 first services and metadata map none, atm has no tracing at all, so they get
 no endpoint. `MANAGEMENT_TRACING_ENABLED` (`FBX_TRACING_ENABLED`, default
-false) switches tracing; it also overrides payee's `TRACING_ENABLED` default
-of true, so no service tries to export unless asked.
+false) switches tracing in the nine services that ship a micrometer-tracing
+bridge: those eight and loan (which has no exporter). It also overrides
+payee's `TRACING_ENABLED` default of true, so no service tries to export
+unless asked. Initiation, customer, risk, compliance, metadata and atm have no
+tracing bridge, and without one `management.tracing.enabled` does nothing, so
+they get no tracing setting. No service gets `FINTECHBANKX_SERVICE_ID`: the
+platform chart sets it, but no service reads it (the id is in services.tsv).
 
 **Memory** (decision D11): every service container and migrate one-shot has
 `mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}`, the smallest memory limit in the
@@ -467,7 +472,8 @@ role, credential, image, profiles, port, store, `local` profile, memory
 limit, healthcheck), the service ids against the realm's service clients,
 every service's settings above and the decisions D2 to D9, the migrate
 one-shots, that every variable compose gives the ten newer services is on a
-list of the names their `application.yml` (or Spring Boot) reads, outbound
+list of the names their `application.yml` (or Spring Boot) reads, that the
+tracing switch goes only to services with a tracing bridge, outbound
 URLs against profiles and realm audiences, credential hygiene,
 `docker compose config -q` for every profile
 and the service list of `openfinance` and `services`, parity actors and their
