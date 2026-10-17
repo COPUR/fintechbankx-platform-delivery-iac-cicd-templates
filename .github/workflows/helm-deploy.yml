@@ -26,10 +26,11 @@ name: helm-deploy
 # name. It does not stop a chart written to render differently at deploy time:
 # helm upgrade renders again against the cluster, where .Release.IsUpgrade,
 # .Release.Revision and .Capabilities differ, and a lookup built through tpl
-# passes the word check. It reads lines, not YAML, and refuses mapping keys it
-# cannot read on their line. The durable control is admission in the service
-# namespaces: a policy requiring ECR images by digest plus image signature
-# verification at admission (proposed, not built).
+# passes the word check. It reads lines, not YAML, so an image key written in
+# another YAML form (an explicit ? key, an escaped or flow-style key, an alias
+# or tagged key) is not seen either. The durable control is admission in the
+# service namespaces: a policy requiring ECR images by digest plus image
+# signature verification at admission (proposed, not built).
 #
 # The image is always passed by digest and must carry a cosign keyless
 # signature from container-image.yml: certificate identity = this repository's
@@ -395,17 +396,8 @@ jobs:
           IMAGE_DIGEST: ${{ inputs.image-digest }}
         run: |
           set -euo pipefail
-          # These checks read lines, not YAML, so a mapping key they cannot read on its line is
-          # refused: an explicit key ('? image' then ': x'), an alias or tagged key (*k, !!binary),
-          # and a double-quoted key holding an escape ("\x69mage").
-          if awk '
-            /(^[[:space:]]*(-[[:space:]]+)*|[{,[][[:space:]]*)(\?([[:space:]]|$)|\*[^[:space:],{}]+[[:space:]]*:([[:space:]]|$)|![^[:space:]]+[[:space:]]+[^#]*:([[:space:]]|$))/ ||
-            /"([^"\\]|\\.)*\\([^"\\]|\\.)*"[[:space:]]*:([[:space:]]|$)/ { print FILENAME ":" NR ": " $0; bad++ }
-            END { exit bad ? 0 : 1 }' rendered.yaml > key-lines.txt; then
-            echo "::error::the render writes a mapping key the guard cannot read on its line (explicit ? key, alias or tagged key, or a quoted key with an escape):"
-            cat key-lines.txt
-            exit 1
-          fi
+          # This reads lines, not YAML: an image key in another YAML form (explicit ? key, escaped,
+          # flow without a space, alias or tagged key) is not seen. A check for honest charts only.
           # cosign (deploy job) verifies only image-repository@image-digest, so every container
           # image of the render must be exactly that; any other form of an image key fails too.
           want="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"

@@ -225,30 +225,14 @@ test("helm-deploy render guard refuses any other image, an image in another YAML
   assert.match(r.stdout, /image: "123456789012\.dkr\.ecr\.me-central-1\.amazonaws\.com\/fintechbankx\/loan-lifecycle-service:v1"/);
 });
 
-// The guard reads lines, so a key it cannot read on its line is refused outright: an explicit
-// key ('? image' then ': evil'), a double-quoted key with an escape ("\x69mage"), an alias used
-// as a key (*k where &k is image) and a tagged key (!!binary aW1hZ2U= is "image").
-test("helm-deploy render guard refuses keys a line reader cannot see: explicit, escaped, alias and tagged keys", () => {
+// The guard reads lines, not YAML: it is a check for charts that render images the usual way
+// (see the helm-deploy.yml header), and values with escapes, '?' or JSON (toPrettyJson | quote)
+// must not trip it.
+test("helm-deploy render guard passes escapes, '?' and quoted JSON in values", () => {
   const ok = `"${IMG_REPO}@${IMG_DIGEST}"`;
-  const side = (lines) => pod(ok).replace("      containers:\n", `      containers:\n${lines}`);
-  const cases = {
-    "explicit key": side("        - name: side\n          ? image\n          : busybox:1.36\n"),
-    "explicit key as sequence entry": side("        - ? image\n          : busybox:1.36\n"),
-    "explicit key in flow": side("        - {name: side, ? image : busybox}\n"),
-    "explicit key, empty first line": side("        - name: side\n          ?\n            image\n          : busybox\n"),
-    "hex-escaped key": side('        - name: side\n          "\\x69mage": busybox:1.36\n'),
-    "unicode-escaped key in flow": side('        - {"name": "side", "\\u0069mage": "busybox:1.36"}\n'),
-    "alias as key": "x: &k image\n" + side("        - name: side\n          *k : busybox:1.36\n"),
-    "tagged key": side("        - name: side\n          !!binary aW1hZ2U=: busybox:1.36\n"),
-  };
-  for (const [name, rendered] of Object.entries(cases)) {
-    const r = runRenderGuard(rendered);
-    assert.notEqual(r.status, 0, name + r.stdout + r.stderr);
-    assert.match(r.stdout, /::error::the render writes a mapping key the guard cannot read/, name + r.stdout + r.stderr);
-  }
-  // Escapes in values, '?' inside values and a quoted plain key stay allowed.
   const benign = pod(ok) +
     '---\napiVersion: v1\nkind: ConfigMap\ndata:\n  "a.b": "line\\nnext \\"q\\""\n  url: "https://x.example/?a=1"\n  q: what?\n' +
+    '  app.json: "{\\n  \\"a\\": 1,\\n  \\"b\\": [1, 2]\\n}"\n  list: "[1, ? 2]"\n' +
     "  script: |\n    #!/bin/sh\n    echo hi\n";
   const r = runRenderGuard(benign);
   assert.equal(r.status, 0, r.stdout + r.stderr);
