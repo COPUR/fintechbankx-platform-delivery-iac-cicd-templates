@@ -16,9 +16,11 @@
 // (SPRING_PROFILES_*, SPRING_CONFIG_*, SPRING_APPLICATION_JSON, JAVA_TOOL_OPTIONS,
 // JDK_JAVA_OPTIONS): these carry any property, the datastore URIs included, or
 // add the aws profile; every service runs with SPRING_PROFILES_ACTIVE=local only.
-// Also rejected, as the platform chart's fbx.guard refuses them: Spring Boot's
-// startup (SPRING_MAIN_*), Kafka security (any KAFKA name with SASL, JAAS,
-// SECURITY or SSL), SSL bundles (SPRING_SSL_*) and schema management
+// Also rejected, as the platform chart's fbx.guard refuses or pins them: Spring
+// Boot's startup (SPRING_MAIN_*), Kafka client security (a KAFKA_, SPRING_KAFKA_
+// or SPRING_CLOUD_STREAM_KAFKA_ name with SASL, JAAS, SECURITY or SSL; the chart
+// pins security.protocol to SASL_SSL or SSL and endpoint identification to https,
+// which the local PLAINTEXT Kafka cannot use), SSL bundles (SPRING_SSL_*) and schema management
 // (SPRING_JPA_*, SPRING_SQL_INIT_*, HIBERNATE_*, JAKARTA_PERSISTENCE_*,
 // JAVAX_PERSISTENCE_*).
 // Spring Boot maps an environment name with a run of "_" (or a trailing "_") as
@@ -57,9 +59,12 @@ const WIRING = new RegExp("^(" + [
 // Generic property carriers, profile and config-location switches, JVM options.
 // The images set JAVA_TOOL_OPTIONS themselves (MaxRAMPercentage, decision D11).
 const RUNTIME = /^(SPRING_PROFILES_|SPRING_CONFIG_|SPRING_APPLICATION_JSON$|JAVA_TOOL_OPTIONS$|JDK_JAVA_OPTIONS$)/;
-// Settings the platform chart refuses on every route (fbx.guard).
+// Settings the platform chart refuses on every route (fbx.guard), or pins: it takes Kafka
+// security.protocol and ssl.endpoint.identification.algorithm only as SASL_SSL/SSL and https,
+// which the local PLAINTEXT Kafka cannot use. Kafka names are the client's own (KAFKA_,
+// SPRING_KAFKA_, SPRING_CLOUD_STREAM_KAFKA_), not an application's APP_KAFKA_* settings.
 const PLATFORM = new RegExp("(" + [
-  "^SPRING_MAIN(_|$)", "KAFKA(_.*)?_(SASL|JAAS|SECURITY|SSL)(_|$)", "^SPRING_SSL(_|$)",
+  "^SPRING_MAIN(_|$)", "^(SPRING_(CLOUD_STREAM_)?)?KAFKA(_.*)?_(SASL|JAAS|SECURITY|SSL)(_|$)", "^SPRING_SSL(_|$)",
   "^SPRING_JPA(_|$)", "^SPRING_SQL_?INIT(_|$)", "^HIBERNATE(_|$)", "^(JAKARTA|JAVAX)_PERSISTENCE(_|$)"
 ].join("|") + ")");
 // The name as Spring Boot's environment mapping sees it.
@@ -84,8 +89,9 @@ fs.readFileSync(input, "utf8").split("\n").forEach((raw, i) => {
   }
   if (PLATFORM.test(canonical)) {
     errors.push(`${where}: ${name} would change Spring Boot's startup (spring.main), Kafka security, an SSL bundle (spring.ssl) ` +
-      "or schema management (spring.jpa, spring.sql.init, hibernate, jakarta/javax.persistence), which the platform chart " +
-      "refuses as well; not allowed");
+      "or schema management (spring.jpa, spring.sql.init, hibernate, jakarta/javax.persistence); the platform chart " +
+      "refuses these or pins them (Kafka security.protocol to SASL_SSL or SSL, endpoint identification to https), " +
+      "which the local PLAINTEXT Kafka cannot use; not allowed");
     return;
   }
   if (RUNTIME.test(canonical)) {

@@ -304,10 +304,11 @@ test("service-env rejects Spring profile, configuration-source and JVM option ov
   assert.equal(res.status, 0, res.stderr);
 });
 
-test("service-env rejects spring.main, Kafka security, SSL bundle and schema-management names, as the platform chart does", () => {
-  // fbx.guard refuses these on every route of the chart; a parity run must not
-  // depend on a setting a deployed service cannot have.
-  const platform = /startup \(spring\.main\), Kafka security, an SSL bundle \(spring\.ssl\) or schema management/;
+test("service-env rejects spring.main, Kafka security, SSL bundle and schema-management names, as the platform chart refuses or pins them", () => {
+  // fbx.guard refuses these on every route of the chart, or (Kafka security.protocol and
+  // endpoint identification) pins their values to ones the local PLAINTEXT Kafka cannot use;
+  // a parity run must not depend on a setting a deployed service cannot have.
+  const platform = /startup \(spring\.main\), Kafka security, an SSL bundle \(spring\.ssl\) or schema management.*refuses these or pins/;
   for (const line of [
     "loan-lifecycle-service__SPRING_MAIN_ALLOW_BEAN_DEFINITION_OVERRIDING=true",
     "risk-decisioning-service__SPRING_MAIN_SOURCES=com.example.Other",
@@ -339,7 +340,9 @@ test("service-env rejects spring.main, Kafka security, SSL bundle and schema-man
     "customer-profile-kyc-service__SPRING_DATA_JPA_REPOSITORIES_BOOTSTRAP_MODE=deferred",
     "risk-decisioning-service__APP_HIBERNATE_STATS=true",
     "payment-initiation-settlement-service__KAFKA_TOPIC_PREFIX=parity",
-    "risk-decisioning-service__SPRING_SQLX_MODE=x"
+    "risk-decisioning-service__SPRING_SQLX_MODE=x",
+    // An application's own Kafka-named setting is not a Kafka client setting.
+    "risk-decisioning-service__APP_KAFKA_TOPICS_SECURITY_ALERTS=alerts"
   ]);
   assert.equal(res.status, 0, res.stderr);
 });

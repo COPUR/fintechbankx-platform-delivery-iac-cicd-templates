@@ -20,7 +20,7 @@ monolith's `docker-compose.yml`, `docker-compose.open-finance-eventing.yml` and
 ```bash
 compose/fbx-local.sh up lending observability   # fetch assets, generate secrets, start, wait for health
 compose/fbx-local.sh up --lane payments monolith # a lane of lanes.tsv plus extra profiles
-compose/fbx-local.sh plan --lane payments monolith --budget-mib 11264   # memory plan (after init)
+compose/fbx-local.sh plan --lane payments monolith parity-fixtures --budget-mib 11264   # memory plan (after init)
 compose/fbx-local.sh compose ps
 compose/fbx-local.sh down                        # removes containers and volumes
 compose/fbx-local.sh reset                       # lighter reset between parity runs (see below)
@@ -223,9 +223,12 @@ stack runs one lane at a time (`compose/lanes.tsv`):
 together; peak is the largest set that can run at the same time, where a
 one-shot job counts only beside containers that do not wait for it (directly
 or through another job, `service_completed_successfully`). Without
-`parity-fixtures` the payments lane peaks at 11648 MiB, because
-admin-permissions then runs beside the monolith; lower `FBX_INIT_MEM_LIMIT`
-or a service limit for that combination. The limits are caps, not use: the
+`parity-fixtures` the payments and openfinance lanes peak at 11648 MiB with
+the monolith, because admin-permissions then runs beside it (lending stays at
+8576 MiB); lower `FBX_INIT_MEM_LIMIT` or a service limit for that
+combination. The workflow reads the model with the requested profiles
+(`docker compose config` leaves out the services of any other profile), and the
+plan fails when a requested profile has no container in the model. The limits are caps, not use: the
 plan is the worst case.
 
 ### Decisions
@@ -427,11 +430,14 @@ configuration comes from or the JVM options (`SPRING_PROFILES_*`,
 included, the profile and config names add the `aws` profile or load its file
 (TLS to the plain local MongoDB), and the images set `JAVA_TOOL_OPTIONS`
 themselves (`MaxRAMPercentage`, D11). Rejected as well, because the platform
-chart's `fbx.guard` refuses them on every route and a parity run must not rely
-on a setting a deployed service cannot have: Spring Boot's startup
-(`SPRING_MAIN_*`), Kafka security (a `KAFKA` name with `SASL`, `JAAS`,
-`SECURITY` or `SSL`, e.g. `KAFKA_SECURITY_PROTOCOL`,
-`SPRING_KAFKA_PROPERTIES_SASL_MECHANISM`), SSL bundles (`SPRING_SSL_*`) and
+chart's `fbx.guard` refuses them on every route, or pins their values, and a
+parity run must not rely on a setting a deployed service cannot have: Spring
+Boot's startup (`SPRING_MAIN_*`), Kafka client security (a `KAFKA_`,
+`SPRING_KAFKA_` or `SPRING_CLOUD_STREAM_KAFKA_` name with `SASL`, `JAAS`,
+`SECURITY` or `SSL`, e.g. `SPRING_KAFKA_PROPERTIES_SASL_MECHANISM`, refused by
+the chart, or `KAFKA_SECURITY_PROTOCOL`, which the chart takes only as
+`SASL_SSL` or `SSL`, values the local PLAINTEXT Kafka cannot use; an
+application's own `APP_KAFKA_*` names stay allowed), SSL bundles (`SPRING_SSL_*`) and
 schema management (`SPRING_JPA_*`, `SPRING_SQL_INIT_*`, `HIBERNATE_*`,
 `JAKARTA_PERSISTENCE_*`, `JAVAX_PERSISTENCE_*`). Names are compared the way Spring Boot
 maps them, with each run of `_` as one `_` and a trailing `_` dropped
@@ -544,9 +550,12 @@ tracing switch goes only to services with a tracing bridge, outbound
 URLs against profiles and realm audiences, credential hygiene,
 `docker compose config -q` for every profile
 and the service list of `openfinance` and `services`, the lanes and the memory
-plan (every container has a limit, each lane fits 11264 MiB and `services`
-does not, one-shot overlap, `fbx-local.sh plan` and `up --lane`), the runner,
-lane and legacy-host inputs of the workflow, parity actors and their
+plan (every container has a limit, each lane with `monolith parity-fixtures`
+fits 11264 MiB and `services` does not, one-shot overlap, a requested profile
+missing from the model, `fbx-local.sh plan` and `up --lane`, the workflow's plan
+step run against a `docker compose config` stand-in that honours `--profile`),
+the runner, lane and legacy-host inputs of the workflow, the upload of the
+hidden results directory with one artifact per lane, parity actors and their
 rendered realm layer, service-env validation, the workflow structure and its
 exported base URLs, the PostgreSQL init and SQL fixtures against a real server
 (local PostgreSQL 16 binaries or `FBX_TEST_PGHOST`), and the store split of
