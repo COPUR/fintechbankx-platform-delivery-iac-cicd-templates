@@ -413,7 +413,14 @@ editing it:
    SASL / JAAS names, the database CA mount),
    keeping each case's `--expect`
    pattern so that a case cannot pass because the render failed for another
-   reason. The digest and the checks of step 1 prove the copy and the call
+   reason. At every re-vendor, run the service's own render cases against the
+   new file too and change those that a new guard rule contradicts: a case
+   that renders a name the guard now refuses drops that name or becomes a
+   refusal case, and a case that expects a chart-local message for such a
+   name expects the guard's message, since the vendored guard fails first
+   (the Status paragraph under "Service-side TLS assertion" lists the six
+   cases the `spring.main.*` and Kafka SASL / JAAS rules change). The digest
+   and the checks of step 1 prove the copy and the call
    sites, not the adapter's mapping: only these negative render cases show
    that every value route reaches the guard. `scripts/ci/fixtures/vendored-guard-chart`
    is a worked example: `validate-chart.sh` copies `_helpers.tpl` into it
@@ -532,8 +539,9 @@ without a header, called through an adapter, an inline dict or a define of the
 chart before any workload template writes anything, and its CI runs
 [`scripts/ci/verify-vendored-guard.sh`](../../scripts/ci/verify-vendored-guard.sh),
 copied from the same commit, with the pinned sha256. When this chart's guard
-changes, every service re-vendors the file, re-pins the commit and the digest
-and ports the new negative cases (step 4); until it has, its chart runs the
+changes, every service re-vendors the file, re-pins the commit and the digest,
+ports the new negative cases and changes its own cases that a new rule
+contradicts (step 4); until it has, its chart runs the
 rules of the commit it pins, so a guard change here protects a service only
 from its next re-pin on. A service chart that does not vendor the guard depends
 on its own chart's checks. As checked on 2026-10-11 at their open pull request
@@ -549,7 +557,27 @@ twelve charts with a PostgreSQL database; corporate-data, banking-metadata and
 retail-data, on DocumentDB, pass `enabled: false`). The guard here has
 since added the `spring.main.*` and Kafka SASL / JAAS refusals (name rules 1
 and 7, and the `spring.main`, `sasl`, `jaas` and `java.security.auth` JVM
-option words); the service charts run them from their next re-vendor on. The
+option words); the service charts run them from their next re-vendor on, and
+that re-vendor fails six of their own CI cases, which have to change in the
+same pull request as the re-pin. As checked on 2026-10-17 (the `helm` job of
+each repository's `.github/workflows/deployability.yml`, run at the same heads
+with this file and its digest; every other step of that job in the 15
+repositories passes, the tool installs aside), four cases
+render MSK IAM names (`SPRING_KAFKA_PROPERTIES_SASL_MECHANISM`,
+`spring.kafka.properties.sasl.client.callback.handler.class`,
+`spring.kafka.properties.sasl.mechanism`) and expect the render to pass, while
+the guard now refuses them as "a Kafka SASL or JAAS setting": `render_ok` in
+`fintechbankx-riskcompliance-compliance-evidence-core`, `must_render` in
+`fintechbankx-riskcompliance-risk-decisioning-core`, and two `accept_values`
+cases in `fintechbankx-customer-profile-kyc-core` (the endpoint identification
+algorithm with the MSK IAM names, and the names with `_` inside an element).
+Each one drops the `sasl.*` names or becomes a refusal: the services take them
+from the `kafka-msk` profile in the image. Two `refuse` cases in
+`fintechbankx-lendingpayments-payment-orchestration-bulk-orchestration`
+(`spring.kafka.properties.sasl.jaas.config` and
+`spring.kafka.consumer.properties.sasl.mechanism`) expect the chart's own
+message "a raw Kafka client property", but the vendored guard now fails first
+with "a Kafka SASL or JAAS setting", so their expected message changes. The
 script here has since added check (d) and the symbolic link refusal of check
 (b); as checked on 2026-10-17 at the same heads, all 15 charts pass it with
 the same digest (no symbolic link; `set` only on a local `dict` in
