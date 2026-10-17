@@ -26,11 +26,12 @@ name: helm-deploy
 # name. It does not stop a chart written to render differently at deploy time:
 # helm upgrade renders again against the cluster, where .Release.IsUpgrade,
 # .Release.Revision and .Capabilities differ, and a lookup built through tpl
-# passes the word check. It reads lines, not YAML, so an image key written in
-# another YAML form (an explicit ? key, an escaped or flow-style key, an alias
-# or tagged key) is not seen either. The durable control is admission in the
-# service namespaces: a policy requiring ECR images by digest plus image
-# signature verification at admission (proposed, not built).
+# passes the word check. It reads lines, not YAML: an image key written as an
+# explicit ? key, an escaped key (block or flow), an alias or a tagged key is
+# not seen, and a line holding "image:" inside a value string fails it. The
+# durable control is admission in the service namespaces: a policy requiring
+# ECR images by digest plus image signature verification at admission
+# (proposed, not built).
 #
 # The image is always passed by digest and must carry a cosign keyless
 # signature from container-image.yml: certificate identity = this repository's
@@ -396,10 +397,11 @@ jobs:
           IMAGE_DIGEST: ${{ inputs.image-digest }}
         run: |
           set -euo pipefail
-          # This reads lines, not YAML: an image key in another YAML form (explicit ? key, escaped,
-          # flow without a space, alias or tagged key) is not seen. A check for honest charts only.
+          # This reads lines, not YAML: an explicit ? key, an escaped key (block or flow), an alias or
+          # a tagged key is not seen. A check for honest charts only.
           # cosign (deploy job) verifies only image-repository@image-digest, so every container
-          # image of the render must be exactly that; any other form of an image key fails too.
+          # image of the render must be exactly that; any other line holding an image key fails,
+          # flow style and an "image:" inside a value string (a ConfigMap holding YAML) included.
           want="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
           if ! awk -v want="$want" -v q="'" '
             $0 ~ ("image[\"" q "]?[[:space:]]*:") {

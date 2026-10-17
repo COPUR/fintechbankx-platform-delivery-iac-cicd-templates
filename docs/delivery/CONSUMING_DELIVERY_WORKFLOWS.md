@@ -166,10 +166,12 @@ Pinning (supply chain):
     templates call `lookup` by name (validate renders without a cluster, so
     `lookup` returns nothing there, while in the deploy job a Secret lookup is
     Forbidden for the deploy Role and aborts the upgrade). It reads lines, not
-    YAML, so an image key written in another YAML form (an explicit `?` key, an
-    escaped or flow-style key, an alias or tagged key) is not seen; it is meant
-    for charts that render images the usual way. It is not a control against a chart written to render
-    differently at deploy time: `helm upgrade` renders again against the
+    YAML: an image key written as an explicit `?` key, an escaped key (block
+    or flow), an alias or a tagged key is not seen, and a line holding
+    `image:` inside a value string (a ConfigMap holding YAML) fails it; it is
+    meant for charts that render images the usual way, block or flow style.
+    It is not a control against a chart written to render differently at
+    deploy time: `helm upgrade` renders again against the
     cluster, where `.Release.IsUpgrade`, `.Release.Revision` and
     `.Capabilities` differ, and a `lookup` built through `tpl` passes the word
     check. The durable control is admission in the service namespaces: a
