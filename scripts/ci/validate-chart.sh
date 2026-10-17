@@ -196,6 +196,19 @@ must_fail "externalSecret.data SPRING_KAFKA_JAAS_ENABLED (JVM-wide JAAS login mo
 must_fail "javaToolOptions with -Djava.security.auth.login.config (JVM-wide JAAS file)" \
   --expect 'javaToolOptions must not mention .*java.security.auth' \
   --set-string 'javaToolOptions=-Djava.security.auth.login.config=./client.conf'
+# Schema management (spring.jpa.*, spring.sql.init.*, hibernate.*,
+# jakarta/javax.persistence.*) would let the service create, change or drop its
+# schema at startup with its runtime role; refused by prefix on every route and
+# in JVM options.
+must_fail "config SPRING_JPA_HIBERNATE_DDL_AUTO (schema management)" \
+  --expect 'config.SPRING_JPA_HIBERNATE_DDL_AUTO is not allowed: a schema-management setting' \
+  --set-string 'config.SPRING_JPA_HIBERNATE_DDL_AUTO=create-drop'
+must_fail "externalSecret.data hibernate.hbm2ddl.auto" \
+  --expect 'externalSecret.data must not materialise hibernate.hbm2ddl.auto' \
+  --set-string 'externalSecret.data[0].secretKey=hibernate.hbm2ddl.auto' --set-string 'externalSecret.data[0].property=ddl'
+must_fail "javaToolOptions with -Djakarta.persistence.schema-generation.database.action" \
+  --expect 'javaToolOptions must not mention .*jakarta.persistence' \
+  --set-string 'javaToolOptions=-Djakarta.persistence.schema-generation.database.action=drop-and-create'
 # The database CA mount is pinned (fbx.validateDatabaseCa): /app is the image
 # WORKDIR and Spring Boot loads optional:file:./config/application.yml, and
 # another ConfigMap or key replaces the database trust anchor.
@@ -300,6 +313,15 @@ vendored_must_fail "secret key SPRING_MAIN_SOURCES_0_ (indexed spring.main.sourc
   --set 'secrets.keys[1].secretKey=SPRING_MAIN_SOURCES_0_' --set-string 'secrets.keys[1].property=sources'
 vendored_must_fail "jvmOptions with -Dspring[main].lazy-initialization" --expect 'javaToolOptions must not mention .*mongodb, spring.main' \
   --set-string 'jvmOptions=-Dspring[main].lazy-initialization=true'
+vendored_must_fail "env SPRING_JPA_GENERATE_DDL (schema management)" \
+  --expect 'config.SPRING_JPA_GENERATE_DDL is not allowed: a schema-management setting' \
+  --set-string 'env.SPRING_JPA_GENERATE_DDL=true'
+vendored_must_fail "additionalEnv spring.sql.init.mode from valueFrom" \
+  --expect 'extraEnv must not set spring.sql.init.mode' \
+  --set 'additionalEnv[0].name=spring.sql.init.mode' \
+  --set-string 'additionalEnv[0].valueFrom.secretKeyRef.name=other' --set-string 'additionalEnv[0].valueFrom.secretKeyRef.key=mode'
+vendored_must_fail "jvmOptions with -Dhibernate.hbm2ddl.auto" --expect 'javaToolOptions must not mention .*hibernate' \
+  --set-string 'jvmOptions=-Dhibernate.hbm2ddl.auto=update'
 vendored_must_fail "env SPRING_KAFKA_PROPERTIES_SASL_MECHANISM (Kafka SASL)" \
   --expect 'config.SPRING_KAFKA_PROPERTIES_SASL_MECHANISM is not allowed: a Kafka SASL or JAAS setting' \
   --set-string 'env.SPRING_KAFKA_PROPERTIES_SASL_MECHANISM=PLAIN'

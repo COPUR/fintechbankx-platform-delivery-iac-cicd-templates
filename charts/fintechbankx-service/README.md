@@ -91,6 +91,9 @@ inside a name element:
    (`-Dspring.data.mongodb.*`, and `-DMONGODB_URI` would resolve the
    DocumentDB services' `${MONGODB_URI}` before the Secret does),
    `spring.main` (`-Dspring.main.lazy-initialization`, `-Dspring.main.sources`),
+   `spring.jpa`, `spring.sql.init`, `hibernate`, `jakarta.persistence`,
+   `javax.persistence` (schema management, rule 9; Hibernate also reads system
+   properties, so `-Dhibernate.hbm2ddl.auto=update` works without Spring),
    `sasl`, `jaas`, `java.security.auth` (`-Djava.security.auth.login.config`
    names a JVM-wide JAAS file; the Kafka client uses its `KafkaClient` entry
    when a client has no `sasl.jaas.config`),
@@ -220,6 +223,24 @@ inside a name element:
    `${MONGODB_URI}` from the env name `MONGODB_URI` only (not from
    `mongodb.uri`, `mongodb_uri` or `Mongodb_Uri`), so every other spelling of
    `(?i)^mongodb[._-]?uri$` is refused on every route.
+9. Schema management (`fbx.overrideNameReason`), by prefix on every route:
+   `(?i)^spring[._-]?jpa([._-]|$)`, `^spring[._-]?sql[._-]?init([._-]|$)`,
+   `^hibernate([._-]|$)` and `^(jakarta|javax)[._-]?persistence([._-]|$)`,
+   checked like rule 1 against the name as given and both relaxed-binding
+   readings (`SPRING_JPA_HIBERNATE_DDL_AUTO`, `spring.jpa.generate-ddl`,
+   `SPRING_JPA_PROPERTIES_HIBERNATE_HBM2DDL_AUTO`, `SPRING_SQL_INIT_MODE`,
+   `spring.sql.init.schema-locations`, `hibernate.hbm2ddl.auto`,
+   `jakarta.persistence.schema-generation.database.action`, `JAVAX_PERSISTENCE_*`,
+   `spring.j_pa.*`, `spring[jpa].*`). With Hibernate's `ddl-auto`, `generate-ddl`,
+   `hbm2ddl.auto`, the JPA schema-generation properties or Spring's SQL init
+   scripts, the service creates, changes or drops its schema at startup with
+   its runtime role; the schema belongs to the service's migrations (the
+   Flyway migration Job), and the chart sets none of these. Names that only
+   share a prefix stay allowed: `spring.data.jpa.*` (repository bootstrap),
+   `SPRING_JPAX_*`, `APP_HIBERNATE_*`, `HIBERNATES_*`, `jakarta.mail.*`,
+   `spring.sqlx.*`. Customer's, risk's and compliance's own charts already
+   refuse this family; the guard now refuses it for every service chart that
+   vendors it.
 
 ## Vendoring the guard
 
@@ -394,7 +415,8 @@ editing it:
    the `set:` paths: helm-unittest suites `database_ca_test.yaml`,
    `database_override_names_test.yaml`, `datasource_tls_names_test.yaml`,
    `db_url_test.yaml`, `spring_config_profiles_test.yaml`,
-   `spring_main_names_test.yaml`, `relaxed_binding_names_test.yaml`,
+   `spring_main_names_test.yaml`, `schema_management_names_test.yaml`,
+   `relaxed_binding_names_test.yaml`,
    `property_reading_names_test.yaml`, `ssl_bundle_names_test.yaml`,
    `tls_enforce_switch_test.yaml`, `jvm_options_test.yaml`,
    `env_sources_test.yaml`, `key_injection_test.yaml`,
@@ -410,7 +432,7 @@ editing it:
    bundle, `DB_SSL_ROOT_CERT`, JVM options, `$(VAR)` and `${...}`,
    `extraEnvFrom`, the off switch, Kafka protocol and Kafka client TLS
    names, DocumentDB names, `_` inside an element, `spring.main.*` and Kafka
-   SASL / JAAS names, the database CA mount),
+   SASL / JAAS names, schema-management names, the database CA mount),
    keeping each case's `--expect`
    pattern so that a case cannot pass because the render failed for another
    reason. At every re-vendor, run the service's own render cases against the
@@ -419,7 +441,8 @@ editing it:
    refusal case, and a case that expects a chart-local message for such a
    name expects the guard's message, since the vendored guard fails first
    (the Status paragraph under "Service-side TLS assertion" lists the six
-   cases the `spring.main.*` and Kafka SASL / JAAS rules change). The digest
+   cases the `spring.main.*` and Kafka SASL / JAAS rules change, and the
+   schema-management cases of customer, risk and compliance). The digest
    and the checks of step 1 prove the copy and the call
    sites, not the adapter's mapping: only these negative render cases show
    that every value route reaches the guard. `scripts/ci/fixtures/vendored-guard-chart`
@@ -578,6 +601,20 @@ from the `kafka-msk` profile in the image. Two `refuse` cases in
 `spring.kafka.consumer.properties.sasl.mechanism`) expect the chart's own
 message "a raw Kafka client property", but the vendored guard now fails first
 with "a Kafka SASL or JAAS setting", so their expected message changes. The
+schema-management refusals (name rule 9 and the matching JVM option words,
+added on 2026-10-17) change the expected message of eight more cases in each
+of customer, risk and compliance: the loop over `SPRING_JPA_HIBERNATE_DDL_AUTO`,
+`spring.jpa.hibernate.ddl-auto`, `SPRING_JPA_GENERATE_DDL`,
+`spring.jpa.properties.hibernate.hbm2ddl.auto`, `SPRING_SQL_INIT_MODE`,
+`spring.sql.init.schema-locations`, `hibernate.hbm2ddl.auto` and
+`jakarta.persistence.schema-generation.database.action` in
+`.github/workflows/deployability.yml` (customer line 246, risk 230,
+compliance 204, at their open pull request heads on 2026-10-17) expects the
+chart's "must not be set: the schema belongs to the migration Job", and with
+this file vendored each render fails first with "is not allowed: a
+schema-management setting" (checked by rendering the three charts with this
+file and each of the eight keys). No values file, chart test or CI case of
+the other twelve repositories sets one of these names. The
 script here has since added check (d) and the symbolic link refusal of check
 (b); as checked on 2026-10-17 at the same heads, all 15 charts pass it with
 the same digest (no symbolic link; `set` only on a local `dict` in

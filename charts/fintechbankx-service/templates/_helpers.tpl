@@ -287,6 +287,15 @@ the env names the Secret materialises and whose values are never seen here):
     to first use, sources loads further bean definitions (a class, a package
     or an XML file) and allow-bean-definition-overriding lets them replace
     the service's datasource or Kafka beans. The chart sets none;
+  - schema management, by prefix: (?i)^spring[._-]?jpa([._-]|$),
+    ^spring[._-]?sql[._-]?init([._-]|$), ^hibernate([._-]|$) and
+    ^(jakarta|javax)[._-]?persistence([._-]|$) (spring.jpa.hibernate.ddl-auto,
+    spring.jpa.generate-ddl, spring.jpa.properties.hibernate.hbm2ddl.auto,
+    spring.sql.init.mode / schema-locations, hibernate.hbm2ddl.auto,
+    jakarta.persistence.schema-generation.*). They make the service create,
+    change or drop its schema at startup with its runtime role; the schema
+    belongs to the service's migrations. spring.data.jpa.* (repository
+    bootstrap) is not refused. The chart sets none;
   - (?i)^spring[._-]?ssl([._-]|$) and any name containing ssl[._-]?bundle:
     spring.ssl.bundle.pem.* / jks.* (SPRING_SSL_BUNDLE_*) can replace the
     trust anchor of a DocumentDB, PostgreSQL or Kafka client, and
@@ -334,7 +343,9 @@ JVM options (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS, _JAVA_OPTIONS and the chart's
 javaToolOptions) can set -Dspring.datasource.url=..., -Djavax.net.ssl.*,
 -Dspring.config.*, -Dspring.profiles.*, -Dspring.ssl.bundle.*,
 -Dfintechbankx.tls.*, -Dspring.kafka.*, -Dspring.data.mongodb.*,
--Dspring.main.*, -DKAFKA_TLS_CA or -DMONGODB_URI (a system property resolves
+-Dspring.main.*, -Dspring.jpa.*, -Dspring.sql.init.*, -Dhibernate.* or
+-Djakarta/javax.persistence.* (Hibernate also reads system properties),
+-DKAFKA_TLS_CA or -DMONGODB_URI (a system property resolves
 the services' ${KAFKA_TLS_CA} and ${MONGODB_URI} before the environment
 does), -Djava.security.auth.login.config (a JVM-wide JAAS file whose
 KafkaClient entry the Kafka client uses when a client has no
@@ -345,8 +356,9 @@ from a file: a value that mentions datasource, flyway, liquibase, r2dbc, jdbc,
 ssl, application[._-]json, spring[._-]config, spring[._-]profiles,
 fintechbankx[._-]tls, security[._-]protocol, endpoint[._-]identification,
 kafka, mongo[._-]db, spring[._-]main, sasl, jaas,
-java[._-]security[._-]auth, java[._-]security[._-]properties, jdk[._-]tls or
-hostname[._-]verification
+java[._-]security[._-]auth, java[._-]security[._-]properties, jdk[._-]tls,
+hostname[._-]verification, spring[._-]jpa, spring[._-]sql[._-]init,
+hibernate or (jakarta|javax)[._-]persistence
 (also once every character other than [a-z0-9] is removed, keeping and then
 dropping white space: -Dspring..config.import, -Dspring.[profiles].active,
 -Dspring.pro_files.active, a quoted "-Dspring.pro files.active" and JSON
@@ -429,6 +441,8 @@ a spring.config.* property (import, location, additional-location, name, activat
 a profile can activate an application-<profile> config in the image (e.g. local) whose datasource and TLS settings the chart cannot check; the chart renders the only profile, from kafka.runtime
 {{- else if regexMatch "(?i)^spring[._-]?main([._-]|$)" $n -}}
 a spring.main.* property (lazy-initialization, sources, allow-bean-definition-overriding, web-application-type, cloud-platform, ..., indexed forms) is bound onto the SpringApplication and overrides the service's own settings: lazy-initialization moves a check made when a bean is created (such as a TLS assertion on the connection pool) from startup to first use, sources loads further bean definitions (a class, a package or an XML file) and allow-bean-definition-overriding lets them replace the service's datasource or Kafka beans; the chart sets none
+{{- else if regexMatch "(?i)^spring[._-]?jpa([._-]|$)|^spring[._-]?sql[._-]?init([._-]|$)|^hibernate([._-]|$)|^(jakarta|javax)[._-]?persistence([._-]|$)" $n -}}
+a schema-management setting (spring.jpa.*, spring.sql.init.*, hibernate.*, jakarta.persistence.*, javax.persistence.*: ddl-auto, generate-ddl, hbm2ddl.auto, schema-generation.*, SQL init scripts) can make the service create, change or drop its schema at startup with its runtime role; the schema belongs to the service's migrations, and the chart sets none
 {{- else if regexMatch "(?i)^spring[._-]?ssl([._-]|$)|ssl[._-]?bundle" $n -}}
 an SSL bundle property can replace the trust anchor of the service's DocumentDB, PostgreSQL or Kafka client, or point the client at another bundle
 {{- else if regexMatch "(?i)^fintechbankx[._-]?tls([._-]|$)" $n -}}
@@ -477,9 +491,9 @@ IAM over SASL_SSL; strimzi -> kafka-strimzi, Strimzi mutual TLS over SSL).
 {{- end -}}
 {{- $alt := regexReplaceAll "[^a-z0-9\\s]+" (lower $v) "" -}}
 {{- $flat := regexReplaceAll "[^a-z0-9]+" (lower $v) "" -}}
-{{- $rule := "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|security[._-]?protocol|endpoint[._-]?identification|kafka|mongo[._-]?db|spring[._-]?main|sasl|jaas|java[._-]?security[._-]?auth|java[._-]?security[._-]?properties|jdk[._-]?tls|hostname[._-]?verification|(^|[\\s\"'])@|-XX:(VMOptionsFile|Flags)" -}}
+{{- $rule := "(?i)datasource|flyway|liquibase|r2dbc|jdbc|ssl|application[._-]?json|spring[._-]?config|spring[._-]?profiles|fintechbankx[._-]?tls|security[._-]?protocol|endpoint[._-]?identification|kafka|mongo[._-]?db|spring[._-]?main|sasl|jaas|java[._-]?security[._-]?auth|java[._-]?security[._-]?properties|jdk[._-]?tls|hostname[._-]?verification|spring[._-]?jpa|spring[._-]?sql[._-]?init|hibernate|(jakarta|javax)[._-]?persistence|(^|[\\s\"'])@|-XX:(VMOptionsFile|Flags)" -}}
 {{- if or (regexMatch $rule $v) (regexMatch $rule $alt) (regexMatch $rule $flat) -}}
-{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config, spring.profiles, fintechbankx.tls, security.protocol, endpoint.identification, kafka, mongodb, spring.main, sasl, jaas, java.security.auth, java.security.properties, jdk.tls or hostname verification, nor read options from a file ('@' argument file, also quoted, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check, the trust store, the Kafka or DocumentDB client settings or login module, the SpringApplication settings or the service's TLS assertion)" .where) -}}
+{{- fail (printf "%s must not mention datasource, flyway, liquibase, r2dbc, jdbc, ssl, application.json, spring.config, spring.profiles, fintechbankx.tls, security.protocol, endpoint.identification, kafka, mongodb, spring.main, sasl, jaas, java.security.auth, java.security.properties, jdk.tls, hostname verification, spring.jpa, spring.sql.init, hibernate, jakarta.persistence or javax.persistence, nor read options from a file ('@' argument file, also quoted, -XX:VMOptionsFile, -XX:Flags) (JVM system properties would override the datasource past the sslmode=verify-full check, the trust store, the Kafka or DocumentDB client settings or login module, the SpringApplication settings or the service's TLS assertion, or manage the schema at startup)" .where) -}}
 {{- end -}}
 {{- end -}}
 
