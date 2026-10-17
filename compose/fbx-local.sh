@@ -28,7 +28,8 @@
 # observability, parity-fixtures (needs `init --parity-fixtures`). openfinance starts the
 # seven open-finance services and MongoDB, payments the payment services with consent,
 # services starts all 15 services (compose/README.md has the table). Lanes (lanes.tsv):
-# lending, payments, openfinance; each fits a 12 GiB machine with the monolith, services does not.
+# lending, payments, openfinance; each fits a 12 GiB machine with monolith and parity-fixtures,
+# services does not (compose/README.md, "Lanes and the memory plan").
 # Service images default to fintechbankx/<service>:local; override with the
 # FBX_IMAGE_* / FBX_MONOLITH_IMAGE variables (see compose/services.tsv).
 set -euo pipefail

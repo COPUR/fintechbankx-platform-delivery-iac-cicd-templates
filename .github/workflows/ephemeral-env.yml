@@ -349,9 +349,10 @@ jobs:
           MEMORY_BUDGET_MIB: ${{ inputs.memory-budget-mib }}
         run: |
           set -euo pipefail
-          # The compose model with the same files and generated .env as `up`; mem_limit in bytes.
+          # The compose model with the same files, generated .env and profiles as `up` (compose
+          # config leaves out every service whose profile is not active); mem_limit in bytes.
           config="$RUNNER_TEMP/compose-config.json"
-          bash "$FBX_COMPOSE/fbx-local.sh" compose config --format json > "$config"
+          FBX_PROFILES="$FBX_PROFILES_RESOLVED" bash "$FBX_COMPOSE/fbx-local.sh" compose config --format json > "$config"
           plan() { node "$FBX_COMPOSE/scripts/plan-memory.mjs" --config "$config" --profiles "$FBX_PROFILES_RESOLVED" "$@"; }
           plan --budget-mib "$MEMORY_BUDGET_MIB" | tee "$FBX_RESULTS_DIR/memory-plan.txt"
           peak="$(plan --json | node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(0, "utf8")).peakMiB))')"
@@ -440,8 +441,11 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ephemeral-env-${{ github.run_id }}-${{ github.run_attempt }}
+          # One artifact per lane, so the legs of a lane matrix do not collide.
+          name: ephemeral-env-${{ inputs.lane || 'stack' }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.FBX_RESULTS_DIR }}
+          # FBX_RESULTS_DIR is .fbx-results: upload-artifact skips hidden paths unless told otherwise.
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
 

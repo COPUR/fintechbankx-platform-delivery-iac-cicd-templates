@@ -195,7 +195,13 @@ function scratchCompose({ env = true } = {}) {
     "const fs = require('fs');",
     "const args = process.argv.slice(2);",
     `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");`,
-    `if (args.includes("config") && args.includes("json")) process.stdout.write(fs.readFileSync(${JSON.stringify(model)}, "utf8"));`,
+    // Like `docker compose config`: only services without a profile or in an active --profile.
+    "const active = args.flatMap((a, i) => (args[i - 1] === '--profile' ? [a] : []));",
+    `if (args.includes("config") && args.includes("json")) {`,
+    `  const m = JSON.parse(fs.readFileSync(${JSON.stringify(model)}, "utf8"));`,
+    "  m.services = Object.fromEntries(Object.entries(m.services).filter(([, s]) => !s.profiles || s.profiles.some((p) => active.includes(p))));",
+    "  process.stdout.write(JSON.stringify(m));",
+    "}",
     ""
   ].join("\n"), { mode: 0o755 });
   const local = (...args) => {
@@ -204,6 +210,8 @@ function scratchCompose({ env = true } = {}) {
     const calls = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
     return { ...res, calls };
   };
+  local.dir = dir;
+  local.bin = bin;
   return local;
 }
 const profilesOf = (call) => call.flatMap((a, i) => (call[i - 1] === "--profile" ? [a] : []));
@@ -242,4 +250,43 @@ test("fbx-local.sh up --lane: starts the lane's profiles with any extra ones", (
   assert.ok(up, "up reaches docker compose");
   assert.deepEqual(profilesOf(up), ["lending", "customer", "riskcompliance", "monolith"]);
   assert.ok(up.includes("--wait"), up.join(" "));
+});
+
+test("memory plan step: reads the compose model with the requested profiles, so the budget holds", () => {
+  const local = scratchCompose();
+  const step = stepNamed(/memory/i);
+  const runStep = (profiles) => {
+    const out = fs.mkdtempSync(path.join(tmpRoot, "fbx-plan-step-"));
+    const res = spawnSync("bash", ["-c", step.run], {
+      encoding: "utf8",
+      env: { ...cleanEnv(), PATH: `${local.bin}:${process.env.PATH}`, FBX_COMPOSE: local.dir, FBX_PROFILES_RESOLVED: profiles,
+        MEMORY_BUDGET_MIB: "11264", RUNNER_TEMP: out, FBX_RESULTS_DIR: out },
+    });
+    const planned = fs.existsSync(path.join(out, "memory-plan.txt")) ? fs.readFileSync(path.join(out, "memory-plan.txt"), "utf8") : "";
+    return { ...res, planned };
+  };
+  const all = runStep("services monolith parity-fixtures");
+  assert.equal(all.status, 1, all.stdout + all.stderr);
+  assert.match(all.stderr, /planned peak 17280 MiB .* exceeds the memory budget of 11264 MiB/);
+  const lane = runStep("payments monolith parity-fixtures");
+  assert.equal(lane.status, 0, lane.stderr);
+  assert.match(lane.planned, /payment-initiation-settlement-service/);
+  assert.match(lane.planned, /peak 11136 MiB/);
+});
+
+test("memory plan: a requested profile with no container in the model fails, so an unprofiled model cannot pass", () => {
+  const file = path.join(fs.mkdtempSync(path.join(tmpRoot, "fbx-plan-")), "compose.json");
+  const shared = Object.fromEntries(Object.entries(compose()).filter(([, s]) => !s.profiles));
+  fs.writeFileSync(file, JSON.stringify({ services: shared }));
+  const res = spawnSync("node", [path.join(composeDir, "scripts", "plan-memory.mjs"), "--config", file, "--profiles", "payments monolith"],
+    { encoding: "utf8", env: cleanEnv() });
+  assert.equal(res.status, 2);
+  assert.match(res.stderr, /profile payments matches no container/);
+});
+
+test("results upload: the hidden results directory is included, one artifact per lane", () => {
+  const upload = stepNamed(/^Upload results/);
+  assert.equal(upload.with["include-hidden-files"], true);
+  assert.match(upload.with.name, /inputs\.lane/);
+  assert.match(upload.with.path, /FBX_RESULTS_DIR/);
 });

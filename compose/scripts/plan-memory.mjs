@@ -6,7 +6,8 @@
 // FILE is the compose model as JSON: `docker compose config --format json` (fbx-local.sh plan
 // writes it; values are already interpolated and mem_limit is in bytes), or docker-compose.yml
 // parsed as is (the tests), in which case ${VAR:-default} in mem_limit is read from the
-// environment. Every container in the requested profiles must have a mem_limit.
+// environment. Every container in the requested profiles must have a mem_limit, and every
+// requested profile must have a container in the model.
 //
 // steady: the long-running containers together. peak: the largest total of containers that can
 // run at the same time. A one-shot job (restart: "no") has ended before any container that waits
@@ -50,6 +51,13 @@ const toMiB = (value, name) => {
   return Math.ceil(Number(m[1]) * factor);
 };
 
+// `docker compose config` leaves out the services of a profile it was not given, so a requested
+// profile with no container here means the model was read without it: fail rather than plan less.
+for (const p of requested) {
+  if (!Object.values(services).some((s) => s.profiles?.includes(p))) {
+    fail(`profile ${p} matches no container in the compose model; read the model with the same profiles (fbx-local.sh plan, or FBX_PROFILES for fbx-local.sh compose config)`);
+  }
+}
 const active = Object.entries(services).filter(([, s]) => !s.profiles?.length || s.profiles.some((p) => requested.has(p)));
 const names = new Set(active.map(([n]) => n));
 const containers = active.map(([name, s]) => {
@@ -103,6 +111,6 @@ else {
   console.log(`steady ${steadyMiB} MiB (long-running containers), peak ${peakMiB} MiB (largest set that can run at once)`);
 }
 if (args.budget > 0 && peakMiB > args.budget) {
-  console.error(`[plan-memory] planned peak ${peakMiB} MiB for profiles "${args.profiles}" exceeds the memory budget of ${args.budget} MiB; run one lane at a time (compose/lanes.tsv) or lower FBX_SERVICE_MEM_LIMIT`);
+  console.error(`[plan-memory] planned peak ${peakMiB} MiB for profiles "${args.profiles}" exceeds the memory budget of ${args.budget} MiB; run one lane at a time (compose/lanes.tsv) or lower FBX_SERVICE_MEM_LIMIT or FBX_INIT_MEM_LIMIT`);
   process.exit(1);
 }
