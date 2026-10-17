@@ -4,3 +4,4 @@
 *.orig
 ci/
 tests/
+.debug/

@@ -2,3 +2,5 @@ node_modules/
 compose/.env
 compose/realm.env
 compose/.cache/
+# helm template --output-dir scratch output
+.debug/
