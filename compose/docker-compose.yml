@@ -33,6 +33,7 @@ name: fintechbankx-local
 services:
   postgres:
     image: postgres:16.6-alpine
+    mem_limit: ${FBX_POSTGRES_MEM_LIMIT:-768m}
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_CRED:?run compose/fbx-local.sh init}
@@ -67,6 +68,7 @@ services:
   kafka:
     image: confluentinc/cp-kafka:7.9.8
     hostname: kafka
+    mem_limit: ${FBX_KAFKA_MEM_LIMIT:-1536m}
     environment:
       CLUSTER_ID: T-ELaTAgUxm_j7DpuTtlaQ
       KAFKA_NODE_ID: "1"
@@ -94,6 +96,7 @@ services:
   # Topics from the Kafka repo catalog (topics/generated/topics.tsv), RF 1 locally.
   topic-init:
     image: confluentinc/cp-kafka:7.9.8
+    mem_limit: ${FBX_INIT_MEM_LIMIT:-512m}
     depends_on:
       kafka:
         condition: service_healthy
@@ -113,6 +116,7 @@ services:
   # from the host: http://localhost:8180/realms/fintechbankx.
   keycloak:
     image: quay.io/keycloak/keycloak:26.7.5
+    mem_limit: ${FBX_KEYCLOAK_MEM_LIMIT:-1024m}
     command: ["start-dev", "--http-port=8080"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN_USER:?run compose/fbx-local.sh init}
@@ -135,6 +139,7 @@ services:
   # from the generated realm.env.
   realm-import:
     image: docker.io/adorsys/keycloak-config-cli:6.5.1-26.5.5@sha256:0955d98c8a341898b7aa177477edf8a1e90569ae50bbe7598141c1270b773274
+    mem_limit: ${FBX_INIT_MEM_LIMIT:-512m}
     depends_on:
       keycloak:
         condition: service_healthy
@@ -153,6 +158,7 @@ services:
   # gets only that login, not the other realm.env values. Idempotent.
   admin-permissions:
     image: docker.io/library/node:22.22.0-alpine3.22@sha256:7aa86fa052f6e4b101557ccb56717cb4311be1334381f526fe013418fe157384
+    mem_limit: ${FBX_INIT_MEM_LIMIT:-512m}
     depends_on:
       realm-import:
         condition: service_completed_successfully
@@ -193,6 +199,7 @@ services:
   parity-fixtures-import:
     image: docker.io/adorsys/keycloak-config-cli:6.5.1-26.5.5@sha256:0955d98c8a341898b7aa177477edf8a1e90569ae50bbe7598141c1270b773274
     profiles: [parity-fixtures]
+    mem_limit: ${FBX_INIT_MEM_LIMIT:-512m}
     depends_on:
       realm-import:
         condition: service_completed_successfully
@@ -226,6 +233,7 @@ services:
   parity-admin-permissions:
     image: docker.io/library/node:22.22.0-alpine3.22@sha256:7aa86fa052f6e4b101557ccb56717cb4311be1334381f526fe013418fe157384
     profiles: [parity-fixtures]
+    mem_limit: ${FBX_INIT_MEM_LIMIT:-512m}
     depends_on:
       admin-permissions:
         condition: service_completed_successfully
@@ -255,6 +263,7 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.130.0
     profiles: [observability]
+    mem_limit: ${FBX_OTEL_MEM_LIMIT:-256m}
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ./otel/collector.yaml:/etc/otelcol/config.yaml:ro
@@ -264,6 +273,7 @@ services:
   jaeger:
     image: jaegertracing/all-in-one:1.62.0
     profiles: [observability]
+    mem_limit: ${FBX_JAEGER_MEM_LIMIT:-512m}
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
@@ -279,6 +289,7 @@ services:
   mongo:
     image: mongo:7.0.41
     profiles: [openfinance, services]
+    mem_limit: ${FBX_MONGO_MEM_LIMIT:-768m}
     environment:
       MONGO_INITDB_ROOT_USERNAME: fbx-local-root
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_CRED:?run compose/fbx-local.sh init}
@@ -300,6 +311,7 @@ services:
   mongo-init:
     image: mongo:7.0.41
     profiles: [openfinance, services]
+    mem_limit: ${FBX_INIT_MEM_LIMIT:-512m}
     depends_on:
       mongo: {condition: service_healthy}
     environment:
@@ -320,6 +332,7 @@ services:
   redis:
     image: redis:7.4.1-alpine
     profiles: [monolith]
+    mem_limit: ${FBX_REDIS_MEM_LIMIT:-128m}
     command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_AUTH\" --save '' --appendonly no"]
     environment:
       REDIS_AUTH: ${REDIS_CRED:?run compose/fbx-local.sh init}
@@ -993,6 +1006,7 @@ services:
   monolith:
     image: ${FBX_MONOLITH_IMAGE:-enterprise-loan-system:1.0.0}
     profiles: [monolith]
+    mem_limit: ${FBX_MONOLITH_MEM_LIMIT:-1536m}
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -1002,6 +1016,8 @@ services:
       parity-fixtures-import: {condition: service_completed_successfully, required: false}
       parity-admin-permissions: {condition: service_completed_successfully, required: false}
     environment:
+      # The image sets no heap size; like the services, 75 % of mem_limit instead of the JVM's 25 %.
+      JAVA_TOOL_OPTIONS: ${FBX_MONOLITH_JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=75}
       SPRING_PROFILES_ACTIVE: ${FBX_MONOLITH_SPRING_PROFILES:-local}
       ORACLE_PORT: "8080"
       SERVER_PORT: "8080"

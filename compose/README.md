@@ -19,6 +19,8 @@ monolith's `docker-compose.yml`, `docker-compose.open-finance-eventing.yml` and
 
 ```bash
 compose/fbx-local.sh up lending observability   # fetch assets, generate secrets, start, wait for health
+compose/fbx-local.sh up --lane payments monolith # a lane of lanes.tsv plus extra profiles
+compose/fbx-local.sh plan --lane payments monolith --budget-mib 11264   # memory plan (after init)
 compose/fbx-local.sh compose ps
 compose/fbx-local.sh down                        # removes containers and volumes
 compose/fbx-local.sh reset                       # lighter reset between parity runs (see below)
@@ -186,8 +188,45 @@ platform chart sets it, but no service reads it (the id is in services.tsv).
 `mem_limit: ${FBX_SERVICE_MEM_LIMIT:-768m}`, the smallest memory limit in the
 fifteen services' Helm values (atm and products; the others have 896Mi or
 1Gi). The images size the heap at 75 % of the container limit
-(`MaxRAMPercentage=75`) instead of 75 % of the runner's memory, so fifteen
-JVMs fit on one runner. Raise it per run with `FBX_SERVICE_MEM_LIMIT`.
+(`MaxRAMPercentage=75`) instead of 75 % of the runner's memory. Raise it per
+run with `FBX_SERVICE_MEM_LIMIT`. Every other container has a limit too, each
+with its own variable:
+
+| Container | Limit (default) |
+|---|---|
+| postgres | `FBX_POSTGRES_MEM_LIMIT` 768m |
+| kafka (1 GiB heap, the image default) | `FBX_KAFKA_MEM_LIMIT` 1536m |
+| keycloak (dev mode, one realm) | `FBX_KEYCLOAK_MEM_LIMIT` 1024m |
+| mongo | `FBX_MONGO_MEM_LIMIT` 768m |
+| redis | `FBX_REDIS_MEM_LIMIT` 128m |
+| monolith (heap 75 % of the limit through `JAVA_TOOL_OPTIONS`, `FBX_MONOLITH_JAVA_TOOL_OPTIONS` replaces it) | `FBX_MONOLITH_MEM_LIMIT` 1536m |
+| otel-collector, jaeger | `FBX_OTEL_MEM_LIMIT` 256m, `FBX_JAEGER_MEM_LIMIT` 512m |
+| topic-init, realm-import, admin-permissions, parity-fixtures-import, parity-admin-permissions, mongo-init | `FBX_INIT_MEM_LIMIT` 512m |
+
+### Lanes and the memory plan
+
+The self-hosted environment VM (`fbx-ci-env`) has at most 12 GiB. With 1 GiB
+left for the OS and Docker, the containers get 11264 MiB, which does not hold
+all 15 services, the monolith and the shared containers at once. So the
+stack runs one lane at a time (`compose/lanes.tsv`):
+
+| Lane | Profiles | Planned peak with `monolith parity-fixtures`, default limits |
+|---|---|---|
+| lending | lending customer riskcompliance | 8064 MiB |
+| payments | payments | 11136 MiB |
+| openfinance | openfinance | 11136 MiB |
+| (none) | services | 17280 MiB: does not fit |
+
+`fbx-local.sh plan` (and the workflow, before it starts anything) runs
+`scripts/plan-memory.mjs` over
+`docker compose config --format json`: steady is the long-running containers
+together; peak is the largest set that can run at the same time, where a
+one-shot job counts only beside containers that do not wait for it (directly
+or through another job, `service_completed_successfully`). Without
+`parity-fixtures` the payments lane peaks at 11648 MiB, because
+admin-permissions then runs beside the monolith; lower `FBX_INIT_MEM_LIMIT`
+or a service limit for that combination. The limits are caps, not use: the
+plan is the worst case.
 
 ### Decisions
 
@@ -203,7 +242,7 @@ JVMs fit on one runner. Raise it per run with `FBX_SERVICE_MEM_LIMIT`.
 | D8 | no Redis for the open-finance services | `OPENFINANCE_*_CACHE_MODE=inmemory` keeps the cache and DPoP replay store in memory; the monolith's Redis is not shared |
 | D9 | metadata's database is `db_of_banking_metadata_local` | the runbook convention `db_of_banking_metadata_<env>`, not the `application.yml` default `banking_metadata_local` |
 | D10 | MongoDB `mongo:7.0.41` with one user per service | the 7.0 line the services' CI runs, pinned by full tag (their CI pins no digest) |
-| D11 | `mem_limit` per container, default 768m | the smallest Helm limit (atm, products); `FBX_SERVICE_MEM_LIMIT` raises it |
+| D11 | `mem_limit` per container, default 768m for services and migrate jobs, its own variable for every other container | the smallest Helm limit (atm, products); `FBX_SERVICE_MEM_LIMIT` raises it; the lanes and the memory plan depend on every container having one (a test checks it) |
 
 ### What does not work locally yet
 
@@ -436,6 +475,21 @@ pinned `monolith-image` or `monolith-build-context`
 `java-version`; the build gets a local tag that is never pushed. For the full
 ELMS image set `docker` and `/api/actuator/health`.
 
+**Legacy open-finance API** (`legacy-open-finance-host`, default `monolith`).
+In the mesh, `LEGACY_OPEN_FINANCE_HOST` is the host the gateway routes the
+legacy (monolith) open-finance API to. In the ephemeral environment it is the
+monolith container: the workflow exports `LEGACY_OPEN_FINANCE_HOST=127.0.0.1:18000`
+and `FBX_LEGACY_OPEN_FINANCE_BASE_URL=http://127.0.0.1:18000` to the seed and
+test commands when the monolith runs (inside the compose network it is
+`monolith:8080`), nothing when it does not, a given `host[:port]` as is, and
+nothing for an empty input.
+
+**Runner.** The job runs on the `runner` input, else the caller repository's
+`CI_RUNNER_ENV` variable, else `ubuntu-latest`. The environment VM is labelled
+`fbx-ci-env` and registered on the monolith repository only; run the caller
+from main through `workflow_dispatch`, one lane per job (`lane`), with
+`memory-budget-mib: 11264`.
+
 ## Reset between parity runs
 
 A parity run changes state the next run must not see: rows in every service
@@ -489,7 +543,10 @@ list of the names their `application.yml` (or Spring Boot) reads, that the
 tracing switch goes only to services with a tracing bridge, outbound
 URLs against profiles and realm audiences, credential hygiene,
 `docker compose config -q` for every profile
-and the service list of `openfinance` and `services`, parity actors and their
+and the service list of `openfinance` and `services`, the lanes and the memory
+plan (every container has a limit, each lane fits 11264 MiB and `services`
+does not, one-shot overlap, `fbx-local.sh plan` and `up --lane`), the runner,
+lane and legacy-host inputs of the workflow, parity actors and their
 rendered realm layer, service-env validation, the workflow structure and its
 exported base URLs, the PostgreSQL init and SQL fixtures against a real server
 (local PostgreSQL 16 binaries or `FBX_TEST_PGHOST`), and the store split of
