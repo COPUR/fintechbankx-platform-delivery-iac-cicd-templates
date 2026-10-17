@@ -85,7 +85,7 @@ tests:
     template: templates/deployment.yaml
     set:
       config:
-        spring.kafka.streams.ssl.key-password: x
+        spring.kafka.streams.ssl.key-password: <key-password>
     asserts:
       - failedTemplate:
           errorPattern: "config.spring.kafka.streams.ssl.key-password is not allowed: a Kafka client TLS setting"

@@ -97,7 +97,7 @@ tests:
     template: templates/deployment.yaml
     set:
       config:
-        spring.data.mongodb.password: x
+        spring.data.mongodb.password: <mongodb-password>
     asserts:
       - failedTemplate:
           errorPattern: "config.spring.data.mongodb.password is not allowed: a spring.data.mongodb.\\* property"
