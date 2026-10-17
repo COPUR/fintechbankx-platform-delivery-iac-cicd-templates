@@ -80,7 +80,7 @@ test("actions in jobs with id-token: write are pinned to a full commit SHA with 
 // review 2026-10-17), here and in the templates services copy. PENDING_SHA
 // names the refs whose commit has not been resolved in this repository yet;
 // each must still be in use, so the list only shrinks.
-const PENDING_SHA = ["actions/dependency-review-action@v4", "github/codeql-action/init@v4", "github/codeql-action/analyze@v4"];
+const PENDING_SHA = [];
 const allWorkflowFiles = [...workflowFiles, "templates/legacy/monorepo/github-ci.yml"];
 
 test("every third-party action in every job is pinned to a full commit SHA with a version comment", () => {
