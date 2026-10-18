@@ -43,8 +43,11 @@ name: helm-deploy
 # (proposed, not built).
 #
 # The image is always passed by digest (image-repository is a repository name,
-# optionally prefixed by <registry>[:port]/, never with a tag or digest of its
-# own) and must carry a cosign keyless
+# optionally prefixed by <registry>[:port]/, as the OCI reference grammar allows,
+# never with a tag or digest of its own). Only a pushed image can be deployed:
+# container-image.yml with push: false outputs local/<name> and an empty digest,
+# and the empty digest is refused before the repository is checked. The image
+# must carry a cosign keyless
 # signature from container-image.yml: certificate identity = this repository's
 # .github/workflows/container-image.yml at a tag or commit SHA (dev/staging also
 # accept refs/heads/main), issuer https://token.actions.githubusercontent.com,
