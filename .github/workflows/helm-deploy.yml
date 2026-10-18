@@ -28,9 +28,11 @@ name: helm-deploy
 # The render guard (validate step render-guard) is a check, not a control. It
 # catches a chart whose install render (helm template, no cluster) has an image
 # tag or a digest other than image-digest, or in which any template file holds
-# the word lookup: the chart's own and every subchart's, unpacked or packaged as
-# charts/<dep>.tgz at any depth. It does not stop a chart written to render
-# differently at deploy time:
+# the word lookup: the chart's own and every subchart's at any depth (helm
+# package writes a vendored charts/<dep>.tgz unpacked; one left packed is
+# opened too). It refuses a chart archive with an entry name holding a
+# backslash, which Helm reads as a path separator. It does not stop a chart
+# written to render differently at deploy time:
 # helm upgrade renders again against the cluster, where .Release.IsUpgrade,
 # .Release.Revision and .Capabilities differ, and a lookup built through tpl
 # passes the word check. It reads lines, not YAML: an image key written as an
@@ -40,8 +42,9 @@ name: helm-deploy
 # ECR images by digest plus image signature verification at admission
 # (proposed, not built).
 #
-# The image is always passed by digest (image-repository is <registry>/<name>,
-# never with a tag or digest of its own) and must carry a cosign keyless
+# The image is always passed by digest (image-repository is a repository name,
+# optionally prefixed by <registry>[:port]/, never with a tag or digest of its
+# own) and must carry a cosign keyless
 # signature from container-image.yml: certificate identity = this repository's
 # .github/workflows/container-image.yml at a tag or commit SHA (dev/staging also
 # accept refs/heads/main), issuer https://token.actions.githubusercontent.com,
@@ -362,11 +365,12 @@ jobs:
           fi
           # registry/name only (OCI reference grammar, optional registry with port): a tag or digest
           # here would ride along in image-repository@image-digest, which the render guard admits and
-          # cosign verifies, without anything checking it.
+          # cosign verifies, without anything checking it. Matched in the C locale: elsewhere a range
+          # such as [a-z] can match accented letters (glibc en_US.UTF-8).
           name_re='[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*'
           repo_re="^([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]+)?/)?${name_re}(/${name_re})*\$"
-          if ! [[ "$IMAGE_REPOSITORY" =~ $repo_re ]]; then
-            echo "::error::image-repository must be <registry>/<name> without a tag or digest, got '${IMAGE_REPOSITORY}'"; exit 1
+          if ! (LC_ALL=C; [[ "$IMAGE_REPOSITORY" =~ $repo_re ]]); then
+            echo "::error::image-repository must be a repository name, optionally prefixed by <registry>[:port]/, without a tag or digest, got '${IMAGE_REPOSITORY}'"; exit 1
           fi
           bundle=fbx-deploy-bundle
           rm -rf "$bundle"
@@ -435,15 +439,24 @@ jobs:
           # renders against the cluster, where the deploy Role (mesh deploy-rbac.yaml) grants no
           # Secrets and a Secret lookup aborts the upgrade. Either way the validated render is not
           # the deployed one.
-          # Every template file is read, the chart's own and each subchart's, including a subchart
-          # packaged as charts/<dep>.tgz at any depth (Helm loads those archives); an archive that
-          # cannot be read fails the step.
+          # Every template file is read, the chart's own and each subchart's at any depth. helm
+          # package (bundle step) writes each dependency, a vendored charts/<dep>.tgz included,
+          # unpacked as charts/<name>/ (an archive it cannot read fails packaging), so the bundle
+          # holds no nested archive; the */charts/*.tgz branch is defence in depth for one packed
+          # another way (another helm-version, a hand-made archive), and fails the step on an
+          # archive it cannot read.
+          # Helm's archive loader reads a backslash in an entry name as a path separator
+          # (svc/x\templates\a.yaml loads as templates/a.yaml), out of these patterns' sight, so
+          # such a name is refused; the listing (escape style) writes it as \\, a tab or newline
+          # as \t or \n.
           found=()
+          backslash=()
           scan_lookup() {
             local list f tmp
-            list=$(tar -tzf "$1")
+            list=$(tar --quoting-style=escape -tzf "$1")
             while IFS= read -r f; do
               case "$f" in
+                *\\\\*) backslash+=("$2$f") ;;
                 # grep reads all input (no -q): an early exit would end tar with SIGPIPE, and
                 # pipefail would then turn a match into a miss.
                 */templates/*[!/]) if tar -xzOf "$1" "$f" | grep -w lookup > /dev/null; then found+=("$2$f"); fi ;;
@@ -457,6 +470,10 @@ jobs:
           }
           charts=(fbx-deploy-bundle/chart/*.tgz)
           scan_lookup "${charts[0]}" ""
+          if [ "${#backslash[@]}" -gt 0 ]; then
+            echo "::error::an entry name holds a backslash, which Helm reads as a path separator, so the guard cannot tell which file it loads: ${backslash[*]}"
+            exit 1
+          fi
           if [ "${#found[@]}" -gt 0 ]; then
             echo "::error::the chart calls lookup, which the deploy cannot reproduce: ${found[*]}"
             exit 1

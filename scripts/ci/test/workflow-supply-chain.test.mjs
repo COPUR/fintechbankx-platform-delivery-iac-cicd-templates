@@ -162,21 +162,41 @@ test("helm-deploy deploy job verifies the bundle digest and deploys the packaged
 // against the cluster): every container image must be <image-repository>@<image-digest>, and
 // no template file of the chart or of any subchart may hold the word lookup (validate renders without a cluster, so lookup
 // returns empty there; in the deploy job it asks the cluster, and a Secret lookup is Forbidden
-// for the deploy Role, which aborts the upgrade).
+// for the deploy Role, which aborts the upgrade), and no entry name of the chart archive may
+// hold a backslash (Helm reads it as a path separator).
 const IMG_REPO = "123456789012.dkr.ecr.me-central-1.amazonaws.com/fintechbankx/loan-lifecycle-service";
 const IMG_DIGEST = `sha256:${"a".repeat(64)}`;
 const renderGuard = () => stepById(helmDeploy().jobs.validate, "render-guard");
 
-function runRenderGuard(rendered, templates = { "templates/deployment.yaml": "kind: Deployment\n" }) {
-  const dir = fs.mkdtempSync(path.join(tmpRoot, "fbx-guard-"));
-  const src = path.join(dir, "src");
-  for (const [file, text] of Object.entries(templates)) {
-    fs.mkdirSync(path.dirname(path.join(src, "svc", file)), { recursive: true });
-    fs.writeFileSync(path.join(src, "svc", file), text);
+// The bundle step makes the archive the guard reads with helm package, so these tests do too:
+// helm writes every dependency, a vendored charts/<dep>.tgz included, unpacked as
+// charts/<name>/, and keeps a backslash in a file name as part of the name. Without helm on
+// PATH the tests that need it skip, except in CI (CI=true), where they fail instead.
+const hasHelm = spawnSync("helm", ["version", "--short"], { encoding: "utf8" }).status === 0;
+const needsHelm = { skip: !hasHelm && process.env.CI !== "true" && "helm not on PATH" };
+
+// Chart <name> (Chart.yaml, then files) packaged into dest with helm package, or with tar for a
+// hand-made archive; returns the archive's path.
+function packChart(name, files, { dest = fs.mkdtempSync(path.join(tmpRoot, "fbx-pack-")), handMade = false } = {}) {
+  const src = fs.mkdtempSync(path.join(tmpRoot, "fbx-chart-"));
+  fs.mkdirSync(path.join(src, name));
+  fs.writeFileSync(path.join(src, name, "Chart.yaml"), `apiVersion: v2\nname: ${name}\nversion: 1.0.0\n`);
+  for (const [file, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(src, name, file)), { recursive: true });
+    fs.writeFileSync(path.join(src, name, file), content);
   }
-  fs.writeFileSync(path.join(src, "svc", "Chart.yaml"), "apiVersion: v2\nname: svc\nversion: 1.0.0\n");
-  fs.mkdirSync(path.join(dir, "fbx-deploy-bundle", "chart"), { recursive: true });
-  execFileSync("tar", ["-czf", path.join(dir, "fbx-deploy-bundle", "chart", "svc-1.0.0.tgz"), "-C", src, "svc"]);
+  fs.mkdirSync(dest, { recursive: true });
+  if (handMade) execFileSync("tar", ["-czf", path.join(dest, `${name}-1.0.0.tgz`), "-C", src, name]);
+  else {
+    assert.ok(hasHelm, "helm is not on PATH: the render guard tests package charts with helm, as the bundle step does");
+    execFileSync("helm", ["package", path.join(src, name), "--destination", dest], { encoding: "utf8" });
+  }
+  return path.join(dest, `${name}-1.0.0.tgz`);
+}
+
+function runRenderGuard(rendered, templates = { "templates/deployment.yaml": "kind: Deployment\n" }, { handMade = false } = {}) {
+  const dir = fs.mkdtempSync(path.join(tmpRoot, "fbx-guard-"));
+  packChart("svc", templates, { dest: path.join(dir, "fbx-deploy-bundle", "chart"), handMade });
   fs.writeFileSync(path.join(dir, "rendered.yaml"), rendered);
   return runStep(renderGuard(), { IMAGE_REPOSITORY: IMG_REPO, IMAGE_DIGEST: IMG_DIGEST }, { cwd: dir });
 }
@@ -197,14 +217,14 @@ test("helm-deploy validate runs the render guard on the bundle before uploading 
   assert.equal(renderGuard().env.IMAGE_DIGEST, "${{ inputs.image-digest }}");
 });
 
-test("helm-deploy render guard admits a chart whose every image is the verified digest", () => {
+test("helm-deploy render guard admits a chart whose every image is the verified digest", needsHelm, () => {
   for (const image of [`"${IMG_REPO}@${IMG_DIGEST}"`, `${IMG_REPO}@${IMG_DIGEST}`, `'${IMG_REPO}@${IMG_DIGEST}'`]) {
     const r = runRenderGuard(pod(image, image));
     assert.equal(r.status, 0, image + r.stdout + r.stderr);
   }
 });
 
-test("helm-deploy render guard refuses any other image, an image in another YAML form, and a render without one", () => {
+test("helm-deploy render guard refuses any other image, an image in another YAML form, and a render without one", needsHelm, () => {
   const ok = `"${IMG_REPO}@${IMG_DIGEST}"`;
   const cases = {
     tag: pod(`"${IMG_REPO}:v1"`),
@@ -225,30 +245,61 @@ test("helm-deploy render guard refuses any other image, an image in another YAML
   assert.match(r.stdout, /image: "123456789012\.dkr\.ecr\.me-central-1\.amazonaws\.com\/fintechbankx\/loan-lifecycle-service:v1"/);
 });
 
-// image-repository is registry/name only: a tag in it would make image-repository@image-digest
-// (what the render guard admits and cosign verifies) carry a tag that nothing checks.
-test("helm-deploy validate refuses an image-repository holding a tag or a digest", () => {
-  const bundleStep = stepById(helmDeploy().jobs.validate, "bundle");
+// image-repository is a repository name, optionally prefixed by <registry>[:port]/: a tag in it
+// would make image-repository@image-digest (what the render guard admits and cosign verifies)
+// carry a tag that nothing checks.
+const IMG_REPO_ERROR = /::error::image-repository must be a repository name, optionally prefixed by <registry>\[:port\]\/, without a tag or digest/;
+const IMG_REPO_REFUSED = [`${IMG_REPO}:v1`, `${IMG_REPO}@${IMG_DIGEST}`, `${IMG_REPO}:v1@${IMG_DIGEST}`, "loan-lifecycle-service:v1", `${IMG_REPO}/`, "", "Registry.example/App"];
+const IMG_REPO_ACCEPTED = [IMG_REPO, "local/loan-lifecycle-service", "registry.example:5000/fintechbankx/loan-lifecycle-service", "loan-lifecycle-service"];
+const IMG_REPO_ACCENTED = ["a/é", "a/bé", "a/ébc", "rég.example/a"];
+
+function runBundleRepositoryCheck(repository, env = {}) {
   const bin = fs.mkdtempSync(path.join(tmpRoot, "fbx-bin-"));
   fs.writeFileSync(path.join(bin, "helm"), "#!/bin/sh\necho stub-helm-reached\nexit 7\n", { mode: 0o755 });
-  const run = (repository) => runStep(bundleStep, { IMAGE_REPOSITORY: repository, IMAGE_DIGEST: IMG_DIGEST, CHART_PATH: "chart", VALUES_FILES: "" }, { pathPrefix: bin });
-  for (const repository of [`${IMG_REPO}:v1`, `${IMG_REPO}@${IMG_DIGEST}`, `${IMG_REPO}:v1@${IMG_DIGEST}`, "loan-lifecycle-service:v1", `${IMG_REPO}/`, "", "Registry.example/App"]) {
-    const r = run(repository);
+  const bundleStep = stepById(helmDeploy().jobs.validate, "bundle");
+  return runStep(bundleStep, { IMAGE_REPOSITORY: repository, IMAGE_DIGEST: IMG_DIGEST, CHART_PATH: "chart", VALUES_FILES: "", ...env }, { pathPrefix: bin });
+}
+
+function assertRepositoryChecks(refused, accepted, env = {}) {
+  for (const repository of refused) {
+    const r = runBundleRepositoryCheck(repository, env);
     assert.notEqual(r.status, 0, repository);
-    assert.match(r.stdout, /::error::image-repository must be <registry>\/<name> without a tag or digest/, repository);
+    assert.match(r.stdout, IMG_REPO_ERROR, repository);
     assert.doesNotMatch(r.stdout, /stub-helm-reached/, repository);
   }
-  for (const repository of [IMG_REPO, "local/loan-lifecycle-service", "registry.example:5000/fintechbankx/loan-lifecycle-service"]) {
-    const r = run(repository);
+  for (const repository of accepted) {
+    const r = runBundleRepositoryCheck(repository, env);
     assert.doesNotMatch(r.stdout, /::error::image-repository/, repository);
     assert.match(r.stdout, /stub-helm-reached/, repository);
   }
+}
+
+test("helm-deploy validate refuses an image-repository holding a tag or a digest", () => {
+  assertRepositoryChecks([...IMG_REPO_REFUSED, ...IMG_REPO_ACCENTED], IMG_REPO_ACCEPTED);
+});
+
+// bash's [[ =~ ]] uses the C library's regex, whose ranges follow the locale: under glibc
+// en_US.UTF-8, [a-z] and [A-Za-z0-9] also match é. The installed en_US.UTF-8, else one compiled
+// with localedef under tmpRoot (LOCPATH); null when neither makes [a-z] match é.
+function wideRangeLocale() {
+  const env = { LC_ALL: "en_US.UTF-8" };
+  const wide = (e) => spawnSync("bash", ["--noprofile", "--norc", "-c", "[[ é =~ ^[a-z]$ ]]"], { env: { PATH: process.env.PATH, ...e } }).status === 0;
+  if (wide(env)) return env;
+  const dir = fs.mkdtempSync(path.join(tmpRoot, "fbx-locale-"));
+  spawnSync("localedef", ["-i", "en_US", "-f", "UTF-8", path.join(dir, "en_US.UTF-8")], { encoding: "utf8" });
+  return wide({ ...env, LOCPATH: dir }) ? { ...env, LOCPATH: dir } : null;
+}
+
+test("helm-deploy validate checks image-repository the same way in a locale whose [a-z] matches é", (t) => {
+  const locale = wideRangeLocale();
+  if (!locale) return t.skip("no en_US.UTF-8 locale in which [a-z] matches é (installed or made with localedef)");
+  assertRepositoryChecks([...IMG_REPO_REFUSED, ...IMG_REPO_ACCENTED], IMG_REPO_ACCEPTED, locale);
 });
 
 // The guard reads lines, not YAML: it is a check for charts that render images the usual way
 // (see the helm-deploy.yml header), and values with escapes, '?' or JSON (toPrettyJson | quote)
 // must not trip it.
-test("helm-deploy render guard passes escapes, '?' and quoted JSON in values", () => {
+test("helm-deploy render guard passes escapes, '?' and quoted JSON in values", needsHelm, () => {
   const ok = `"${IMG_REPO}@${IMG_DIGEST}"`;
   const benign = pod(ok) +
     '---\napiVersion: v1\nkind: ConfigMap\ndata:\n  "a.b": "line\\nnext \\"q\\""\n  url: "https://x.example/?a=1"\n  q: what?\n' +
@@ -258,11 +309,12 @@ test("helm-deploy render guard passes escapes, '?' and quoted JSON in values", (
   assert.equal(r.status, 0, r.stdout + r.stderr);
 });
 
-test("helm-deploy render guard refuses a chart that calls lookup, in its own or a subchart's templates", () => {
+test("helm-deploy render guard refuses a chart that calls lookup, in its own or a subchart's templates", needsHelm, () => {
   const ok = pod(`"${IMG_REPO}@${IMG_DIGEST}"`);
   const secretLookup = 'checksum/secret: {{ (lookup "v1" "Secret" .Release.Namespace "db").data | toJson | sha256sum }}\n';
+  const sub = { "charts/sub/Chart.yaml": "apiVersion: v2\nname: sub\nversion: 1.0.0\n" };
   for (const file of ["templates/deployment.yaml", "templates/_helpers.tpl", "charts/sub/templates/cm.yaml"]) {
-    const r = runRenderGuard(ok, { "templates/deployment.yaml": "kind: Deployment\n", [file]: secretLookup });
+    const r = runRenderGuard(ok, { "templates/deployment.yaml": "kind: Deployment\n", ...sub, [file]: secretLookup });
     assert.notEqual(r.status, 0, file);
     assert.match(r.stdout, new RegExp(`::error::the chart calls lookup.*svc/${file.replace(/\./g, "\\.")}`), file);
   }
@@ -275,42 +327,84 @@ test("helm-deploy render guard refuses a chart that calls lookup, in its own or 
   assert.equal(r.status, 0, "only templates count" + r.stdout + r.stderr);
 });
 
-// Helm loads a dependency packaged as charts/<dep>.tgz (helm dependency build, or a vendored
-// archive), at any depth; the guard opens those archives and reads their templates too.
-function packChart(dir, name, files) {
-  const src = fs.mkdtempSync(path.join(tmpRoot, "fbx-sub-"));
-  fs.mkdirSync(path.join(src, name));
-  fs.writeFileSync(path.join(src, name, "Chart.yaml"), `apiVersion: v2\nname: ${name}\nversion: 1.0.0\n`);
-  for (const [file, content] of Object.entries(files)) {
-    fs.mkdirSync(path.dirname(path.join(src, name, file)), { recursive: true });
-    fs.writeFileSync(path.join(src, name, file), content);
-  }
-  const tgz = path.join(dir, `${name}-1.0.0.tgz`);
-  execFileSync("tar", ["-czf", tgz, "-C", src, name]);
-  return fs.readFileSync(tgz);
-}
-
-test("helm-deploy render guard reads the templates of packaged subcharts, at any depth", () => {
+// helm package (bundle step) loads a dependency vendored as charts/<dep>.tgz (helm dependency
+// build, or a committed archive), at any depth, and writes it unpacked as charts/<name>/: the
+// guard reads those templates as files, and an archive helm cannot read fails helm package.
+test("helm-deploy render guard reads the templates of vendored subchart archives, which helm package unpacks", needsHelm, () => {
   const ok = pod(`"${IMG_REPO}@${IMG_DIGEST}"`);
   const secretLookup = '{{- $s := lookup "v1" "Secret" .Release.Namespace "db" }}\n';
-  const dir = fs.mkdtempSync(path.join(tmpRoot, "fbx-pack-"));
-  const sub = packChart(dir, "sub", { "templates/cm.yaml": secretLookup });
-  const inner = packChart(dir, "inner", { "templates/_helpers.tpl": secretLookup });
-  const outer = packChart(dir, "outer", { "templates/cm.yaml": "kind: ConfigMap\n", "charts/inner-1.0.0.tgz": inner });
-  const clean = packChart(dir, "clean", { "templates/cm.yaml": "kind: ConfigMap\n", "README.md": "uses lookup\n" });
+  const sub = fs.readFileSync(packChart("sub", { "templates/cm.yaml": secretLookup }));
+  const inner = fs.readFileSync(packChart("inner", { "templates/_helpers.tpl": secretLookup }));
+  const outer = fs.readFileSync(packChart("outer", { "templates/cm.yaml": "kind: ConfigMap\n", "charts/inner-1.0.0.tgz": inner }));
+  const clean = fs.readFileSync(packChart("clean", { "templates/cm.yaml": "kind: ConfigMap\n", "README.md": "uses lookup\n" }));
   const base = { "templates/deployment.yaml": "kind: Deployment\n" };
   const cases = {
-    "a packaged subchart": [{ ...base, "charts/sub-1.0.0.tgz": sub }, /::error::the chart calls lookup.*svc\/charts\/sub-1\.0\.0\.tgz!\/sub\/templates\/cm\.yaml/],
-    "a subchart packaged inside a packaged subchart": [{ ...base, "charts/outer-1.0.0.tgz": outer }, /::error::the chart calls lookup.*svc\/charts\/outer-1\.0\.0\.tgz!\/outer\/charts\/inner-1\.0\.0\.tgz!\/inner\/templates\/_helpers\.tpl/],
-    "a subchart archive that cannot be read": [{ ...base, "charts/broken-1.0.0.tgz": "not a gzip archive\n" }, /./],
+    "a vendored subchart archive": [{ ...base, "charts/sub-1.0.0.tgz": sub }, /::error::the chart calls lookup.*svc\/charts\/sub\/templates\/cm\.yaml/],
+    "an archive vendored inside a vendored archive": [{ ...base, "charts/outer-1.0.0.tgz": outer }, /::error::the chart calls lookup.*svc\/charts\/outer\/charts\/inner\/templates\/_helpers\.tpl/],
   };
   for (const [name, [templates, expected]] of Object.entries(cases)) {
     const r = runRenderGuard(ok, templates);
     assert.notEqual(r.status, 0, name);
-    assert.match(r.stdout + r.stderr, expected, name);
+    assert.match(r.stdout, expected, name);
+    const listing = execFileSync("tar", ["-tzf", path.join(r.dir, "fbx-deploy-bundle", "chart", "svc-1.0.0.tgz")], { encoding: "utf8" });
+    assert.doesNotMatch(listing, /\.tgz$/m, `${name}: helm package leaves no archive in the bundle`);
   }
   const r = runRenderGuard(ok, { ...base, "charts/clean-1.0.0.tgz": clean });
-  assert.equal(r.status, 0, "a packaged subchart without lookup passes" + r.stdout + r.stderr);
+  assert.equal(r.status, 0, "a vendored subchart without lookup passes" + r.stdout + r.stderr);
+  assert.throws(() => packChart("svc", { ...base, "charts/broken-1.0.0.tgz": "not a gzip archive\n" }), /error unpacking broken-1\.0\.0\.tgz/, "helm package fails on an archive it cannot read");
+});
+
+// helm package never leaves an archive in the bundle; the guard still opens a charts/<dep>.tgz,
+// at any depth, in an archive packed another way (defence in depth: another helm-version, a
+// hand-made archive), and fails when it cannot read one.
+test("helm-deploy render guard opens subchart archives in a hand-made chart archive, at any depth", () => {
+  const ok = pod(`"${IMG_REPO}@${IMG_DIGEST}"`);
+  const secretLookup = '{{- $s := lookup "v1" "Secret" .Release.Namespace "db" }}\n';
+  const handMade = { handMade: true };
+  const sub = fs.readFileSync(packChart("sub", { "templates/cm.yaml": secretLookup }, handMade));
+  const inner = fs.readFileSync(packChart("inner", { "templates/_helpers.tpl": secretLookup }, handMade));
+  const outer = fs.readFileSync(packChart("outer", { "templates/cm.yaml": "kind: ConfigMap\n", "charts/inner-1.0.0.tgz": inner }, handMade));
+  const clean = fs.readFileSync(packChart("clean", { "templates/cm.yaml": "kind: ConfigMap\n", "README.md": "uses lookup\n" }, handMade));
+  const base = { "templates/deployment.yaml": "kind: Deployment\n" };
+  const cases = {
+    "an archived subchart": [{ ...base, "charts/sub-1.0.0.tgz": sub }, /::error::the chart calls lookup.*svc\/charts\/sub-1\.0\.0\.tgz!\/sub\/templates\/cm\.yaml/],
+    "a subchart archived inside an archived subchart": [{ ...base, "charts/outer-1.0.0.tgz": outer }, /::error::the chart calls lookup.*svc\/charts\/outer-1\.0\.0\.tgz!\/outer\/charts\/inner-1\.0\.0\.tgz!\/inner\/templates\/_helpers\.tpl/],
+    "a subchart archive that cannot be read": [{ ...base, "charts/broken-1.0.0.tgz": "not a gzip archive\n" }, /./],
+  };
+  for (const [name, [templates, expected]] of Object.entries(cases)) {
+    const r = runRenderGuard(ok, templates, handMade);
+    assert.notEqual(r.status, 0, name);
+    assert.match(r.stdout + r.stderr, expected, name);
+  }
+  const r = runRenderGuard(ok, { ...base, "charts/clean-1.0.0.tgz": clean }, handMade);
+  assert.equal(r.status, 0, "an archived subchart without lookup passes" + r.stdout + r.stderr);
+});
+
+// Helm's archive loader splits an entry name that holds a backslash on "\" (Windows paths) and
+// drops the first part, so a file named x\templates\evil.yaml, which helm package keeps as one
+// name, renders as templates/evil.yaml. The guard cannot place such a name and refuses it; a
+// tab or a newline in a name is no separator, and those templates are read as usual.
+test("helm-deploy render guard refuses an entry name holding a backslash; tabs and newlines are read", needsHelm, () => {
+  const ok = pod(`"${IMG_REPO}@${IMG_DIGEST}"`);
+  const secretLookup = '{{- $s := lookup "v1" "Secret" .Release.Namespace "db" }}\n';
+  const cm = (name) => `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ${name}\n`;
+  const base = { "templates/cm.yaml": cm("a") };
+  const r = runRenderGuard(ok, { ...base, "x\\templates\\evil.yaml": secretLookup + cm("evil") });
+  const rendered = execFileSync("helm", ["template", "rel", path.join(r.dir, "fbx-deploy-bundle", "chart", "svc-1.0.0.tgz")], { encoding: "utf8" });
+  assert.match(rendered, /^# Source: svc\/templates\/evil\.yaml$/m, "Helm renders the backslash name as a template");
+  assert.notEqual(r.status, 0, "backslash name at the chart root");
+  assert.match(r.stdout, /::error::an entry name holds a backslash, which Helm reads as a path separator.*svc\/x\\\\templates\\\\evil\.yaml/);
+  const inSub = runRenderGuard(ok, { ...base, "charts/sub/Chart.yaml": "apiVersion: v2\nname: sub\nversion: 1.0.0\n", "charts/sub/x\\templates\\cm.yaml": cm("b") });
+  assert.notEqual(inSub.status, 0, "backslash name in a subchart, lookup or not");
+  assert.match(inSub.stdout, /::error::an entry name holds a backslash.*svc\/charts\/sub\/x\\\\templates\\\\cm\.yaml/);
+  const tabs = runRenderGuard(ok, { ...base, "templates/a\tb.yaml": cm("tab"), "templates/c\nd.yaml": cm("newline") });
+  assert.equal(tabs.status, 0, "tab and newline names pass" + tabs.stdout + tabs.stderr);
+  for (const file of ["templates/a\tb.yaml", "templates/c\nd.yaml"]) {
+    const lookup = runRenderGuard(ok, { ...base, [file]: secretLookup + cm("x") });
+    assert.notEqual(lookup.status, 0, JSON.stringify(file));
+    assert.match(lookup.stdout, /::error::the chart calls lookup.*svc\/templates\/[ac]\\[tn][bd]\.yaml/, JSON.stringify(file));
+    assert.doesNotMatch(lookup.stdout, /backslash/, JSON.stringify(file));
+  }
 });
 
 // Helm's default storage driver keeps every release in a Secret; the deploy roles'

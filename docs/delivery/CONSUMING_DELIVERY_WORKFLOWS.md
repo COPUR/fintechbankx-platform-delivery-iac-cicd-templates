@@ -163,13 +163,16 @@ Pinning (supply chain):
     render (`helm template`, no cluster) in which any `image:` line is not
     exactly `image-repository@image-digest`, so it catches a chart that renders
     an image tag (`repository:tag`, also `repository:tag@digest`) or another
-    digest; `image-repository` itself must be `<registry>/<name>` without a tag
-    or digest (the bundle step refuses it otherwise); it refuses a chart in
+    digest; `image-repository` itself must be a repository name, optionally
+    prefixed by `<registry>[:port]/`, without a tag or digest (the bundle step
+    refuses it otherwise, in any runner locale); it refuses a chart in
     which any template file holds the word `lookup`, the chart's own and every
-    subchart's, unpacked or packaged as `charts/<dep>.tgz` at any depth
-    (validate renders without a cluster, so `lookup` returns nothing there,
-    while in the deploy job a Secret lookup is Forbidden for the deploy Role
-    and aborts the upgrade). It reads lines, not
+    subchart's at any depth, a vendored `charts/<dep>.tgz` included, which
+    `helm package` writes unpacked (validate renders without a cluster, so
+    `lookup` returns nothing there, while in the deploy job a Secret lookup is
+    Forbidden for the deploy Role and aborts the upgrade), and a chart archive
+    with an entry name holding a backslash, which Helm reads as a path
+    separator. It reads lines, not
     YAML: an image key written as an explicit `?` key, an escaped key (block
     or flow), an alias or a tagged key is not seen, and a line holding
     `image:` inside a value string (a ConfigMap holding YAML) fails it; it is
