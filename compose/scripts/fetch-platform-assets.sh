@@ -13,7 +13,13 @@
 # Source per repo, first match wins:
 #   FBX_IDENTITY_SOURCE / FBX_KAFKA_SOURCE  local checkout directory; with
 #       FBX_IDENTITY_REF / FBX_KAFKA_REF set, files are read from that git ref
-#   otherwise GitHub raw content at FBX_IDENTITY_REF / FBX_KAFKA_REF (default main)
+#   otherwise GitHub at FBX_IDENTITY_REF / FBX_KAFKA_REF (default main):
+#     with a token, the contents API (the identity repo is private): the first of
+#       FBX_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN, else `gh auth token`, needing
+#       contents: read on both repos. The token reaches curl as a config line on
+#       stdin (-K -), never in its arguments, a file or the output, and curl
+#       follows no redirect with it.
+#     without one, public raw content (fails for the private identity repo).
 #
 # usage: fetch-platform-assets.sh [--cache-dir DIR]
 set -euo pipefail
@@ -29,8 +35,24 @@ done
 
 die() { echo "[fetch-assets] ERROR: $*" >&2; exit 1; }
 
+# The token for the first download from GitHub (none is needed for local checkouts).
+token="" token_resolved=""
+resolve_token() {
+  [ -n "$token_resolved" ] && return 0
+  token_resolved=1
+  token="${FBX_GITHUB_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+  if [ -z "$token" ] && command -v gh >/dev/null 2>&1; then
+    token="$(gh auth token 2>/dev/null || true)"
+  fi
+  # GitHub tokens are [A-Za-z0-9_]; anything else could rewrite curl's config line.
+  if [ -n "$token" ] && [[ ! "$token" =~ ^[A-Za-z0-9_]+$ ]]; then
+    die "the GitHub token holds characters a GitHub token never has (value not shown)"
+  fi
+}
+
 fetch() { # fetch <local-source> <ref> <github-repo> <path> <dest>
   local src="$1" ref="$2" gh_repo="$3" file="$4" dest="$5"
+  [ -n "$src" ] || resolve_token
   mkdir -p "$(dirname "$dest")"
   if [ -n "$src" ]; then
     if [ -n "$ref" ]; then
@@ -39,12 +61,31 @@ fetch() { # fetch <local-source> <ref> <github-repo> <path> <dest>
       [ -f "$src/$file" ] || die "missing $src/$file"
       cp "$src/$file" "$dest"
     fi
+  elif [ -n "$token" ]; then
+    local code
+    code="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+      | curl -sS --proto =https --max-redirs 0 --retry 3 -K - \
+          -H 'Accept: application/vnd.github.raw' -H 'X-GitHub-Api-Version: 2022-11-28' \
+          -o "$dest" -w '%{http_code}' "https://api.github.com/repos/$gh_repo/contents/$file?ref=${ref:-main}")" || code=000
+    if [ "$code" != 200 ]; then
+      rm -f "$dest"
+      die "cannot download $file from $gh_repo@${ref:-main} (HTTP $code); the token needs contents: read on $gh_repo"
+    fi
   else
-    curl -sSfL --retry 3 -o "$dest" "https://raw.githubusercontent.com/$gh_repo/${ref:-main}/$file" \
-      || die "cannot download $file from $gh_repo@${ref:-main}"
+    curl -sSfL --proto =https --proto-redir =https --retry 3 -o "$dest" "https://raw.githubusercontent.com/$gh_repo/${ref:-main}/$file" \
+      || { rm -f "$dest"; die "cannot download $file from $gh_repo@${ref:-main} without a token; the identity repository is private: set FBX_GITHUB_TOKEN (contents: read), or point FBX_IDENTITY_SOURCE / FBX_KAFKA_SOURCE at a checkout"; }
   fi
   echo "[fetch-assets] $gh_repo:$file -> $dest"
 }
+
+# A ref goes into a URL and to git show: plain git ref characters only, starting
+# with a letter or digit, no "..".
+for name in FBX_IDENTITY_REF FBX_KAFKA_REF; do
+  value="${!name:-}"
+  if [ -n "$value" ] && { [[ ! "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || [[ "$value" == *..* ]]; }; then
+    die "$name must be a branch, tag or commit (letters, digits, . _ / -, starting with a letter or digit)"
+  fi
+done
 
 identity_repo=COPUR/fintechbankx-platform-identity-iam-keycloak-ldap
 kafka_repo=COPUR/fintechbankx-platform-event-streaming-kafka

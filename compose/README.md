@@ -87,6 +87,14 @@ script on purpose.
 Pin asset versions with `FBX_IDENTITY_REF` / `FBX_KAFKA_REF`, or read local
 checkouts with `FBX_IDENTITY_SOURCE` / `FBX_KAFKA_SOURCE`.
 
+The identity repository is private, so a download from GitHub needs a token
+with `contents: read` on it: `FBX_GITHUB_TOKEN`, else `GH_TOKEN`, else
+`GITHUB_TOKEN`, else `gh auth token`. The script reads the files through the
+contents API and hands the token to curl on stdin, so it never appears in a
+command line or the output. Without a token it tries public raw content, which
+fails for the identity repository with a message saying what to set. The
+ephemeral-env workflow takes the token as secret `platform-assets-token`.
+
 When the realm sets `adminPermissionsEnabled`, `fetch` also copies the
 admin-permissions spec and script into `.cache/identity-admin/` (outside the
 directory realm-import reads) and fails if the identity ref lacks them. The
@@ -271,7 +279,12 @@ plan is the worst case.
 ## Regression parity support
 
 Used by the parity suite through `.github/workflows/ephemeral-env.yml`
-(inputs in brackets); everything also works locally.
+(inputs in brackets); everything also works locally. The caller passes secret
+`platform-assets-token` (`contents: read` on the identity and event-streaming
+repositories) so the private realm can be fetched. With a lane matrix, the seed
+and test commands read the validated lane from `FBX_LANE`; the lane expression
+never goes into the command text, because GitHub pastes an expression into it
+before any validation runs.
 
 **Test actors** (`parity-fixtures: true`; locally
 `fbx-local.sh init --parity-fixtures` then `up <profiles> parity-fixtures`).

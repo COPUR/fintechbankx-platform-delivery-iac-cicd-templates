@@ -144,6 +144,45 @@ test("lane input: resolved from lanes.tsv in the validate step; lane and a non-d
   assert.match(badHost.stdout, /legacy-open-finance-host/);
 });
 
+test("lane: validated before any caller command runs and exported as FBX_LANE; no run block puts the lane into shell text", () => {
+  const wf = workflow();
+  const steps = wf.jobs.ephemeral.steps;
+  const validateIdx = steps.findIndex((s) => /^Validate inputs/.test(s.name ?? ""));
+  // Every step that runs caller-supplied commands comes after the lane is validated.
+  for (const re of [/Build monolith image/, /Run seed command/, /Run test command/]) {
+    const idx = steps.findIndex((s) => re.test(s.name ?? ""));
+    assert.ok(idx > validateIdx, `${re} after the validate step`);
+  }
+  const validate = steps[validateIdx];
+  const run = (env) => {
+    const dir = fs.mkdtempSync(path.join(tmpRoot, "fbx-lane-"));
+    const res = spawnSync("bash", ["-c", validate.run.split("# Extra service environment")[0]], {
+      encoding: "utf8",
+      env: { ...process.env, MODE: "compose", SERVICE_IMAGES: "", MONOLITH_IMAGE: "", MONOLITH_BUILD_CONTEXT: "", MONOLITH_HEALTH_PATH: "/actuator/health",
+        MONOLITH_PROFILES: "local", PARITY_FIXTURES: "false", LEGACY_OF_HOST: "", REQUESTED_PROFILES: "services", FBX_COMPOSE: composeDir,
+        GITHUB_ENV: path.join(dir, "env"), ...env },
+    });
+    fs.writeFileSync(path.join(dir, "env"), "", { flag: "a" });
+    return { ...res, env: fs.readFileSync(path.join(dir, "env"), "utf8") };
+  };
+  for (const lane of Object.keys(lanes())) {
+    const ok = run({ LANE: lane });
+    assert.equal(ok.status, 0, ok.stderr + ok.stdout);
+    assert.deepEqual(ok.env.split("\n").filter((l) => l.startsWith("FBX_LANE=")), [`FBX_LANE=${lane}`]);
+  }
+  for (const lane of ["everything", "pay;ments", "$(id)", "lending payments"]) {
+    const bad = run({ LANE: lane });
+    assert.notEqual(bad.status, 0, lane);
+    assert.doesNotMatch(bad.env, /^FBX_LANE=/m, `${lane}: nothing exported`);
+  }
+  assert.doesNotMatch(run({ LANE: "" }).env, /^FBX_LANE=/m, "no lane: no FBX_LANE");
+  // Expressions expand into the script text before the shell runs; the lane reaches commands as $FBX_LANE only.
+  for (const s of steps) assert.doesNotMatch(s.run ?? "", /\$\{\{[^}]*\b(inputs|matrix)\.lane\b/, `${s.name}: lane expression in run text`);
+  const header = fs.readFileSync(path.join(repo, ".github", "workflows", "ephemeral-env.yml"), "utf8").split("\non:")[0];
+  assert.match(header, /FBX_LANE/);
+  for (const line of header.split("\n").filter((l) => /-command:/.test(l))) assert.doesNotMatch(line, /\b(matrix|inputs)\.lane\b/, line);
+});
+
 test("legacy open-finance host: the monolith container by default (K4), exported to the seed and test commands", () => {
   const wf = workflow();
   const input = wf.on.workflow_call.inputs["legacy-open-finance-host"];

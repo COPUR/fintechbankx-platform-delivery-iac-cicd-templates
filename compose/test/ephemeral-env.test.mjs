@@ -132,6 +132,28 @@ test("ephemeral-env: the exported base URLs carry each service's host port (serv
   assert.equal(dpop, 5, "consent, payee, retail, corporate and metadata");
 });
 
+test("ephemeral-env: the private identity realm is fetched with a token that only the fetch reaches", () => {
+  const text = fs.readFileSync(path.join(repo, ".github", "workflows", "ephemeral-env.yml"), "utf8");
+  const wf = YAML.parse(text);
+  const secret = wf.on.workflow_call.secrets?.["platform-assets-token"];
+  assert.ok(secret, "workflow_call secret platform-assets-token");
+  assert.equal(secret.required, false);
+  assert.match(secret.description, /contents: read/);
+  const steps = wf.jobs.ephemeral.steps;
+  const fetch = steps.find((s) => /^Fetch platform assets/.test(s.name ?? ""));
+  assert.equal(fetch.env.FBX_GITHUB_TOKEN, "${{ secrets.platform-assets-token || github.token }}");
+  // Nothing else sees it: not the job, not another step, not a with: or run: text.
+  assert.equal(JSON.stringify(wf.jobs.ephemeral.env ?? {}).includes("secrets."), false);
+  for (const s of steps.filter((x) => x !== fetch)) {
+    assert.doesNotMatch(JSON.stringify(s), /secrets\.|FBX_GITHUB_TOKEN|GH_TOKEN|GITHUB_TOKEN|github\.token/, s.name);
+  }
+  assert.doesNotMatch(fetch.run, /secrets\.|github\.token/);
+  // The token is gone before the credential generator and the masking loop run.
+  const unsetAt = fetch.run.indexOf("unset FBX_GITHUB_TOKEN");
+  assert.ok(unsetAt > fetch.run.indexOf("fbx-local.sh\" fetch") && unsetAt < fetch.run.indexOf("fbx-local.sh\" init"), "token unset between fetch and init");
+  assert.match(text.split("\non:")[0], /platform-assets-token/);
+});
+
 test("ephemeral-env: the profiles input names every service profile of the compose runtime", () => {
   const input = workflow().on.workflow_call.inputs.profiles;
   const compose = YAML.parse(fs.readFileSync(path.join(repo, "compose", "docker-compose.yml"), "utf8")).services;

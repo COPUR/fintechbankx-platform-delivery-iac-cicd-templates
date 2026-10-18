@@ -261,6 +261,120 @@ test("fetch-platform-assets rejects a realm that is not fintechbankx", () => {
   assert.match(res.stderr, /expected realm "fintechbankx"/);
 });
 
+// Remote fetch (no local checkouts): a stand-in curl on PATH serves the fakeRepos files by URL,
+// records each call's arguments and standard input, and answers STUB_STATUS (default 200).
+const IDENTITY_REPO = "COPUR/fintechbankx-platform-identity-iam-keycloak-ldap";
+const KAFKA_REPO = "COPUR/fintechbankx-platform-event-streaming-kafka";
+const TOKEN = "ghs_" + "T0kenValue1234567890abcdefXYZ";
+function curlStub(remoteRoot) {
+  const bin = tmp();
+  const log = tmp();
+  fs.writeFileSync(path.join(bin, "curl"), `#!/usr/bin/env bash
+n=$(( $(ls "${log}" | grep -c '^argv' || true) + 1 ))
+printf '%s\\n' "$@" > "${log}/argv.$n"
+cat > "${log}/stdin.$n"
+url=""; out=""; wout=""; prev=""
+for a in "$@"; do
+  case "$prev" in -o) out="$a" ;; -w) wout="$a" ;; esac
+  case "$a" in https://*) url="$a" ;; esac
+  prev="$a"
+done
+case "$url" in
+  *identity-iam-keycloak-ldap*) repo=identity ;;
+  *event-streaming-kafka*) repo=kafka ;;
+  *) echo "stub: unexpected url $url" >&2; exit 2 ;;
+esac
+case "$url" in
+  https://api.github.com/repos/*/contents/*) file="\${url#*/contents/}"; file="\${file%%\\?*}" ;;
+  https://raw.githubusercontent.com/*) file="\${url#https://raw.githubusercontent.com/*/*/*/}" ;;
+esac
+status="\${STUB_STATUS:-200}"
+case "$url" in https://raw.githubusercontent.com/*) [ -n "\${STUB_RAW_FAIL:-}" ] && { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; } ;; esac
+if [ "$status" = 200 ] && [ -f "${remoteRoot}/$repo/$file" ]; then cp "${remoteRoot}/$repo/$file" "$out"
+else printf '{"message":"Not Found"}' > "$out"; [ "$status" = 200 ] && status=404; fi
+[ -n "$wout" ] && printf '%s' "$status"
+exit 0
+`, { mode: 0o755 });
+  // gh that has no login, so only the environment can supply a token
+  fs.writeFileSync(path.join(bin, "gh"), "#!/usr/bin/env bash\necho 'not logged in' >&2\nexit 1\n", { mode: 0o755 });
+  const calls = () => fs.readdirSync(log).filter((f) => f.startsWith("argv.")).sort((a, b) => Number(a.slice(5)) - Number(b.slice(5)))
+    .map((f) => ({ argv: fs.readFileSync(path.join(log, f), "utf8").split("\n").slice(0, -1), stdin: fs.readFileSync(path.join(log, "stdin." + f.slice(5)), "utf8") }));
+  return { bin, calls };
+}
+const noTokenEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !["FBX_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "FBX_IDENTITY_SOURCE", "FBX_KAFKA_SOURCE"].includes(k)));
+const fetchRemote = (stub, env = {}) => run("bash", [fetchAssets, "--cache-dir", tmp()], {
+  env: { ...noTokenEnv(), PATH: `${stub.bin}:${process.env.PATH}`, ...env }
+});
+
+test("fetch-platform-assets reads the private identity repo through the GitHub API with a token kept out of argv and output", () => {
+  const stub = curlStub(fakeRepos());
+  const res = fetchRemote(stub, { FBX_GITHUB_TOKEN: TOKEN, FBX_IDENTITY_REF: "claude/platform-deployable-tkl0z7" });
+  assert.equal(res.status, 0, res.stderr);
+  const calls = stub.calls();
+  assert.equal(calls.length, 5, "realm, admin-permissions spec and script, topics, create-topics");
+  for (const c of calls) {
+    assert.ok(!c.argv.some((a) => a.includes(TOKEN)), `token in curl arguments: ${c.argv.join(" ")}`);
+    assert.equal(c.stdin, `header = "Authorization: Bearer ${TOKEN}"\n`, "the token reaches curl as a config line on stdin");
+    assert.ok(c.argv.includes("-K") && c.argv[c.argv.indexOf("-K") + 1] === "-", "curl reads its config from stdin");
+    assert.ok(c.argv.includes("Accept: application/vnd.github.raw"), "raw file content");
+    assert.ok(c.argv.includes("--proto") && c.argv[c.argv.indexOf("--proto") + 1] === "=https", "https only");
+    assert.ok(!c.argv.includes("-L") && !c.argv.includes("--location") && !c.argv.some((a) => /^-[a-zA-Z]*L/.test(a)), "never follows a redirect with the token");
+  }
+  assert.equal(calls[0].argv.at(-1), `https://api.github.com/repos/${IDENTITY_REPO}/contents/realm/fintechbankx-realm.json?ref=claude/platform-deployable-tkl0z7`);
+  assert.ok(calls.some((c) => c.argv.at(-1) === `https://api.github.com/repos/${KAFKA_REPO}/contents/topics/generated/topics.tsv?ref=main`));
+  assert.doesNotMatch(res.stdout + res.stderr, new RegExp(TOKEN));
+});
+
+test("fetch-platform-assets takes GH_TOKEN, then GITHUB_TOKEN, when FBX_GITHUB_TOKEN is not set", () => {
+  for (const name of ["GH_TOKEN", "GITHUB_TOKEN"]) {
+    const stub = curlStub(fakeRepos());
+    const res = fetchRemote(stub, { [name]: TOKEN });
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(stub.calls()[0].stdin, `header = "Authorization: Bearer ${TOKEN}"\n`, name);
+  }
+});
+
+test("fetch-platform-assets fails on a refused or redirected API answer without printing the token or keeping the body", () => {
+  for (const status of ["404", "302"]) {
+    const stub = curlStub(fakeRepos());
+    const cache = tmp();
+    const res = run("bash", [fetchAssets, "--cache-dir", cache], { env: { ...noTokenEnv(), PATH: `${stub.bin}:${process.env.PATH}`, FBX_GITHUB_TOKEN: TOKEN, STUB_STATUS: status } });
+    assert.notEqual(res.status, 0, status);
+    assert.match(res.stderr, new RegExp(`realm/fintechbankx-realm.json from ${IDENTITY_REPO}@main \\(HTTP ${status}\\)`));
+    assert.doesNotMatch(res.stdout + res.stderr, new RegExp(TOKEN));
+    assert.ok(!fs.existsSync(path.join(cache, "identity", "fintechbankx-realm.json")), "no error body left as the realm");
+  }
+});
+
+test("fetch-platform-assets without a token says how to reach the private identity repo", () => {
+  const stub = curlStub(fakeRepos());
+  const res = fetchRemote(stub, { STUB_RAW_FAIL: "1" });
+  assert.notEqual(res.status, 0);
+  assert.match(res.stderr, /FBX_GITHUB_TOKEN/);
+  assert.match(res.stderr, /FBX_IDENTITY_SOURCE/);
+  assert.ok(stub.calls()[0].argv.at(-1).startsWith(`https://raw.githubusercontent.com/${IDENTITY_REPO}/main/`), "public raw URL without a token");
+  assert.equal(stub.calls()[0].stdin, "", "nothing on stdin without a token");
+});
+
+test("fetch-platform-assets refuses a ref or token that could change the request, before any download", () => {
+  for (const [env, re] of [
+    [{ FBX_GITHUB_TOKEN: TOKEN, FBX_IDENTITY_REF: "main&ref=evil" }, /FBX_IDENTITY_REF/],
+    [{ FBX_GITHUB_TOKEN: TOKEN, FBX_IDENTITY_REF: "../../evil" }, /FBX_IDENTITY_REF/],
+    [{ FBX_GITHUB_TOKEN: TOKEN, FBX_KAFKA_REF: "main#x" }, /FBX_KAFKA_REF/],
+    // A leading "-" would be an option to git show for a local checkout.
+    [{ FBX_GITHUB_TOKEN: TOKEN, FBX_KAFKA_REF: "--output=x" }, /FBX_KAFKA_REF/],
+    [{ FBX_GITHUB_TOKEN: TOKEN, FBX_IDENTITY_REF: ".hidden" }, /FBX_IDENTITY_REF/],
+    [{ FBX_GITHUB_TOKEN: 'abc"\nurl = "https://evil.example/' }, /token/],
+  ]) {
+    const stub = curlStub(fakeRepos());
+    const res = fetchRemote(stub, env);
+    assert.notEqual(res.status, 0, JSON.stringify(env));
+    assert.match(res.stderr, re);
+    assert.equal(stub.calls().length, 0, "no request made");
+    assert.doesNotMatch(res.stdout + res.stderr, /evil\.example/);
+  }
+});
+
 // --- compose definition -----------------------------------------------------
 
 test("services.tsv follows the database-per-service conventions of the service repos", () => {

@@ -12,6 +12,13 @@ name: ephemeral-env
 # Callers must grant contents: read and id-token: write (ECR pulls via OIDC;
 # GitHub checks a called workflow's permissions statically).
 #
+# The identity repository (realm) is private: pass a token that can read it as
+# secret platform-assets-token (a fine-grained token or GitHub App installation
+# token with contents: read on the identity and event-streaming repositories).
+# Without it the fetch uses the caller's github.token, which cannot read another
+# private repository, and fails with the HTTP status. Only the fetch command sees
+# the token; it reaches curl on stdin, never in a command line or the log.
+#
 # Runner: the runner input, else the caller repository's CI_RUNNER_ENV variable,
 # else ubuntu-latest. The self-hosted environment VM is labelled fbx-ci-env and
 # registered on the monolith repository only, with CI_RUNNER_ENV=fbx-ci-env there.
@@ -53,6 +60,13 @@ name: ephemeral-env
 #       seed-command: ./scripts/seed.sh
 #       test-command: regression-parity/scripts/compare-monolith.sh
 #       aws-role-to-assume: arn:aws:iam::<account>:role/<ci-ecr-pull-role>
+#     secrets:
+#       platform-assets-token: ${{ secrets.PLATFORM_ASSETS_TOKEN }}
+#
+# The validated lane reaches the seed and test commands as FBX_LANE (set only
+# when lane is given). Read "$FBX_LANE" inside the command or script; never write
+# the lane expression into seed-command or test-command, because an expression
+# is pasted into the command text before any shell or validation sees it.
 #
 # Order once the stack is healthy: sql-fixtures, seed-command, test-command.
 # The seed and test commands run in the caller's checkout with these variables:
@@ -180,6 +194,10 @@ on:
       timeout-minutes:
         type: number
         default: 45
+    secrets:
+      platform-assets-token:
+        description: "Token with contents: read on the identity and event-streaming repositories (the realm repository is private); default the caller's github.token, which cannot read another private repository."
+        required: false
 
 permissions:
   contents: read
@@ -250,6 +268,8 @@ jobs:
             fi
             profiles="$(awk -F '\t' -v lane="$LANE" '!/^#/ && $1 == lane { print $2 }' "$FBX_COMPOSE/lanes.tsv")"
             [ -n "$profiles" ] || { echo "::error::unknown lane $LANE; compose/lanes.tsv lists the lanes"; exit 1; }
+            # The seed and test commands read the lane from here, after it is validated.
+            echo "FBX_LANE=$LANE" >> "$GITHUB_ENV"
           fi
           if [ -n "$LEGACY_OF_HOST" ] && [ "$LEGACY_OF_HOST" != monolith ] \
             && [[ ! "$LEGACY_OF_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$ ]]; then
@@ -324,10 +344,13 @@ jobs:
         env:
           FBX_IDENTITY_REF: ${{ inputs.identity-ref }}
           FBX_KAFKA_REF: ${{ inputs.kafka-ref }}
+          FBX_GITHUB_TOKEN: ${{ secrets.platform-assets-token || github.token }}
           PARITY_FIXTURES: ${{ inputs.parity-fixtures }}
         run: |
           set -euo pipefail
           bash "$FBX_COMPOSE/fbx-local.sh" fetch
+          # Only the fetch needs the token.
+          unset FBX_GITHUB_TOKEN
           init_args=()
           if [ "$PARITY_FIXTURES" = true ]; then init_args+=(--parity-fixtures); fi
           bash "$FBX_COMPOSE/fbx-local.sh" init "${init_args[@]}"
