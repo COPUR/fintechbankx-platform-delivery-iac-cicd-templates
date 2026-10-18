@@ -14,11 +14,18 @@
 #   FBX_IDENTITY_SOURCE / FBX_KAFKA_SOURCE  local checkout directory; with
 #       FBX_IDENTITY_REF / FBX_KAFKA_REF set, files are read from that git ref
 #   otherwise GitHub at FBX_IDENTITY_REF / FBX_KAFKA_REF (default main):
-#     with a token, the contents API (the identity repo is private): the first of
-#       FBX_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN, else `gh auth token`, needing
-#       contents: read on both repos. The token reaches curl as a config line on
-#       stdin (-K -), never in its arguments, a file or the output, and curl
-#       follows no redirect with it.
+#     with a token, the contents API (the identity repo is private): the first
+#       non-empty one of FBX_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN, else gh's
+#       github.com login (`gh auth token --hostname github.com`, never the token
+#       of another host gh uses by default), needing contents: read on both repos.
+#       The token is treated as opaque (GitHub App installation tokens, Actions
+#       GITHUB_TOKEN included, are now ghs_<app id>_<JWT> with dots and dashes);
+#       only a quote, backslash, whitespace or control character is refused,
+#       because those could change curl's config line or the header. The token
+#       reaches curl as a config line on stdin (-K -), never in its arguments, a
+#       file or the output, and curl follows no redirect with it. A failed answer
+#       names its likely cause: 401/403 the token, 404 no access or no such file
+#       at the ref, 000/5xx GitHub not reached.
 #     without one, public raw content (fails for the private identity repo).
 #
 # usage: fetch-platform-assets.sh [--cache-dir DIR]
@@ -42,12 +49,26 @@ resolve_token() {
   token_resolved=1
   token="${FBX_GITHUB_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
   if [ -z "$token" ] && command -v gh >/dev/null 2>&1; then
-    token="$(gh auth token 2>/dev/null || true)"
+    # The URL is always api.github.com: ask for that host's login, not gh's default host.
+    token="$(gh auth token --hostname github.com 2>/dev/null || true)"
   fi
-  # GitHub tokens are [A-Za-z0-9_]; anything else could rewrite curl's config line.
-  if [ -n "$token" ] && [[ ! "$token" =~ ^[A-Za-z0-9_]+$ ]]; then
-    die "the GitHub token holds characters a GitHub token never has (value not shown)"
+  # The token is opaque; only these characters could end or rewrite curl's quoted
+  # config line or split the header. An empty token is never sent (no token = raw content).
+  local unsafe='["\\[:space:][:cntrl:]]'
+  if [ -n "$token" ] && [[ "$token" =~ $unsafe ]]; then
+    die "the GitHub token contains a quote, backslash, whitespace or control character, which could change curl's request; check the token (value not shown)"
   fi
+}
+
+# Why a contents API answer other than 200 failed, from its HTTP status (000: no answer).
+status_cause() { # status_cause <code> <github-repo> <path> <ref>
+  case "$1" in
+    401|403) echo "the token was refused: it is wrong or expired, lacks contents: read on $2, or is not SSO-authorised for the organisation" ;;
+    404) echo "the token has no access to $2, or $3 does not exist at $4" ;;
+    000|5??) echo "GitHub was not reached or answered with a server error (network, DNS, TLS or GitHub itself); try again later" ;;
+    3??) echo "GitHub answered with a redirect (the repository may have moved); the token is never sent to a redirect" ;;
+    *) echo "unexpected answer from GitHub" ;;
+  esac
 }
 
 fetch() { # fetch <local-source> <ref> <github-repo> <path> <dest>
@@ -69,7 +90,7 @@ fetch() { # fetch <local-source> <ref> <github-repo> <path> <dest>
           -o "$dest" -w '%{http_code}' "https://api.github.com/repos/$gh_repo/contents/$file?ref=${ref:-main}")" || code=000
     if [ "$code" != 200 ]; then
       rm -f "$dest"
-      die "cannot download $file from $gh_repo@${ref:-main} (HTTP $code); the token needs contents: read on $gh_repo"
+      die "cannot download $file from $gh_repo@${ref:-main} (HTTP $code): $(status_cause "$code" "$gh_repo" "$file" "${ref:-main}")"
     fi
   else
     curl -sSfL --proto =https --proto-redir =https --retry 3 -o "$dest" "https://raw.githubusercontent.com/$gh_repo/${ref:-main}/$file" \

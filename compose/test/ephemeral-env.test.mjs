@@ -142,10 +142,13 @@ test("ephemeral-env: the private identity realm is fetched with a token that onl
   const steps = wf.jobs.ephemeral.steps;
   const fetch = steps.find((s) => /^Fetch platform assets/.test(s.name ?? ""));
   assert.equal(fetch.env.FBX_GITHUB_TOKEN, "${{ secrets.platform-assets-token || github.token }}");
-  // Nothing else sees it: not the job, not another step, not a with: or run: text.
-  assert.equal(JSON.stringify(wf.jobs.ephemeral.env ?? {}).includes("secrets."), false);
+  // Nothing else sees it: not the workflow or job env (every step, the seed and test commands
+  // included, would get it), not another step, not a with: or run: text.
+  const tokenRef = /secrets\.|FBX_GITHUB_TOKEN|GH_TOKEN|GITHUB_TOKEN|github\.token/;
+  assert.doesNotMatch(JSON.stringify(wf.env ?? {}), tokenRef, "workflow-level env");
+  assert.doesNotMatch(JSON.stringify(wf.jobs.ephemeral.env ?? {}), tokenRef, "job-level env");
   for (const s of steps.filter((x) => x !== fetch)) {
-    assert.doesNotMatch(JSON.stringify(s), /secrets\.|FBX_GITHUB_TOKEN|GH_TOKEN|GITHUB_TOKEN|github\.token/, s.name);
+    assert.doesNotMatch(JSON.stringify(s), tokenRef, s.name);
   }
   assert.doesNotMatch(fetch.run, /secrets\.|github\.token/);
   // The token is gone before the credential generator and the masking loop run.

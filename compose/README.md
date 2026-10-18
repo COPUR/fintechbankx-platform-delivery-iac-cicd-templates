@@ -88,12 +88,20 @@ Pin asset versions with `FBX_IDENTITY_REF` / `FBX_KAFKA_REF`, or read local
 checkouts with `FBX_IDENTITY_SOURCE` / `FBX_KAFKA_SOURCE`.
 
 The identity repository is private, so a download from GitHub needs a token
-with `contents: read` on it: `FBX_GITHUB_TOKEN`, else `GH_TOKEN`, else
-`GITHUB_TOKEN`, else `gh auth token`. The script reads the files through the
-contents API and hands the token to curl on stdin, so it never appears in a
-command line or the output. Without a token it tries public raw content, which
-fails for the identity repository with a message saying what to set. The
-ephemeral-env workflow takes the token as secret `platform-assets-token`.
+with `contents: read` on it: the first non-empty one of `FBX_GITHUB_TOKEN`,
+`GH_TOKEN` and `GITHUB_TOKEN`, else gh's github.com login
+(`gh auth token --hostname github.com`; a login to another host is never sent).
+The script reads the files through the contents API and hands the token to curl
+on stdin, so it never appears in a command line or the output. It treats the
+token as opaque, so GitHub App installation tokens in the current
+`ghs_<app id>_<JWT>` form (dots and dashes included) work; only a token with a
+quote, backslash, whitespace or control character is refused, because it could
+change curl's request. A failed download names the likely cause: 401 or 403,
+the token (wrong, lacking `contents: read`, or not SSO-authorised); 404, no
+access to the repository or no such file at the ref; no answer or 5xx, GitHub
+not reached. Without a token it tries public raw content, which fails for the
+identity repository with a message saying what to set. The ephemeral-env
+workflow takes the token as secret `platform-assets-token`.
 
 When the realm sets `adminPermissionsEnabled`, `fetch` also copies the
 admin-permissions spec and script into `.cache/identity-admin/` (outside the
@@ -284,7 +292,12 @@ Used by the parity suite through `.github/workflows/ephemeral-env.yml`
 repositories) so the private realm can be fetched. With a lane matrix, the seed
 and test commands read the validated lane from `FBX_LANE`; the lane expression
 never goes into the command text, because GitHub pastes an expression into it
-before any validation runs.
+before any validation runs. The workflow checks every value it writes to
+`GITHUB_ENV` first (profile names, Spring profiles, images, paths) and refuses
+a line break in its one-line inputs, so none of those inputs can add a
+`GITHUB_ENV` line such as a second `FBX_LANE`. The build, seed and test
+commands are the caller's own code: like any step, they can still write to
+`GITHUB_ENV`, `FBX_LANE` included, for the steps after them.
 
 **Test actors** (`parity-fixtures: true`; locally
 `fbx-local.sh init --parity-fixtures` then `up <profiles> parity-fixtures`).

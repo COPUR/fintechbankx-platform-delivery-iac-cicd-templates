@@ -176,6 +176,46 @@ test("lane: validated before any caller command runs and exported as FBX_LANE; n
     assert.doesNotMatch(bad.env, /^FBX_LANE=/m, `${lane}: nothing exported`);
   }
   assert.doesNotMatch(run({ LANE: "" }).env, /^FBX_LANE=/m, "no lane: no FBX_LANE");
+  // Every value the step writes to GITHUB_ENV is checked before anything is written: a line break in
+  // profiles or monolith-spring-profiles would otherwise add its own line, such as FBX_LANE=<anything>
+  // without a lane or a second FBX_LANE after the validated one (the runner keeps the last).
+  const monolith = { MONOLITH_IMAGE: "registry.example/elms/monolith@sha256:" + "a".repeat(64) };
+  const image = { SERVICE_IMAGES: "FBX_IMAGE_LN_LOAN_LIFECYCLE=registry.example/fintechbankx/loan-lifecycle-service@sha256:" + "b".repeat(64) };
+  const lanesOf = (env) => env.split("\n").filter((l) => l.startsWith("FBX_LANE="));
+  for (const [env, input] of [
+    [{ LANE: "", REQUESTED_PROFILES: "lending\nFBX_LANE=../../$(id)" }, /profiles/],
+    [{ LANE: "", REQUESTED_PROFILES: "lending\rFBX_LANE=payments" }, /profiles/],
+    [{ LANE: "", ...image, REQUESTED_PROFILES: "lending\nFBX_LANE=payments" }, /profiles/],
+    [{ LANE: "", REQUESTED_PROFILES: "lending;id" }, /profiles/],
+    [{ LANE: "", ...image, REQUESTED_PROFILES: "lending;id" }, /profiles/],
+    [{ LANE: "", REQUESTED_PROFILES: "Lending" }, /profiles/],
+    [{ LANE: "", REQUESTED_PROFILES: "lending $(id)" }, /profiles/],
+    [{ LANE: "lending", ...monolith, MONOLITH_PROFILES: "local\nFBX_LANE=payments\nFBX_PROFILES_RESOLVED=services monolith" }, /monolith-spring-profiles/],
+    [{ LANE: "", ...image, ...monolith, MONOLITH_PROFILES: "local\r\nFBX_LANE=payments" }, /monolith-spring-profiles/],
+    [{ LANE: "lending", ...monolith, MONOLITH_PROFILES: "local docker" }, /monolith-spring-profiles/],
+    [{ LANE: "lending", ...monolith, MONOLITH_PROFILES: "local;id" }, /monolith-spring-profiles/],
+    [{ LANE: "lending", ...monolith, MONOLITH_PROFILES: "" }, /monolith-spring-profiles/],
+    [{ LANE: "lending", ...monolith, MONOLITH_HEALTH_PATH: "/actuator/health\nFBX_LANE=payments" }, /monolith-health-path/],
+    [{ LANE: "lending\nFBX_LANE=payments" }, /lane/],
+    [{ LANE: "", LEGACY_OF_HOST: "legacy.example\nFBX_LANE=payments" }, /legacy-open-finance-host/],
+  ]) {
+    const bad = run(env);
+    const label = JSON.stringify(env);
+    assert.notEqual(bad.status, 0, `${label}: refused`);
+    assert.match(bad.stdout, input, label);
+    assert.deepEqual(lanesOf(bad.env), [], `${label}: no FBX_LANE line`);
+    assert.equal(bad.env, "", `${label}: nothing written to GITHUB_ENV`);
+  }
+  // Accepted values reach GITHUB_ENV as one line each, with exactly one FBX_LANE when a lane is given.
+  const fine = run({ LANE: "lending", ...image, ...monolith, MONOLITH_PROFILES: "local,docker_x-1" });
+  assert.equal(fine.status, 0, fine.stderr + fine.stdout);
+  assert.deepEqual(lanesOf(fine.env), ["FBX_LANE=lending"]);
+  assert.match(fine.env, /^FBX_MONOLITH_SPRING_PROFILES=local,docker_x-1$/m);
+  assert.match(fine.env, /^FBX_IMAGE_LN_LOAN_LIFECYCLE=registry\.example\/fintechbankx\/loan-lifecycle-service@sha256:b{64}$/m);
+  const spaced = run({ LANE: "", REQUESTED_PROFILES: " lending\tcustomer   riskcompliance " });
+  assert.equal(spaced.status, 0, spaced.stderr + spaced.stdout);
+  assert.deepEqual(spaced.env.split("\n").filter((l) => l.startsWith("FBX_PROFILES_RESOLVED=")), ["FBX_PROFILES_RESOLVED=lending customer riskcompliance"]);
+  assert.deepEqual(lanesOf(spaced.env), []);
   // Expressions expand into the script text before the shell runs; the lane reaches commands as $FBX_LANE only.
   for (const s of steps) assert.doesNotMatch(s.run ?? "", /\$\{\{[^}]*\b(inputs|matrix)\.lane\b/, `${s.name}: lane expression in run text`);
   const header = fs.readFileSync(path.join(repo, ".github", "workflows", "ephemeral-env.yml"), "utf8").split("\non:")[0];

@@ -15,9 +15,13 @@ name: ephemeral-env
 # The identity repository (realm) is private: pass a token that can read it as
 # secret platform-assets-token (a fine-grained token or GitHub App installation
 # token with contents: read on the identity and event-streaming repositories).
-# Without it the fetch uses the caller's github.token, which cannot read another
-# private repository, and fails with the HTTP status. Only the fetch command sees
-# the token; it reaches curl on stdin, never in a command line or the log.
+# The fetch treats the token as opaque: current installation tokens
+# (ghs_<app id>_<JWT>, with dots and dashes) pass, and only a quote, backslash,
+# whitespace or control character is refused. Without the secret the fetch uses
+# the caller's github.token, which cannot read another private repository, so
+# GitHub refuses the request and the fetch stops with the HTTP status and its
+# likely cause. Only the fetch command sees the token; it reaches curl on stdin,
+# never in a command line or the log.
 #
 # Runner: the runner input, else the caller repository's CI_RUNNER_ENV variable,
 # else ubuntu-latest. The self-hosted environment VM is labelled fbx-ci-env and
@@ -66,7 +70,13 @@ name: ephemeral-env
 # The validated lane reaches the seed and test commands as FBX_LANE (set only
 # when lane is given). Read "$FBX_LANE" inside the command or script; never write
 # the lane expression into seed-command or test-command, because an expression
-# is pasted into the command text before any shell or validation sees it.
+# is pasted into the command text before any shell or validation sees it. The
+# validate step checks every value it writes to GITHUB_ENV before it writes any,
+# and refuses a line break in its one-line inputs, so no input that step reads
+# can add a GITHUB_ENV line of its own (a second FBX_LANE, or any other name).
+# monolith-build-command, seed-command and test-command are the caller's own
+# code: like any step, they can still append to GITHUB_ENV, FBX_LANE included,
+# for the steps after them.
 #
 # Order once the stack is healthy: sql-fixtures, seed-command, test-command.
 # The seed and test commands run in the caller's checkout with these variables:
@@ -244,6 +254,18 @@ jobs:
           SQL_FIXTURES: ${{ inputs.sql-fixtures }}
         run: |
           set -euo pipefail
+          # No value reaches GITHUB_ENV before every check below has passed (all are written
+          # together at the end), and no one-line input may hold a line break: a CR or LF would
+          # add its own NAME=value line (FBX_LANE=<anything>, or any other name) for later steps.
+          for input in mode:MODE lane:LANE profiles:REQUESTED_PROFILES monolith-image:MONOLITH_IMAGE \
+            monolith-spring-profiles:MONOLITH_PROFILES monolith-build-context:MONOLITH_BUILD_CONTEXT \
+            monolith-health-path:MONOLITH_HEALTH_PATH legacy-open-finance-host:LEGACY_OF_HOST; do
+            name="${input#*:}"
+            if [[ "${!name:-}" == *[$'\r\n']* ]]; then
+              echo "::error::${input%%:*} must be a single line"; exit 1
+            fi
+          done
+          exports=()
           if [ "$MODE" != "compose" ]; then
             echo "::error::mode '$MODE' is not implemented; only compose is (kind is a documented follow-up)"
             exit 1
@@ -257,7 +279,7 @@ jobs:
             var="${BASH_REMATCH[1]}"; image="${BASH_REMATCH[2]}"
             grep -qP "\t${var}\t" "$FBX_COMPOSE/services.tsv" || { echo "::error::$var is not in compose/services.tsv"; exit 1; }
             image_ok "$image" || { echo "::error::$var must be pinned by digest or an immutable tag (no latest): $image"; exit 1; }
-            echo "$var=$image" >> "$GITHUB_ENV"
+            exports+=("$var=$image")
           done <<< "$SERVICE_IMAGES"
           profiles="$REQUESTED_PROFILES"
           # A lane (compose/lanes.tsv) stands for its profiles; profiles keeps its default then.
@@ -266,10 +288,10 @@ jobs:
             if [ "$REQUESTED_PROFILES" != services ]; then
               echo "::error::set lane or profiles, not both"; exit 1
             fi
-            profiles="$(awk -F '\t' -v lane="$LANE" '!/^#/ && $1 == lane { print $2 }' "$FBX_COMPOSE/lanes.tsv")"
+            profiles="$(awk -F '\t' -v lane="$LANE" '!/^#/ && $1 == lane { print $2; exit }' "$FBX_COMPOSE/lanes.tsv")"
             [ -n "$profiles" ] || { echo "::error::unknown lane $LANE; compose/lanes.tsv lists the lanes"; exit 1; }
             # The seed and test commands read the lane from here, after it is validated.
-            echo "FBX_LANE=$LANE" >> "$GITHUB_ENV"
+            exports+=("FBX_LANE=$LANE")
           fi
           if [ -n "$LEGACY_OF_HOST" ] && [ "$LEGACY_OF_HOST" != monolith ] \
             && [[ ! "$LEGACY_OF_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$ ]]; then
@@ -280,7 +302,7 @@ jobs:
           fi
           if [ -n "$MONOLITH_IMAGE" ]; then
             image_ok "$MONOLITH_IMAGE" || { echo "::error::monolith-image must be pinned: $MONOLITH_IMAGE"; exit 1; }
-            echo "FBX_MONOLITH_IMAGE=$MONOLITH_IMAGE" >> "$GITHUB_ENV"
+            exports+=("FBX_MONOLITH_IMAGE=$MONOLITH_IMAGE")
           fi
           if [ -n "$MONOLITH_BUILD_CONTEXT" ]; then
             if [[ "$MONOLITH_BUILD_CONTEXT" == /* || "/$MONOLITH_BUILD_CONTEXT/" == */../* ]]; then
@@ -289,14 +311,21 @@ jobs:
           fi
           if [ -n "$MONOLITH_IMAGE$MONOLITH_BUILD_CONTEXT" ]; then
             [[ "$MONOLITH_HEALTH_PATH" =~ ^/[A-Za-z0-9/_.-]*$ ]] || { echo "::error::monolith-health-path is not a path: $MONOLITH_HEALTH_PATH"; exit 1; }
-            {
-              echo "FBX_MONOLITH_SPRING_PROFILES=$MONOLITH_PROFILES"
-              echo "FBX_MONOLITH_HEALTH_PATH=$MONOLITH_HEALTH_PATH"
-            } >> "$GITHUB_ENV"
+            if [[ ! "$MONOLITH_PROFILES" =~ ^[A-Za-z0-9,_-]+$ ]]; then
+              echo "::error::monolith-spring-profiles must be Spring profile names (letters, digits, comma, _ and -)"; exit 1
+            fi
+            exports+=("FBX_MONOLITH_SPRING_PROFILES=$MONOLITH_PROFILES" "FBX_MONOLITH_HEALTH_PATH=$MONOLITH_HEALTH_PATH")
             profiles="$profiles monolith"
           fi
           if [ "$PARITY_FIXTURES" = true ]; then profiles="$profiles parity-fixtures"; fi
-          echo "FBX_PROFILES_RESOLVED=$profiles" >> "$GITHUB_ENV"
+          # Each word is a compose profile name (the memory plan step then fails on one that
+          # matches no container); they are written separated by single spaces.
+          read -ra words <<< "$profiles"
+          for p in "${words[@]}"; do
+            [[ "$p" =~ ^[a-z0-9-]+$ ]] || { echo "::error::profiles: '$p' is not a compose profile name (a-z, 0-9 and -)"; exit 1; }
+          done
+          exports+=("FBX_PROFILES_RESOLVED=${words[*]}")
+          printf '%s\n' "${exports[@]}" >> "$GITHUB_ENV"
           # Extra service environment -> compose override (validated by service-env.mjs).
           printf '%s\n' "$SERVICE_ENV" > "$RUNNER_TEMP/service-env.txt"
           bash "$FBX_COMPOSE/fbx-local.sh" service-env "$RUNNER_TEMP/service-env.txt"
