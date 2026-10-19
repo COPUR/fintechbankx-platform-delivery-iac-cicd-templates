@@ -1,0 +1,7 @@
+# Lanes of the ephemeral environment (tab separated): compose profiles that run together on one
+# runner. The fbx-ci-env VM has at most 12 GiB, which does not hold all 15 services, the monolith and
+# the shared containers at once (compose/scripts/plan-memory.mjs; compose/README.md has the plan).
+# lane	profiles	what it starts
+lending	lending customer riskcompliance	loan-lifecycle, customer, risk and compliance
+payments	payments	the four payment services with customer, risk, compliance and consent
+openfinance	openfinance	the seven open-finance services and MongoDB

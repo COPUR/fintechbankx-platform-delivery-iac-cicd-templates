@@ -1,0 +1,85 @@
+suite: deployment - contract labels, ports, probes, security
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  - it: carries what the observability repo's PodMonitor selects (service-id label, prometheus.io annotations)
+    template: templates/deployment.yaml
+    asserts:
+      - equal: {path: "spec.template.metadata.labels[\"fintechbankx.io/service-id\"]", value: svc-ln-loan-lifecycle}
+      - equal: {path: "spec.template.metadata.annotations[\"prometheus.io/scrape\"]", value: "true"}
+      - equal: {path: "spec.template.metadata.annotations[\"prometheus.io/port\"]", value: "8081"}
+      - equal: {path: "spec.template.metadata.annotations[\"prometheus.io/path\"]", value: /actuator/prometheus}
+  - it: carries the contract pod labels (app, version, name, service-id, istio inject)
+    template: templates/deployment.yaml
+    asserts:
+      - equal: {path: spec.template.metadata.labels.app, value: loan-lifecycle-service}
+      - equal: {path: "spec.template.metadata.labels[\"app.kubernetes.io/name\"]", value: loan-lifecycle-service}
+      - equal: {path: "spec.template.metadata.labels[\"fintechbankx.io/service-id\"]", value: svc-ln-loan-lifecycle}
+      - equal: {path: "spec.template.metadata.labels[\"app.kubernetes.io/part-of\"]", value: fintechbankx-lending}
+      - equal: {path: "spec.template.metadata.labels[\"sidecar.istio.io/inject\"]", value: "true"}
+      - exists: {path: spec.template.metadata.labels.version}
+  - it: uses the image tag as the version label when one is set
+    template: templates/deployment.yaml
+    set:
+      image.tag: 3f2c1e0
+    asserts:
+      - equal: {path: spec.template.metadata.labels.version, value: 3f2c1e0}
+  - it: pins the image by digest when a digest is given
+    template: templates/deployment.yaml
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: '^.+/fintechbankx/loan-lifecycle-service@sha256:[a-f0-9]{64}$'
+  - it: exposes http 8080 and management 8081 and probes the management port
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content: {name: http, containerPort: 8080, protocol: TCP}
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content: {name: management, containerPort: 8081, protocol: TCP}
+      - equal: {path: "spec.template.spec.containers[0].readinessProbe.httpGet.port", value: management}
+      - equal: {path: "spec.template.spec.containers[0].readinessProbe.httpGet.path", value: /actuator/health/readiness}
+      - equal: {path: "spec.template.spec.containers[0].livenessProbe.httpGet.port", value: management}
+      - equal: {path: "spec.template.spec.containers[0].startupProbe.httpGet.port", value: management}
+  - it: runs non-root with a read-only root filesystem and no capabilities
+    template: templates/deployment.yaml
+    asserts:
+      - equal: {path: spec.template.spec.securityContext.runAsNonRoot, value: true}
+      - equal: {path: spec.template.spec.securityContext.runAsUser, value: 10001}
+      - equal: {path: "spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem", value: true}
+      - equal: {path: "spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation", value: false}
+      - contains: {path: "spec.template.spec.containers[0].securityContext.capabilities.drop", content: ALL}
+  - it: spreads replicas across zones as a hard constraint
+    template: templates/deployment.yaml
+    asserts:
+      - equal: {path: "spec.template.spec.topologySpreadConstraints[0].topologyKey", value: topology.kubernetes.io/zone}
+      - equal: {path: "spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable", value: DoNotSchedule}
+  - it: leaves replicas to the HPA when autoscaling is on and sets them otherwise
+    template: templates/deployment.yaml
+    asserts:
+      - notExists: {path: spec.replicas}
+  - it: sets replicas when autoscaling is off
+    template: templates/deployment.yaml
+    set:
+      autoscaling.enabled: false
+    asserts:
+      - equal: {path: spec.replicas, value: 3}
+  - it: never bypasses the sidecar for the management port
+    template: templates/deployment.yaml
+    asserts:
+      - notExists:
+          path: "spec.template.metadata.annotations[\"traffic.sidecar.istio.io/excludeInboundPorts\"]"
+  - it: loads the ExternalSecret-backed secret into the environment
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content: {secretRef: {name: loan-lifecycle-service-secrets}}

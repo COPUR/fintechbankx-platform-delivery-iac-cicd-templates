@@ -1,0 +1,7 @@
+# staging overrides.
+environment: staging
+externalSecret:
+  remoteSecretName: staging/example-service/db-app
+autoscaling:
+  minReplicas: 3
+  maxReplicas: 6

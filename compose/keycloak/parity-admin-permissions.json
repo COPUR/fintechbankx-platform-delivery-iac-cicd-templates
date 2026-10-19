@@ -1,0 +1,27 @@
+{
+  "_comment": "Parity-only fine-grained admin permission (Keycloak 26 FGAP v2) for the local/ephemeral compose stack. Applied by the parity-admin-permissions service with the identity repo's scripts/realm/apply-admin-permissions.mjs (fetched, not copied), after the identity step and the parity-fixtures import. Same shape as the identity repo's realm/admin-permissions.json; own permission and policy names, so the identity repo's objects are never touched. Never part of the identity repo's realm.",
+  "realm": "fintechbankx",
+  "permissions": [
+    {
+      "name": "parity-customers-parity-suite",
+      "description": "Parity suite (Keycloak mode): view and update members of /customers only, like the customer service. Not staff users, no role or group changes. Ephemeral/local only.",
+      "resourceType": "Groups",
+      "groupPaths": [
+        "/customers"
+      ],
+      "scopes": [
+        "view-members",
+        "manage-members"
+      ],
+      "decisionStrategy": "UNANIMOUS",
+      "policy": {
+        "name": "parity-suite-client",
+        "type": "client",
+        "logic": "POSITIVE",
+        "clients": [
+          "parity-suite"
+        ]
+      }
+    }
+  ]
+}

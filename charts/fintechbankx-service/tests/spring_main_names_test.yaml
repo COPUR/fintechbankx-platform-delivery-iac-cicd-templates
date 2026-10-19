@@ -1,0 +1,244 @@
+suite: spring.main.* names and JVM options (every relaxed-binding spelling, every route)
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # fbx.overrideNameReason refuses (?i)^spring[._-]?main([._-]|$) by prefix,
+  # checked against the name as given, fbx.canonicalName and
+  # fbx.propertyName, for config keys, extraEnv names (value or valueFrom) and
+  # externalSecret data/extraData secretKeys; fbx.validateJvmOptions refuses a
+  # spring.main mention. Spring Boot 3.3.6 binds spring.main.* onto the
+  # SpringApplication after the environment is prepared, overriding what the
+  # service's code set: lazy-initialization moves a check made when a bean is
+  # created (a TLS assertion on the connection pool) from startup to first
+  # use, sources loads further bean definitions (a class, a package or an XML
+  # file) and allow-bean-definition-overriding lets them replace the
+  # service's own beans. The chart sets none.
+  - it: rejects config SPRING_MAIN_LAZY_INITIALIZATION (env form, '_' between words)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_MAIN_LAZY_INITIALIZATION: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_MAIN_LAZY_INITIALIZATION is not allowed: a spring.main.\\* property"
+  - it: rejects extraEnv SPRING_MAIN_LAZYINITIALIZATION (env form, no separator inside the member)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_MAIN_LAZYINITIALIZATION
+          value: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_MAIN_LAZYINITIALIZATION \\(value or valueFrom\\): a spring.main.\\* property"
+  - it: rejects config spring.main.lazy-initialization (dotted, kebab case)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.main.lazy-initialization: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.main.lazy-initialization is not allowed: a spring.main.\\* property"
+  - it: rejects extraEnv Spring.Main.Web-Application-Type from valueFrom (mixed case)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: Spring.Main.Web-Application-Type
+          valueFrom:
+            configMapKeyRef: {name: other, key: type}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set Spring.Main.Web-Application-Type \\(value or valueFrom\\): a spring.main.\\* property"
+  - it: rejects externalSecret.data materialising spring.main.allowBeanDefinitionOverriding (camel case)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: spring.main.allowBeanDefinitionOverriding
+          property: abdo
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise spring.main.allowBeanDefinitionOverriding \\(keep only the credentials in the secret\\): a spring.main.\\* property"
+  - it: rejects externalSecret.extraData materialising spring.ma-in.lazy-initialization ('-' inside an element, environment reading)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring.ma-in.lazy-initialization
+          remoteSecretName: staging/loan-lifecycle-service/startup
+          property: lazy
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring.ma-in.lazy-initialization .*: a spring.main.\\* property"
+  - it: rejects config sp_ring.main.lazy-initialization ('_' inside an element, property reading)
+    template: templates/deployment.yaml
+    set:
+      config:
+        sp_ring.main.lazy-initialization: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.sp_ring.main.lazy-initialization is not allowed: a spring.main.\\* property"
+  - it: rejects extraEnv spring.ma_in.sources from valueFrom ('_' inside an element, property reading)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.ma_in.sources
+          valueFrom:
+            secretKeyRef: {name: other, key: sources}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.ma_in.sources \\(value or valueFrom\\): a spring.main.\\* property"
+  - it: rejects extraEnv spring[main].lazy-initialization (bracket element)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring[main].lazy-initialization
+          value: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring\\[main\\].lazy-initialization .*: a spring.main.\\* property"
+  - it: rejects config spring.main.sources[0] (indexed list element; the name rule runs before the key shape check)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.main.sources[0]: file:./beans.xml
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.main.sources\\[0\\] is not allowed: a spring.main.\\* property"
+  - it: rejects externalSecret.extraData materialising SPRING_MAIN_SOURCES_0_ (indexed env form)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: SPRING_MAIN_SOURCES_0_
+          remoteSecretName: staging/loan-lifecycle-service/startup
+          property: sources
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise SPRING_MAIN_SOURCES_0_ .*: a spring.main.\\* property"
+  - it: rejects extraEnv _SPRING_MAIN_LAZYINITIALIZATION (leading '_', ignored by the environment mapper)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _SPRING_MAIN_LAZYINITIALIZATION
+          value: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set _SPRING_MAIN_LAZYINITIALIZATION .*: a spring.main.\\* property"
+  - it: rejects config SPRING__MAIN__ALLOW_BEAN_DEFINITION_OVERRIDING (doubled '_')
+    template: templates/deployment.yaml
+    set:
+      config.SPRING__MAIN__ALLOW_BEAN_DEFINITION_OVERRIDING: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING__MAIN__ALLOW_BEAN_DEFINITION_OVERRIDING is not allowed: a spring.main.\\* property"
+  - it: rejects extraEnv spring.main.lazy:initialization (':' inside an element, an env name Kubernetes 1.32+ accepts)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.main.lazy:initialization
+          value: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.main.lazy:initialization .*: a spring.main.\\* property"
+  - it: rejects externalSecret.data materialising spring_main_cloud_platform (lower-case env form)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: spring_main_cloud_platform
+          property: platform
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise spring_main_cloud_platform .*: a spring.main.\\* property"
+  - it: rejects config SPRING_MAIN_KEEP_ALIVE (any other member of the family, by prefix)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_MAIN_KEEP_ALIVE: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_MAIN_KEEP_ALIVE is not allowed: a spring.main.\\* property"
+  - it: rejects extraEnv SPRINGMAIN_LAZYINITIALIZATION (prefix rule, fail closed although it binds nothing)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRINGMAIN_LAZYINITIALIZATION
+          value: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRINGMAIN_LAZYINITIALIZATION .*: a spring.main.\\* property"
+  - it: rejects config spring-main-lazy-initialization (prefix rule, fail closed although it binds nothing)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring-main-lazy-initialization: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring-main-lazy-initialization is not allowed: a spring.main.\\* property"
+  - it: accepts names that only start like spring.main (control)
+    template: templates/deployment.yaml
+    set:
+      config:
+        SPRING_MAINTENANCE_WINDOW: "sun-02:00"
+        SPRING_MAINX: "1"
+        APP_SPRING_MAIN_CLASS: com.example.App
+        MAIN_CLASS: com.example.App
+      extraEnv:
+        - name: spring.mainframe.mode
+          value: "off"
+    asserts:
+      - notFailedTemplate: {}
+  # JVM options: every route fbx.validateJvmOptions reads, with the value
+  # as given and with every character other than [a-z0-9] removed.
+  - it: rejects javaToolOptions with -Dspring.main.lazy-initialization
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:MaxRAMPercentage=75 -Dspring.main.lazy-initialization=true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention .*mongodb, spring.main"
+  - it: rejects config JDK_JAVA_OPTIONS with -Dspring.main.sources[0] (indexed)
+    template: templates/deployment.yaml
+    set:
+      config.JDK_JAVA_OPTIONS: "-Dspring.main.sources[0]=file:./beans.xml"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.JDK_JAVA_OPTIONS must not mention .*spring.main"
+  - it: rejects extraEnv JAVA_TOOL_OPTIONS with -Dspring[main].lazy-initialization (bracket element)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JAVA_TOOL_OPTIONS
+          value: "-Dspring[main].lazy-initialization=true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JAVA_TOOL_OPTIONS must not mention .*spring.main"
+  - it: rejects extraEnv _JAVA_OPTIONS with -Dspring.ma_in.allow-bean-definition-overriding ('_' inside an element)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _JAVA_OPTIONS
+          value: "-Dspring.ma_in.allow-bean-definition-overriding=true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv._JAVA_OPTIONS must not mention .*spring.main"
+  - it: rejects javaToolOptions with -Dspring..main.web-application-type (empty element)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring..main.web-application-type=none"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention .*spring.main"
+  - it: rejects javaToolOptions with -DSPRING_MAIN_LAZY_INITIALIZATION (env spelling as a system property)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-DSPRING_MAIN_LAZY_INITIALIZATION=true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention .*spring.main"
+  - it: accepts JVM options that mention main or spring apart (control)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:MaxRAMPercentage=75 -Dapp.domain=maintenance -Dloader.main=com.example.App"
+    asserts:
+      - notFailedTemplate: {}

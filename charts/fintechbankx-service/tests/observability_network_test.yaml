@@ -1,0 +1,64 @@
+suite: servicemonitor, networkpolicy and serviceaccount
+templates:
+  - templates/servicemonitor.yaml
+  - templates/networkpolicy.yaml
+  - templates/serviceaccount.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  - it: renders no ServiceMonitor by default (the observability repo's PodMonitor is the single scrape path)
+    template: templates/servicemonitor.yaml
+    asserts:
+      - hasDocuments: {count: 0}
+  - it: opted in, it scrapes /actuator/prometheus on http-management
+    template: templates/servicemonitor.yaml
+    set:
+      observability.serviceMonitor.enabled: true
+    asserts:
+      - equal: {path: "spec.endpoints[0].port", value: http-management}
+      - equal: {path: "spec.endpoints[0].path", value: /actuator/prometheus}
+      - contains: {path: spec.namespaceSelector.matchNames, content: lending}
+  - it: renders no NetworkPolicy by default (the service-mesh platform repo owns NetworkPolicy)
+    template: templates/networkpolicy.yaml
+    asserts:
+      - hasDocuments: {count: 0}
+  - it: opted in, it adds no ipBlock egress unless egressCidrs are given
+    template: templates/networkpolicy.yaml
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - hasDocuments: {count: 1}
+      - lengthEqual: {path: spec.egress, count: 5}
+  - it: opted in, it renders narrowed egressCidrs
+    template: templates/networkpolicy.yaml
+    set:
+      networkPolicy.enabled: true
+      networkPolicy.egressCidrs:
+        - cidr: 10.20.0.0/16
+          ports: [5432]
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - ipBlock: {cidr: 10.20.0.0/16}
+            ports:
+              - {protocol: TCP, port: 5432}
+  - it: is default-deny for both directions with explicit allows when opted in
+    template: templates/networkpolicy.yaml
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - contains: {path: spec.policyTypes, content: Ingress}
+      - contains: {path: spec.policyTypes, content: Egress}
+      - equal: {path: "spec.ingress[0].ports[0].port", value: 8080}
+  - it: annotates the ServiceAccount with the IRSA role
+    template: templates/serviceaccount.yaml
+    asserts:
+      - equal: {path: metadata.name, value: loan-lifecycle-service}
+      - equal:
+          path: "metadata.annotations[\"eks.amazonaws.com/role-arn\"]"
+          value: arn:aws:iam::123456789012:role/staging-loan-lifecycle-service-workload

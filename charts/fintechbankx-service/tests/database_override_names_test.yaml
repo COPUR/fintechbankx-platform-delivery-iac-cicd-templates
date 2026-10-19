@@ -1,0 +1,183 @@
+suite: database TLS - datasource override names and JVM options
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # One name rule for config keys, extraEnv names (value or valueFrom) and
+  # externalSecret data/extraData secretKeys (fbx.validateDatabaseTls):
+  # (?i)^spring[._-]?(datasource|flyway|liquibase|r2dbc)[._-], spring.application.json
+  # in any spelling, and any name containing jdbc[._-]?url, ssl[._-]?factory,
+  # ssl[._-]?host[._-]?name[._-]?verifier or ssl[._-]?password[._-]?callback,
+  # except SPRING_DATASOURCE_USERNAME / _PASSWORD (config.DB_URL stays the one
+  # place for the JDBC URL). TLS parameter names (sslrootcert, sslmode,
+  # DB_SSL_ROOT_CERT) are in datasource_tls_names_test.yaml.
+  - it: rejects config SPRING_LIQUIBASE_URL (spring.liquibase.*)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_LIQUIBASE_URL: jdbc:postgresql://db.example.internal:5432/db?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_LIQUIBASE_URL is not allowed"
+  - it: rejects config spring.r2dbc.url (dotted, lower case)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.r2dbc.url: r2dbc:postgresql://db.example.internal:5432/db
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.r2dbc.url is not allowed"
+  - it: rejects config SPRING_DATASOURCE_HIKARI_DATA_SOURCE_PROPERTIES_SSLMODE (datasource property, not a URL)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_DATASOURCE_HIKARI_DATA_SOURCE_PROPERTIES_SSLMODE: disable
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_DATASOURCE_HIKARI_DATA_SOURCE_PROPERTIES_SSLMODE is not allowed"
+  - it: rejects config REPORTING_JDBC_URL (name contains JDBC_URL)
+    template: templates/deployment.yaml
+    set:
+      config.REPORTING_JDBC_URL: postgresql://db.example.internal:5432/db
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.REPORTING_JDBC_URL is not allowed"
+  - it: rejects config spring.application.json (dotted spelling)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.application.json: "{}"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.application.json is not allowed"
+  - it: rejects extraEnv SPRING_FLYWAY_SSL_FACTORY (spring.flyway.*)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_FLYWAY_SSL_FACTORY
+          value: x
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_FLYWAY_SSL_FACTORY"
+  - it: rejects extraEnv SPRING_R2DBC_URL from valueFrom (value never seen by the chart)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_R2DBC_URL
+          valueFrom:
+            secretKeyRef: {name: other, key: url}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_R2DBC_URL"
+  - it: rejects extraEnv PGJDBC_SSLHOSTNAMEVERIFIER from valueFrom (name contains SSLHOSTNAMEVERIFIER)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: PGJDBC_SSLHOSTNAMEVERIFIER
+          valueFrom:
+            configMapKeyRef: {name: other, key: verifier}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set PGJDBC_SSLHOSTNAMEVERIFIER"
+  - it: rejects externalSecret.data SPRING_DATASOURCE_HIKARI_DATA_SOURCE_PROPERTIES_SSLFACTORY
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_DATASOURCE_HIKARI_DATA_SOURCE_PROPERTIES_SSLFACTORY
+          property: factory
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_DATASOURCE_HIKARI_DATA_SOURCE_PROPERTIES_SSLFACTORY"
+  - it: rejects externalSecret.extraData REPORTING_JDBC_URL
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: REPORTING_JDBC_URL
+          remoteSecretName: staging/loan-lifecycle-service/reporting-db
+          property: url
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise REPORTING_JDBC_URL"
+  - it: accepts the datasource credentials in config, extraEnv and the secret (control)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_DATASOURCE_USERNAME: ln_loan_lifecycle_app
+      extraEnv:
+        - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+          value: b-1.example.internal:9098
+      externalSecret.data:
+        - secretKey: SPRING_DATASOURCE_PASSWORD
+          property: password
+        - secretKey: spring_datasource_username
+          property: username
+    asserts:
+      - notFailedTemplate: {}
+  # JVM options can carry -Dspring.datasource.url=..., -Djavax.net.ssl.* or
+  # -Dspring.application.json=... past the name rule: any value of
+  # javaToolOptions, JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS or _JAVA_OPTIONS that
+  # mentions datasource, flyway, liquibase, r2dbc, jdbc, ssl or application.json
+  # is rejected, and these names may not come from valueFrom or the secret.
+  - it: rejects javaToolOptions with -Dspring.datasource.url
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:MaxRAMPercentage=75 -Dspring.datasource.url=jdbc:postgresql://db.example.internal:5432/db?sslmode=disable"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects config JDK_JAVA_OPTIONS with -Djavax.net.ssl.trustStore
+    template: templates/deployment.yaml
+    set:
+      config.JDK_JAVA_OPTIONS: "-Djavax.net.ssl.trustStore=/etc/fintechbankx/any.jks"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.JDK_JAVA_OPTIONS must not mention"
+  - it: rejects extraEnv JAVA_TOOL_OPTIONS with -Dspring.flyway.url
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JAVA_TOOL_OPTIONS
+          value: "-Dspring.flyway.url=jdbc:postgresql://db.example.internal:5432/db"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JAVA_TOOL_OPTIONS must not mention"
+  - it: rejects extraEnv _JAVA_OPTIONS with -Dspring.application.json
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _JAVA_OPTIONS
+          value: '-Dspring.application.json={"x":1}'
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv._JAVA_OPTIONS must not mention"
+  - it: rejects extraEnv JDK_JAVA_OPTIONS from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JDK_JAVA_OPTIONS
+          valueFrom:
+            configMapKeyRef: {name: other, key: opts}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv JDK_JAVA_OPTIONS must set a literal value"
+  - it: rejects externalSecret.data materialising JAVA_TOOL_OPTIONS
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: JAVA_TOOL_OPTIONS
+          property: opts
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise JAVA_TOOL_OPTIONS"
+  - it: accepts plain JVM options in javaToolOptions, config and extraEnv (control)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError"
+      config.JDK_JAVA_OPTIONS: "-Xss512k"
+      extraEnv:
+        - name: _JAVA_OPTIONS
+          value: "-Duser.timezone=UTC"
+    asserts:
+      - notFailedTemplate: {}

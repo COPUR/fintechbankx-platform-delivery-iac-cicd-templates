@@ -1,5 +1,8 @@
+# SECONDARY TEMPLATE (seeded from the monorepo ci/templates). GitHub Actions
+# reusable workflows in .github/workflows/ are the primary CI/CD path. The
+# monorepo-only repository_governance job (tools/validation/*) was removed: those
+# scripts do not exist in the split repositories.
 stages:
-  - governance
   - validate
   - quality
   - security
@@ -9,20 +12,6 @@ stages:
 variables:
   SERVICE_DIR: "."
   GRADLE_OPTS: "-Dorg.gradle.daemon=false"
-  STRICT_DEPRECATED_ROOTS: "true"
-
-repository_governance:
-  stage: governance
-  image: python:3.13-slim
-  script:
-    - apt-get update
-    - apt-get install -y --no-install-recommends git bash
-    - python -m venv .venv-validation
-    - . .venv-validation/bin/activate
-    - python -m pip install --upgrade pip coverage
-    - python -m coverage run --source=tools/validation -m unittest discover -s tools/validation/tests -p 'test_*.py'
-    - python -m coverage report --include='*/repo_governance_validator.py' --fail-under=90
-    - bash tools/validation/validate-repo-governance.sh
 
 validate_workspace:
   stage: validate
@@ -59,7 +48,7 @@ vulnerability_scan:
 secret_scan:
   stage: security
   image:
-    name: zricethezav/gitleaks:v8.21.2
+    name: zricethezav/gitleaks:v8.24.3
     entrypoint: [""]
   script:
     - gitleaks detect --no-git --source "${SERVICE_DIR}" --exit-code 1
@@ -74,8 +63,8 @@ build_image:
     IMAGE_NAME: "${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}"
   script:
     - |
-      if [ -f "${SERVICE_DIR}/infrastructure/Dockerfile" ]; then
-        docker build -t "${IMAGE_NAME}" -f "${SERVICE_DIR}/infrastructure/Dockerfile" "${SERVICE_DIR}"
+      if [ -f "${SERVICE_DIR}/Dockerfile" ]; then
+        docker build -t "${IMAGE_NAME}" -f "${SERVICE_DIR}/Dockerfile" "${SERVICE_DIR}"
       else
         docker build -t "${IMAGE_NAME}" "${SERVICE_DIR}"
       fi

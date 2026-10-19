@@ -1,0 +1,197 @@
+suite: schema-management names and JVM options (spring.jpa.*, spring.sql.init.*, hibernate.*, jakarta/javax.persistence.*)
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # fbx.overrideNameReason refuses spring.jpa.*, spring.sql.init.*,
+  # hibernate.*, jakarta.persistence.* and javax.persistence.* by prefix,
+  # checked against the name as given, fbx.canonicalName and
+  # fbx.propertyName, for config keys, extraEnv names (value or valueFrom) and
+  # externalSecret data/extraData secretKeys; fbx.validateJvmOptions refuses a
+  # mention of any of them. spring.jpa.hibernate.ddl-auto,
+  # spring.jpa.generate-ddl, hibernate.hbm2ddl.auto,
+  # jakarta.persistence.schema-generation.* and spring.sql.init.* make the
+  # service create, change or drop its schema at startup with its runtime
+  # role; the schema belongs to the service's migrations. The chart sets none.
+  - it: rejects config SPRING_JPA_HIBERNATE_DDL_AUTO (env form)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_JPA_HIBERNATE_DDL_AUTO: create-drop
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_JPA_HIBERNATE_DDL_AUTO is not allowed: a schema-management setting"
+  - it: rejects config spring.jpa.generate-ddl (dotted, kebab case)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.jpa.generate-ddl: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.jpa.generate-ddl is not allowed: a schema-management setting"
+  - it: rejects config SPRING_JPA_PROPERTIES_HIBERNATE_HBM2DDL_AUTO (raw Hibernate property through spring.jpa.properties)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_JPA_PROPERTIES_HIBERNATE_HBM2DDL_AUTO: update
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_JPA_PROPERTIES_HIBERNATE_HBM2DDL_AUTO is not allowed: a schema-management setting"
+  - it: rejects extraEnv SPRING_SQL_INIT_MODE (value)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_SQL_INIT_MODE
+          value: always
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_SQL_INIT_MODE \\(value or valueFrom\\): a schema-management setting"
+  - it: rejects extraEnv spring.sql.init.schema-locations from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.sql.init.schema-locations
+          valueFrom:
+            configMapKeyRef: {name: other, key: schema}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.sql.init.schema-locations \\(value or valueFrom\\): a schema-management setting"
+  - it: rejects config SPRING_SQLINIT_MODE (no separator inside sql.init)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_SQLINIT_MODE: always
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_SQLINIT_MODE is not allowed: a schema-management setting"
+  - it: rejects externalSecret.data materialising hibernate.hbm2ddl.auto
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: hibernate.hbm2ddl.auto
+          property: ddl
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise hibernate.hbm2ddl.auto \\(keep only the credentials in the secret\\): a schema-management setting"
+  - it: rejects externalSecret.extraData materialising jakarta.persistence.schema-generation.database.action
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: jakarta.persistence.schema-generation.database.action
+          remoteSecretName: staging/loan-lifecycle-service/schema
+          property: action
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise jakarta.persistence.schema-generation.database.action .*: a schema-management setting"
+  - it: rejects config JAVAX_PERSISTENCE_SCHEMA_GENERATION_DATABASE_ACTION (env form)
+    template: templates/deployment.yaml
+    set:
+      config.JAVAX_PERSISTENCE_SCHEMA_GENERATION_DATABASE_ACTION: drop-and-create
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.JAVAX_PERSISTENCE_SCHEMA_GENERATION_DATABASE_ACTION is not allowed: a schema-management setting"
+  - it: rejects config spring.j_pa.hibernate.ddl-auto ('_' inside an element, property reading)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.j_pa.hibernate.ddl-auto: create
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.j_pa.hibernate.ddl-auto is not allowed: a schema-management setting"
+  - it: rejects extraEnv spring[jpa].generate-ddl (bracket element)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring[jpa].generate-ddl
+          value: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring\\[jpa\\].generate-ddl .*: a schema-management setting"
+  - it: rejects extraEnv _SPRING_JPA_DEFER_DATASOURCE_INITIALIZATION (leading '_', environment reading)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _SPRING_JPA_DEFER_DATASOURCE_INITIALIZATION
+          value: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set _SPRING_JPA_DEFER_DATASOURCE_INITIALIZATION .*: a schema-management setting"
+  - it: rejects externalSecret.data materialising Hibernate.Hbm2ddl.Auto (mixed case)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: Hibernate.Hbm2ddl.Auto
+          property: ddl
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise Hibernate.Hbm2ddl.Auto .*: a schema-management setting"
+  - it: accepts names that only start like the schema-management families (control)
+    template: templates/deployment.yaml
+    set:
+      config:
+        SPRING_DATA_JPA_REPOSITORIES_BOOTSTRAP_MODE: deferred
+        SPRING_JPAX_NOTE: x
+        APP_HIBERNATE_STATS: "off"
+        HIBERNATES_NOTE: x
+        JAKARTA_MAIL_HOST: smtp.example.test
+      extraEnv:
+        - name: spring.sqlx.mode
+          value: "off"
+    asserts:
+      - notFailedTemplate: {}
+  # JVM options: every route fbx.validateJvmOptions reads, with the value
+  # as given and with every character other than [a-z0-9] removed.
+  - it: rejects javaToolOptions with -Dspring.jpa.hibernate.ddl-auto
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:MaxRAMPercentage=75 -Dspring.jpa.hibernate.ddl-auto=create-drop"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention .*spring.jpa, spring.sql.init, hibernate"
+  - it: rejects config JDK_JAVA_OPTIONS with -Dhibernate.hbm2ddl.auto (Hibernate reads system properties)
+    template: templates/deployment.yaml
+    set:
+      config.JDK_JAVA_OPTIONS: "-Dhibernate.hbm2ddl.auto=update"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.JDK_JAVA_OPTIONS must not mention .*hibernate"
+  - it: rejects extraEnv JAVA_TOOL_OPTIONS with -Djakarta.persistence.schema-generation.database.action
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JAVA_TOOL_OPTIONS
+          value: "-Djakarta.persistence.schema-generation.database.action=drop-and-create"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JAVA_TOOL_OPTIONS must not mention .*jakarta.persistence"
+  - it: rejects extraEnv _JAVA_OPTIONS with -Djavax.persistence.schema-generation.database.action
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _JAVA_OPTIONS
+          value: "-Djavax.persistence.schema-generation.database.action=create"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv._JAVA_OPTIONS must not mention .*javax.persistence"
+  - it: rejects javaToolOptions with -Dspring.sql.init.mode
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.sql.init.mode=always"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention .*spring.sql.init"
+  - it: rejects javaToolOptions with -Dspring.j_pa.generate-ddl ('_' inside an element)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.j_pa.generate-ddl=true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention .*spring.jpa"
+  - it: accepts JVM options that mention none of the families (control)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:MaxRAMPercentage=75 -Dspring.data.jpa.repositories.bootstrap-mode=deferred -Dapp.persistent=true"
+    asserts:
+      - notFailedTemplate: {}

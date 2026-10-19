@@ -1,28 +1,74 @@
+# SECONDARY TEMPLATE. GitHub Actions (.github/workflows/java-service-ci.yml and
+# friends) is the primary, reviewed CI path for FinTechBankX. This GitLab
+# equivalent mirrors its gates: gradle check (jacoco gate), the controller
+# Map<String,Object> guardrail, OpenAPI lint and gitleaks.
 stages:
   - verify
 
 variables:
   GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  GITLEAKS_VERSION: "8.24.3"
+  # Namespaced: a consuming project's own NODE_VERSION variable must not change it.
+  FBX_NODE_VERSION: "22.23.3"
 
 quality_gates:
   stage: verify
   image: eclipse-temurin:23-jdk
   before_script:
-    - apt-get update && apt-get install -y curl ca-certificates gnupg
-    - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-    - apt-get install -y nodejs
-    - chmod +x templates/ci/scripts/resolve-gradle-command.sh
+    - apt-get update && apt-get install -y curl ca-certificates git
+    - |
+      # Node.js for the OpenAPI lint (npx): the nodejs.org release tarball for the
+      # job's architecture, checked against the sha256 in that release's
+      # SHASUMS256.txt (signed by a Node.js releaser) before it is extracted.
+      # Another version or architecture fails until its sha256 are added here.
+      set -e
+      case "$(uname -m)" in
+        x86_64) node_arch=x64; node_sha=1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af ;;
+        aarch64|arm64) node_arch=arm64; node_sha=5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2 ;;
+        *) echo "ERROR: no Node.js build for architecture $(uname -m)"; exit 1 ;;
+      esac
+      if [ "$FBX_NODE_VERSION" != "22.23.3" ]; then
+        echo "ERROR: no pinned sha256 for Node.js $FBX_NODE_VERSION; add each architecture's sha256 from that release's SHASUMS256.txt to this job"
+        exit 1
+      fi
+      node_dir="$(mktemp -d)"
+      curl -sSfL -o "$node_dir/node.tar.gz" "https://nodejs.org/dist/v${FBX_NODE_VERSION}/node-v${FBX_NODE_VERSION}-linux-${node_arch}.tar.gz"
+      echo "${node_sha}  $node_dir/node.tar.gz" | sha256sum -c -
+      tar -xz -C "$node_dir" -f "$node_dir/node.tar.gz" --strip-components=1
+      export PATH="$node_dir/bin:$PATH"
   script:
     - GRADLE_CMD="$(bash templates/ci/scripts/resolve-gradle-command.sh)"
-    - $GRADLE_CMD clean test jacocoTestReport jacocoTestCoverageVerification --no-daemon
+    - $GRADLE_CMD --no-daemon clean check
+    - |
+      controllers="$(git ls-files '*Controller.java' | grep 'src/main/java/' || true)"
+      if [ -n "$controllers" ] && grep -nE 'Map<\s*String\s*,\s*Object\s*>' $controllers; then
+        echo "Generic Map<String,Object> payloads are disallowed in controllers."; exit 1
+      fi
     - if ls api/openapi/*.yaml >/dev/null 2>&1; then npx -y @redocly/cli@1.27.1 lint api/openapi/*.yaml; fi
     - |
-      if command -v gitleaks >/dev/null 2>&1; then
-        gitleaks detect --source . --verbose
-      else
-        echo "gitleaks not installed in runner image; skip with warning."
+      # gitleaks: the release asset for the job's architecture, checked against the
+      # sha256 from the release's own checksums file before it is extracted (the same
+      # pins as required-gates.yml). Another version or architecture fails until its
+      # sha256 are added here. set -e: a failed check stops the job (GitLab sets it
+      # too; this keeps the block safe if the template is run another way).
+      set -e
+      case "$(uname -m)" in
+        x86_64) gitleaks_arch=x64; gitleaks_sha=9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c ;;
+        aarch64|arm64) gitleaks_arch=arm64; gitleaks_sha=5f2edbe1f49f7b920f9e06e90759947d3c5dfc16f752fb93aaafc17e9d14cf07 ;;
+        *) echo "ERROR: no gitleaks build for architecture $(uname -m)"; exit 1 ;;
+      esac
+      if [ "$GITLEAKS_VERSION" != "8.24.3" ]; then
+        echo "ERROR: no pinned sha256 for gitleaks $GITLEAKS_VERSION; add the release's sha256 for each architecture to this job"
+        exit 1
       fi
+      gitleaks_dir="$(mktemp -d)"
+      curl -sSfL -o "$gitleaks_dir/gitleaks.tar.gz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${gitleaks_arch}.tar.gz"
+      echo "${gitleaks_sha}  $gitleaks_dir/gitleaks.tar.gz" | sha256sum -c -
+      tar -xz -C "$gitleaks_dir" -f "$gitleaks_dir/gitleaks.tar.gz" gitleaks
+      export PATH="$gitleaks_dir:$PATH"
+    - gitleaks detect --source . --no-git --redact --no-banner $( [ -f .gitleaks.toml ] && echo --config .gitleaks.toml )
   artifacts:
     when: always
     paths:
-      - build/reports/
+      - "**/build/reports/"
+      - "**/build/test-results/"

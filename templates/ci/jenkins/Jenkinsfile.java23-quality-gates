@@ -1,3 +1,7 @@
+// SECONDARY TEMPLATE. GitHub Actions (.github/workflows/java-service-ci.yml and
+// friends) is the primary, reviewed CI path for FinTechBankX. This Jenkins
+// equivalent mirrors its gates: gradle check (jacoco gate), the controller
+// Map<String,Object> guardrail, OpenAPI lint and gitleaks.
 pipeline {
   agent any
 
@@ -24,7 +28,12 @@ pipeline {
         sh '''
           set -euo pipefail
           GRADLE_CMD="$(bash templates/ci/scripts/resolve-gradle-command.sh)"
-          ${GRADLE_CMD} clean test jacocoTestReport jacocoTestCoverageVerification --no-daemon
+          ${GRADLE_CMD} --no-daemon clean check
+          controllers="$(git ls-files '*Controller.java' | grep 'src/main/java/' || true)"
+          if [ -n "$controllers" ] && grep -nE 'Map<\\s*String\\s*,\\s*Object\\s*>' $controllers; then
+            echo 'Generic Map<String,Object> payloads are disallowed in controllers.'
+            exit 1
+          fi
         '''
       }
     }
@@ -48,7 +57,7 @@ pipeline {
         sh '''
           set -euo pipefail
           if command -v gitleaks >/dev/null 2>&1; then
-            gitleaks detect --source . --verbose
+            gitleaks detect --source . --no-git --redact --no-banner
           else
             echo "gitleaks is not installed on this Jenkins agent."
             exit 1
@@ -61,7 +70,7 @@ pipeline {
   post {
     always {
       archiveArtifacts artifacts: '**/build/reports/**', allowEmptyArchive: true
-      junit testResults: '**/build/test-results/test/*.xml', allowEmptyResults: true
+      junit testResults: '**/build/test-results/**/*.xml', allowEmptyResults: true
     }
   }
 }

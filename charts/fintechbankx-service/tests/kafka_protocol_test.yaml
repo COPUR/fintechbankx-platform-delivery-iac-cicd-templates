@@ -1,0 +1,248 @@
+suite: Kafka client TLS - security.protocol and endpoint identification
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # Names matching (?i)(^|[._-])security[._-]?protocol$ (KAFKA_SECURITY_PROTOCOL,
+  # SPRING_KAFKA_SECURITY_PROTOCOL, SPRING_KAFKA_PRODUCER_SECURITY_PROTOCOL,
+  # SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL, spring.kafka.streams.security.protocol)
+  # need a literal value of SASL_SSL or SSL (case-insensitive, trimmed); names
+  # matching (?i)endpoint[._-]?identification[._-]?algorithm need https (empty
+  # disables host name verification). Neither may come from extraEnv valueFrom
+  # or the ExternalSecret. kafka.runtime msk requires SASL_SSL, strimzi SSL.
+  - it: accepts the fixture (msk, KAFKA_SECURITY_PROTOCOL SASL_SSL)
+    template: templates/deployment.yaml
+    asserts:
+      - notFailedTemplate: {}
+  - it: rejects config KAFKA_SECURITY_PROTOCOL PLAINTEXT
+    template: templates/deployment.yaml
+    set:
+      config.KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.KAFKA_SECURITY_PROTOCOL must be SASL_SSL or SSL"
+  - it: rejects config KAFKA_SECURITY_PROTOCOL SASL_PLAINTEXT
+    template: templates/deployment.yaml
+    set:
+      config.KAFKA_SECURITY_PROTOCOL: SASL_PLAINTEXT
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.KAFKA_SECURITY_PROTOCOL must be SASL_SSL or SSL"
+  - it: rejects config KAFKA_SECURITY_PROTOCOL empty
+    template: templates/deployment.yaml
+    set:
+      config.KAFKA_SECURITY_PROTOCOL: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.KAFKA_SECURITY_PROTOCOL must be SASL_SSL or SSL"
+  - it: rejects config KAFKA_SECURITY_PROTOCOL " plaintext " (case and spaces)
+    template: templates/deployment.yaml
+    set:
+      config.KAFKA_SECURITY_PROTOCOL: " plaintext "
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.KAFKA_SECURITY_PROTOCOL must be SASL_SSL or SSL"
+  - it: rejects config spring.kafka.streams.security.protocol PLAINTEXT
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.streams.security.protocol: PLAINTEXT
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.streams.security.protocol must be SASL_SSL or SSL"
+  - it: rejects config SPRING_KAFKA_PRODUCER_SECURITY_PROTOCOL SASL_PLAINTEXT
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_PRODUCER_SECURITY_PROTOCOL: SASL_PLAINTEXT
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_PRODUCER_SECURITY_PROTOCOL must be SASL_SSL or SSL"
+  - it: rejects config SPRING_KAFKA_SECURITY_PROTOCOL true (YAML boolean)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_SECURITY_PROTOCOL: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_SECURITY_PROTOCOL must be SASL_SSL or SSL"
+  - it: rejects extraEnv SPRING_KAFKA_SECURITY_PROTOCOL PLAINTEXT
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_KAFKA_SECURITY_PROTOCOL
+          value: PLAINTEXT
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.SPRING_KAFKA_SECURITY_PROTOCOL must be SASL_SSL or SSL"
+  - it: rejects extraEnv KAFKA_SECURITY_PROTOCOL PLAINTEXT overriding config SASL_SSL
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: KAFKA_SECURITY_PROTOCOL
+          value: PLAINTEXT
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.KAFKA_SECURITY_PROTOCOL must be SASL_SSL or SSL"
+  - it: rejects extraEnv SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL
+          valueFrom:
+            configMapKeyRef: {name: other, key: protocol}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL must set a literal value"
+  - it: rejects extraEnv KAFKA_SECURITY_PROTOCOL with an empty value next to valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: KAFKA_SECURITY_PROTOCOL
+          value: ""
+          valueFrom:
+            configMapKeyRef: {name: other, key: protocol}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv KAFKA_SECURITY_PROTOCOL must set a literal value"
+  - it: rejects externalSecret.data materialising KAFKA_SECURITY_PROTOCOL
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: KAFKA_SECURITY_PROTOCOL
+          property: protocol
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise KAFKA_SECURITY_PROTOCOL"
+  - it: rejects externalSecret.extraData materialising spring.kafka.security.protocol
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring.kafka.security.protocol
+          remoteSecretName: staging/loan-lifecycle-service/kafka
+          property: protocol
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring.kafka.security.protocol"
+  # Host name verification.
+  - it: rejects config SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM empty
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM must be https"
+  - it: rejects extraEnv KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM none
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM
+          value: none
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM must be https"
+  - it: rejects extraEnv ssl.endpoint.identification.algorithm from valueFrom
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: ssl.endpoint.identification.algorithm
+          valueFrom:
+            secretKeyRef: {name: other, key: algo}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv ssl.endpoint.identification.algorithm must set a literal value"
+  - it: rejects externalSecret.data materialising SSL_ENDPOINT_IDENTIFICATION_ALGORITHM
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SSL_ENDPOINT_IDENTIFICATION_ALGORITHM
+          property: algo
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SSL_ENDPOINT_IDENTIFICATION_ALGORITHM"
+  # kafka.runtime consistency.
+  - it: rejects kafka.runtime msk with KAFKA_SECURITY_PROTOCOL SSL
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: msk
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.KAFKA_SECURITY_PROTOCOL must be SASL_SSL with kafka.runtime msk"
+  - it: rejects kafka.runtime strimzi with KAFKA_SECURITY_PROTOCOL SASL_SSL
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.KAFKA_SECURITY_PROTOCOL must be SSL with kafka.runtime strimzi"
+  - it: rejects kafka.runtime strimzi with extraEnv SPRING_KAFKA_SECURITY_PROTOCOL SASL_SSL
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+      extraEnv:
+        - name: SPRING_KAFKA_SECURITY_PROTOCOL
+          value: SASL_SSL
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.SPRING_KAFKA_SECURITY_PROTOCOL must be SSL with kafka.runtime strimzi"
+  - it: rejects config KAFKA_SECURITY_PROTOCOL SSL without kafka.runtime (no auth profile)
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: ""
+      config.KAFKA_SECURITY_PROTOCOL: SSL
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.KAFKA_SECURITY_PROTOCOL is set but kafka.runtime is empty"
+  # JVM system properties are a Spring property source.
+  - it: rejects javaToolOptions with -Dspring.kafka.security.protocol=PLAINTEXT
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.kafka.security.protocol=PLAINTEXT"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"
+  - it: rejects extraEnv JDK_JAVA_OPTIONS with -Dspring.kafka.properties.ssl.endpoint.identification.algorithm=
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JDK_JAVA_OPTIONS
+          value: "-Dspring.kafka.properties.ssl.endpoint.identification.algorithm="
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JDK_JAVA_OPTIONS must not mention"
+  # Controls.
+  - it: accepts SSL or SASL_SSL in any case with spaces and https in any case
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: msk
+      config.KAFKA_SECURITY_PROTOCOL: " sasl_ssl "
+      config.SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: HTTPS
+      extraEnv:
+        - name: SPRING_KAFKA_SECURITY_PROTOCOL
+          value: Sasl_Ssl
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts kafka.runtime strimzi with SSL everywhere
+    template: templates/deployment.yaml
+    set:
+      kafka.runtime: strimzi
+      config:
+        KAFKA_SECURITY_PROTOCOL: SSL
+        spring.kafka.streams.security.protocol: ssl
+      extraEnv:
+        - name: KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM
+          value: https
+    asserts:
+      - notFailedTemplate: {}
+  - it: accepts names that only contain security protocol elsewhere (control)
+    template: templates/deployment.yaml
+    set:
+      config.KAFKA_SECURITY_PROTOCOL_DOC: PLAINTEXT
+      config.INSECURITY_PROTOCOL: PLAINTEXT
+    asserts:
+      - notFailedTemplate: {}

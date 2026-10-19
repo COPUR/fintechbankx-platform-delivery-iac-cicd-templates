@@ -1,0 +1,12 @@
+{{- include "vendored-guard-example.guard" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}
+data:
+  {{- range $k, $v := .Values.env }}
+  {{ $k | quote }}: {{ $v | quote }}
+  {{- end }}
+  {{- with include "fbx.kafkaProfile" (dict "Values" (dict "kafka" (dict "runtime" .Values.kafkaRuntime))) }}
+  SPRING_PROFILES_ACTIVE: {{ . | quote }}
+  {{- end }}

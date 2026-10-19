@@ -1,0 +1,80 @@
+{
+  "realm": "banking-realm",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "svc-ln-loan-lifecycle",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_LN_LOAN_LIFECYCLE)"
+    },
+    {
+      "clientId": "svc-cus-profile-kyc",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_CUS_PROFILE_KYC)"
+    },
+    {
+      "clientId": "fintechbankx-web",
+      "redirectUris": [
+        "$(env:FBX_WEB_REDIRECT_URI)"
+      ],
+      "webOrigins": [
+        "$(env:FBX_WEB_ORIGIN)"
+      ],
+      "attributes": {
+        "post.logout.redirect.uris": "$(env:FBX_WEB_POST_LOGOUT_REDIRECT_URI)"
+      }
+    },
+    {
+      "clientId": "fintechbankx-mobile",
+      "redirectUris": [
+        "$(env:FBX_MOBILE_REDIRECT_URI)"
+      ]
+    }
+  ],
+  "components": {
+    "org.keycloak.storage.UserStorageProvider": [
+      {
+        "name": "fbx-directory",
+        "config": {
+          "connectionUrl": [
+            "$(env:LDAP_CONNECTION_URL)"
+          ],
+          "bindDn": [
+            "$(env:LDAP_BIND_DN)"
+          ],
+          "bindCredential": [
+            "$(env:LDAP_BIND_CREDENTIAL)"
+          ],
+          "startTls": [
+            "$(env:LDAP_START_TLS)"
+          ],
+          "vendor": [
+            "$(env:LDAP_VENDOR)"
+          ],
+          "usersDn": [
+            "$(env:LDAP_USERS_DN)"
+          ],
+          "usernameLDAPAttribute": [
+            "$(env:LDAP_USERNAME_ATTRIBUTE)"
+          ],
+          "rdnLDAPAttribute": [
+            "$(env:LDAP_RDN_ATTRIBUTE)"
+          ],
+          "uuidLDAPAttribute": [
+            "$(env:LDAP_UUID_ATTRIBUTE)"
+          ],
+          "userObjectClasses": [
+            "$(env:LDAP_USER_OBJECT_CLASSES)"
+          ],
+          "customUserSearchFilter": [
+            "$(env:LDAP_USER_SEARCH_FILTER)"
+          ],
+          "groupsDn": [
+            "$(env:LDAP_GROUPS_DN)"
+          ],
+          "groupObjectClasses": [
+            "$(env:LDAP_GROUP_OBJECT_CLASSES)"
+          ]
+        }
+      }
+    ]
+  }
+}

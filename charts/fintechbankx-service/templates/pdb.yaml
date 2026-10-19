@@ -1,0 +1,18 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- $min := int .Values.podDisruptionBudget.minAvailable }}
+{{- $floor := ternary (int .Values.autoscaling.minReplicas) (int .Values.replicaCount) .Values.autoscaling.enabled }}
+{{- if ge $min $floor }}
+{{- fail (printf "podDisruptionBudget.minAvailable (%d) must be lower than the minimum replica count (%d), otherwise node drains block" $min $floor) }}
+{{- end }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "fbx.name" . }}
+  labels:
+    {{- include "fbx.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ $min }}
+  selector:
+    matchLabels:
+      {{- include "fbx.selectorLabels" . | nindent 6 }}
+{{- end }}

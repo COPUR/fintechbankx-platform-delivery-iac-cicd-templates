@@ -1,0 +1,91 @@
+{
+  "_comment": "Copy of the service clients in fintechbankx-platform-identity-iam-keycloak-ldap realm/service-clients.json at 4617a19 (clientId, serviceSlug, audiences only). The compose test checks services.tsv against it; refresh it when the identity repo adds or renames a service client.",
+  "clients": [
+    {
+      "clientId": "svc-ln-loan-lifecycle",
+      "serviceSlug": "loan-lifecycle-service",
+      "audiences": [
+        "svc-cus-profile-kyc"
+      ]
+    },
+    {
+      "clientId": "svc-pay-initiation-settlement",
+      "serviceSlug": "payment-initiation-settlement-service",
+      "audiences": [
+        "svc-rsk-decisioning",
+        "svc-cmp-evidence",
+        "svc-of-payee-verification",
+        "svc-cus-profile-kyc"
+      ]
+    },
+    {
+      "clientId": "svc-pay-recurring-mandates",
+      "serviceSlug": "payment-recurring-mandates-service",
+      "audiences": [
+        "svc-of-consent-authorization"
+      ]
+    },
+    {
+      "clientId": "svc-pay-bulk-orchestration",
+      "serviceSlug": "payment-bulk-orchestration-service",
+      "audiences": [
+        "svc-of-consent-authorization"
+      ]
+    },
+    {
+      "clientId": "svc-pay-request-to-pay",
+      "serviceSlug": "payment-request-to-pay-service",
+      "audiences": []
+    },
+    {
+      "clientId": "svc-cus-profile-kyc",
+      "serviceSlug": "customer-profile-kyc-service",
+      "audiences": []
+    },
+    {
+      "clientId": "svc-rsk-decisioning",
+      "serviceSlug": "risk-decisioning-service",
+      "audiences": []
+    },
+    {
+      "clientId": "svc-cmp-evidence",
+      "serviceSlug": "compliance-evidence-service",
+      "audiences": []
+    },
+    {
+      "clientId": "svc-of-consent-authorization",
+      "serviceSlug": "consent-authorization-service",
+      "audiences": []
+    },
+    {
+      "clientId": "svc-of-personal-financial-data",
+      "serviceSlug": "personal-financial-data-service",
+      "audiences": []
+    },
+    {
+      "clientId": "svc-of-business-financial-data",
+      "serviceSlug": "business-financial-data-service",
+      "audiences": []
+    },
+    {
+      "clientId": "svc-of-payee-verification",
+      "serviceSlug": "payee-verification-service",
+      "audiences": []
+    },
+    {
+      "clientId": "svc-of-banking-metadata",
+      "serviceSlug": "banking-metadata-service",
+      "audiences": []
+    },
+    {
+      "clientId": "svc-of-open-products-catalog",
+      "serviceSlug": "open-products-catalog-service",
+      "audiences": []
+    },
+    {
+      "clientId": "svc-of-atm-directory",
+      "serviceSlug": "atm-directory-service",
+      "audiences": []
+    }
+  ]
+}

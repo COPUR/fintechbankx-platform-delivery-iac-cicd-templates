@@ -1,0 +1,22 @@
+# CODEOWNERS for a service created from this skeleton (Proposed).
+# Replace the placeholders with the real GitHub teams from the README ownership
+# block (owning_squad), the platform owners and the data-contracts owners, and
+# turn on required code-owner review for main.
+# Last match wins: keep the waiver rule below every broader rule.
+
+*                            @<org>/<owning-squad>
+
+# Platform guard, once the service vendors it into a chart of its own
+# (charts/fintechbankx-service README in fintechbankx-platform-delivery-iac-cicd-templates,
+# "Vendoring the guard", step 5): only the platform owners approve a change to
+# the vendored file, the verifier, the workflow that pins the digest (rename
+# deployability.yml to the file that holds the pin), or this file.
+/deploy/helm/*/templates/_fbx_helpers.tpl   @<org>/<platform-owners>
+/scripts/ci/verify-vendored-guard.sh        @<org>/<platform-owners>
+/.github/workflows/deployability.yml        @<org>/<platform-owners>
+/.github/CODEOWNERS                         @<org>/<platform-owners>
+
+# Contract waivers read by contract-checks.yml (OpenAPI and AsyncAPI, any
+# directory). Only the data-contracts owners approve a breaking change; the
+# provider squad cannot waive its own break.
+**/*.accepted-breaking.txt   @<org>/<data-contracts-owners>

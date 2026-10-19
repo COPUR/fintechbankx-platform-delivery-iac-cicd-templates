@@ -1,0 +1,178 @@
+name: security
+
+# Reusable security gates.
+#
+#   gitleaks:          workspace secret scan with the repo's .gitleaks.toml (same
+#                      binary version as required-gates ci/security).
+#   dependency-review: pull requests only; fails on new vulnerable dependencies.
+#   codeql:            optional Java/Kotlin CodeQL (build-mode none by default).
+#
+# Callers must grant: contents: read, and for CodeQL actions: read and
+# security-events: write (GitHub checks a called workflow's permissions
+# statically, so grant them even when run-codeql is false).
+#
+# Usage (caller job):
+#   security:
+#     uses: COPUR/fintechbankx-platform-delivery-iac-cicd-templates/.github/workflows/security.yml@main
+#     permissions:
+#       contents: read
+#       actions: read
+#       security-events: write
+#     with:
+#       run-codeql: true
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: >-
+          Runner label for the jobs that hold no cloud credentials. Empty = the caller
+          repository's CI_RUNNER variable, else ubuntu-latest.
+        type: string
+        default: ""
+      gitleaks-version:
+        type: string
+        default: 8.24.3
+      gitleaks-sha256:
+        description: >-
+          sha256 of the gitleaks linux release asset for the runner's architecture. Required when
+          gitleaks-version is not the default 8.24.3, whose per-architecture sha256 are pinned here (this
+          input is then ignored); the step fails before downloading when it is empty or not a sha256.
+        type: string
+        default: ""
+      gitleaks-config:
+        description: gitleaks config; used when present.
+        type: string
+        default: .gitleaks.toml
+      run-dependency-review:
+        description: Run dependency review on pull_request events.
+        type: boolean
+        default: true
+      dependency-review-fail-on-severity:
+        type: string
+        default: high
+      run-codeql:
+        type: boolean
+        default: false
+      codeql-language:
+        type: string
+        default: java-kotlin
+      codeql-build-mode:
+        description: none (no build) or autobuild/manual for deeper analysis.
+        type: string
+        default: none
+      java-version:
+        type: string
+        default: "23"
+      timeout-minutes:
+        type: number
+        default: 30
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: security/gitleaks
+    runs-on: ${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+          GITLEAKS_SHA256: ${{ inputs.gitleaks-sha256 }}
+        run: |
+          set -euo pipefail
+          # Release asset for the runner's architecture (the fbx-ci runner is arm64).
+          # The sha256 of the default version 8.24.3 come from the release's own
+          # checksums file; any other version is checked against the gitleaks-sha256
+          # input and fails before the download when that input is not a sha256.
+          # Tools go under RUNNER_TEMP, never a shared system path.
+          case "$(uname -m)" in
+            x86_64) arch=x64; pinned=9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c ;;
+            aarch64|arm64) arch=arm64; pinned=5f2edbe1f49f7b920f9e06e90759947d3c5dfc16f752fb93aaafc17e9d14cf07 ;;
+            *) echo "::error::no gitleaks build for runner architecture $(uname -m)"; exit 1 ;;
+          esac
+          if [ "$GITLEAKS_VERSION" != "8.24.3" ]; then
+            pinned="$GITLEAKS_SHA256"
+            if ! [[ "$pinned" =~ ^[0-9a-fA-F]{64}$ ]]; then
+              echo "::error::gitleaks $GITLEAKS_VERSION is not the default 8.24.3: set the gitleaks-sha256 input to the sha256 of gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz"
+              exit 1
+            fi
+          fi
+          dir="$RUNNER_TEMP/fbx-tools/gitleaks"
+          mkdir -p "$dir"
+          curl -sSfL -o "$dir/gitleaks.tar.gz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz"
+          echo "${pinned}  $dir/gitleaks.tar.gz" | sha256sum -c -
+          tar -xz -C "$dir" -f "$dir/gitleaks.tar.gz"
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: Run gitleaks (workspace scan)
+        env:
+          GITLEAKS_CONFIG: ${{ inputs.gitleaks-config }}
+        run: |
+          set -euo pipefail
+          args=(detect --source . --no-banner --redact --no-git --report-format json --report-path gitleaks-report.json)
+          if [ -f "$GITLEAKS_CONFIG" ]; then args+=(--config "$GITLEAKS_CONFIG"); fi
+          gitleaks "${args[@]}"
+
+      - name: Upload redacted report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+          retention-days: 7
+
+  dependency-review:
+    name: security/dependency-review
+    if: ${{ inputs.run-dependency-review && github.event_name == 'pull_request' }}
+    runs-on: ${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Dependency review
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: ${{ inputs.dependency-review-fail-on-severity }}
+
+  codeql:
+    name: security/codeql
+    if: ${{ inputs.run-codeql }}
+    runs-on: ${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    concurrency:
+      group: codeql-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up JDK
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          languages: ${{ inputs.codeql-language }}
+          build-mode: ${{ inputs.codeql-build-mode }}
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          category: /language:${{ inputs.codeql-language }}

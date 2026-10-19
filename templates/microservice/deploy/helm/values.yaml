@@ -1,0 +1,19 @@
+# Values for the platform chart charts/fintechbankx-service
+# (COPUR/fintechbankx-platform-delivery-iac-cicd-templates). Defaults there are
+# production-shaped; set only what is specific to this service.
+serviceName: example-service          # = Kubernetes ServiceAccount name in PLATFORM_CONTRACT
+serviceId: svc-ex-example             # svc-<ctx>-<cap>
+boundedContext: example               # namespace / context
+owningSquad: Example Squad
+
+serviceAccount:
+  roleArn: ""                         # deploy/terraform output workload_role_arn (per environment file)
+
+config:
+  DB_URL: ""                          # deploy/terraform output jdbc_url
+  DB_USERNAME: example_app
+  OIDC_ISSUER_URI: ""                 # https://<identity-host>/realms/fintechbankx
+  OIDC_JWK_SET_URI: ""
+
+externalSecret:
+  remoteSecretName: ""                # deploy/terraform output app_db_secret_name

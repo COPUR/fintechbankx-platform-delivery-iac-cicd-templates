@@ -1,0 +1,47 @@
+// FinTechBankX ArchUnit gate (ADR-028): the four hexagonal rules, run by the
+// reusable java-service-ci workflow against a service's compiled main classes,
+// whatever ArchUnit tests the service repo itself has.
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'com.fintechbankx.platform'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    // Bytecode 21 so the gate builds on JDK 21+; it reads service classes up to Java 24.
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+dependencies {
+    implementation 'com.tngtech.archunit:archunit:1.4.1'
+    runtimeOnly 'org.slf4j:slf4j-nop:2.0.16'
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // Only so the fixture classes compile with real framework annotations and types.
+    testImplementation 'org.springframework:spring-web:6.1.16'
+    testImplementation 'org.springframework:spring-context:6.1.16'
+    testImplementation 'org.springframework.kafka:spring-kafka:3.2.6'
+    testImplementation 'jakarta.persistence:jakarta.persistence-api:3.1.0'
+}
+
+application {
+    mainClass = 'com.fintechbankx.platform.archunit.ArchUnitGate'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+    options.compilerArgs << '-parameters'
+}
+
+test {
+    useJUnitPlatform()
+}

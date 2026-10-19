@@ -1,0 +1,298 @@
+suite: Kafka SASL and JAAS names and JVM options (every relaxed-binding spelling, every route)
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+values:
+  - ../ci/loan-lifecycle-values.yaml
+release:
+  name: ci
+  namespace: lending
+tests:
+  # fbx.overrideNameReason refuses, whatever kafka.runtime is,
+  #   (?i)^spring[._-]?kafka[._-](?:(?:[a-z0-9]+[._-])?(?:properties[._-])?sasl|jaas)
+  # checked against the name as given, fbx.canonicalName and
+  # fbx.propertyName, for config keys, extraEnv names (value or valueFrom) and
+  # externalSecret data/extraData secretKeys: spring.kafka.properties.sasl.*,
+  # spring.kafka.<client>.properties.sasl.* (sasl.jaas.config, sasl.mechanism,
+  # sasl.client.callback.handler.class, sasl.login.callback.handler.class,
+  # ...) reach the client config of the consumer, producer, admin and streams
+  # clients, and spring.kafka.jaas.* installs a JVM-wide JAAS login module.
+  # No boundary follows sasl, so a name such as
+  # SPRING_KAFKA_PROPERTIES_SASLJAASCONFIG is refused too (fail closed). The
+  # services take these settings from the kafka-msk profile in the image.
+  # fbx.validateJvmOptions refuses a sasl, jaas or java.security.auth mention
+  # (-Djava.security.auth.login.config names the JVM-wide JAAS file the Kafka
+  # client falls back to when a client has no sasl.jaas.config);
+  # -Dspring.kafka.* is refused by the kafka mention already.
+  - it: rejects config SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG (env form)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG: x.LoginModule required;
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG is not allowed: a Kafka SASL or JAAS setting"
+  - it: rejects config spring.kafka.properties.sasl.mechanism (dotted)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.properties.sasl.mechanism: PLAIN
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.properties.sasl.mechanism is not allowed: a Kafka SASL or JAAS setting"
+  - it: rejects extraEnv spring.kafka.properties[sasl.jaas.config] (bracketed map key)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.properties[sasl.jaas.config]
+          value: x.LoginModule required;
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.kafka.properties\\[sasl.jaas.config\\] \\(value or valueFrom\\): a Kafka SASL or JAAS setting"
+  - it: rejects extraEnv SPRING_KAFKA_CONSUMER_PROPERTIES_SASL_JAAS_CONFIG from valueFrom (one client)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING_KAFKA_CONSUMER_PROPERTIES_SASL_JAAS_CONFIG
+          valueFrom:
+            secretKeyRef: {name: other, key: jaas}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING_KAFKA_CONSUMER_PROPERTIES_SASL_JAAS_CONFIG \\(value or valueFrom\\): a Kafka SASL or JAAS setting"
+  - it: rejects externalSecret.data materialising SPRING_KAFKA_PROPERTIES_SASL_CLIENT_CALLBACK_HANDLER_CLASS
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_KAFKA_PROPERTIES_SASL_CLIENT_CALLBACK_HANDLER_CLASS
+          property: handler
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_KAFKA_PROPERTIES_SASL_CLIENT_CALLBACK_HANDLER_CLASS \\(keep only the credentials in the secret\\): a Kafka SASL or JAAS setting"
+  - it: rejects externalSecret.extraData materialising spring.kafka.producer.properties.sasl.login.callback.handler.class
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring.kafka.producer.properties.sasl.login.callback.handler.class
+          remoteSecretName: staging/loan-lifecycle-service/kafka
+          property: handler
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring.kafka.producer.properties.sasl.login.callback.handler.class .*: a Kafka SASL or JAAS setting"
+  - it: rejects config SPRING_KAFKA_STREAMS_PROPERTIES_SASL_MECHANISM (streams client)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_STREAMS_PROPERTIES_SASL_MECHANISM: PLAIN
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_STREAMS_PROPERTIES_SASL_MECHANISM is not allowed: a Kafka SASL or JAAS setting"
+  - it: rejects config spring.kafka.admin.properties.sasl.mechanism (admin client)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.admin.properties.sasl.mechanism: PLAIN
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.admin.properties.sasl.mechanism is not allowed: a Kafka SASL or JAAS setting"
+  - it: rejects extraEnv spring.kafka.con-sumer.properties.sasl.jaas.config ('-' inside an element, environment reading)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.con-sumer.properties.sasl.jaas.config
+          value: x.LoginModule required;
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.kafka.con-sumer.properties.sasl.jaas.config .*: a Kafka SASL or JAAS setting"
+  - it: rejects config spring.kafka.proper_ties.sasl.jaas.config ('_' inside an element, property reading)
+    template: templates/deployment.yaml
+    set:
+      config:
+        spring.kafka.proper_ties.sasl.jaas.config: x.LoginModule required;
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.spring.kafka.proper_ties.sasl.jaas.config is not allowed: a Kafka SASL or JAAS setting"
+  - it: rejects externalSecret.data materialising spring_kafka_properties_sasl_jaas_config (lower-case env form)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: spring_kafka_properties_sasl_jaas_config
+          property: jaas
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise spring_kafka_properties_sasl_jaas_config .*: a Kafka SASL or JAAS setting"
+  - it: rejects config SPRING_KAFKA_PROPERTIES_SASLJAASCONFIG (no boundary after sasl, fail closed)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_PROPERTIES_SASLJAASCONFIG: x.LoginModule required;
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_PROPERTIES_SASLJAASCONFIG is not allowed: a Kafka SASL or JAAS setting"
+  - it: rejects extraEnv spring.kafka.properties.sasl:jaas:config (':' inside the map key, no boundary after sasl)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.properties.sasl:jaas:config
+          value: x.LoginModule required;
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.kafka.properties.sasl:jaas:config .*: a Kafka SASL or JAAS setting"
+  - it: rejects extraEnv _SPRING_KAFKA_PROPERTIES_SASL_MECHANISM (leading '_')
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _SPRING_KAFKA_PROPERTIES_SASL_MECHANISM
+          value: PLAIN
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set _SPRING_KAFKA_PROPERTIES_SASL_MECHANISM .*: a Kafka SASL or JAAS setting"
+  - it: rejects extraEnv SPRING__KAFKA__PROPERTIES__SASL__JAAS__CONFIG from valueFrom (doubled '_')
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: SPRING__KAFKA__PROPERTIES__SASL__JAAS__CONFIG
+          valueFrom:
+            configMapKeyRef: {name: other, key: jaas}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set SPRING__KAFKA__PROPERTIES__SASL__JAAS__CONFIG .*: a Kafka SASL or JAAS setting"
+  - it: rejects extraEnv spring.kafka.properties[sasl][jaas][config] (bracket elements)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.properties[sasl][jaas][config]
+          value: x.LoginModule required;
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.kafka.properties\\[sasl\\]\\[jaas\\]\\[config\\] .*: a Kafka SASL or JAAS setting"
+  - it: rejects extraEnv spring.kafka.properties.sasl[mechanism] (bracket element after sasl)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.properties.sasl[mechanism]
+          value: PLAIN
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.kafka.properties.sasl\\[mechanism\\] .*: a Kafka SASL or JAAS setting"
+  - it: rejects config Spring.Kafka.Properties.sasl.jaas.config (mixed case)
+    template: templates/deployment.yaml
+    set:
+      config:
+        Spring.Kafka.Properties.sasl.jaas.config: x.LoginModule required;
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.Spring.Kafka.Properties.sasl.jaas.config is not allowed: a Kafka SASL or JAAS setting"
+  - it: rejects config SPRING_KAFKA_SASL_JAAS_CONFIG (no typed sasl property binds; refused with the family)
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_SASL_JAAS_CONFIG: x.LoginModule required;
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_SASL_JAAS_CONFIG is not allowed: a Kafka SASL or JAAS setting"
+  # spring.kafka.jaas.* (enabled, login-module, control-flag, options.*):
+  # with enabled=true KafkaAutoConfiguration installs a JVM-wide KafkaClient
+  # JAAS login module.
+  - it: rejects config SPRING_KAFKA_JAAS_ENABLED
+    template: templates/deployment.yaml
+    set:
+      config.SPRING_KAFKA_JAAS_ENABLED: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.SPRING_KAFKA_JAAS_ENABLED is not allowed: a Kafka SASL or JAAS setting"
+  - it: rejects extraEnv spring.kafka.jaas.login-module (value)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.jaas.login-module
+          value: x.LoginModule
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.kafka.jaas.login-module .*: a Kafka SASL or JAAS setting"
+  - it: rejects extraEnv spring.kafka.jaas.options[password] from valueFrom (bracket map key)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: spring.kafka.jaas.options[password]
+          valueFrom:
+            secretKeyRef: {name: other, key: password}
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv must not set spring.kafka.jaas.options\\[password\\] .*: a Kafka SASL or JAAS setting"
+  - it: rejects externalSecret.data materialising SPRING_KAFKA_JAAS_OPTIONS_USERNAME
+    template: templates/deployment.yaml
+    set:
+      externalSecret.data:
+        - secretKey: SPRING_KAFKA_JAAS_OPTIONS_USERNAME
+          property: username
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.data must not materialise SPRING_KAFKA_JAAS_OPTIONS_USERNAME .*: a Kafka SASL or JAAS setting"
+  - it: rejects externalSecret.extraData materialising spring.kafka.ja_as.control-flag ('_' inside an element, property reading)
+    template: templates/deployment.yaml
+    set:
+      externalSecret.extraData:
+        - secretKey: spring.kafka.ja_as.control-flag
+          remoteSecretName: staging/loan-lifecycle-service/kafka
+          property: flag
+    asserts:
+      - failedTemplate:
+          errorPattern: "externalSecret.extraData must not materialise spring.kafka.ja_as.control-flag .*: a Kafka SASL or JAAS setting"
+  - it: accepts the other Kafka names, value-checked TLS names included (control)
+    template: templates/deployment.yaml
+    set:
+      config:
+        KAFKA_BOOTSTRAP_SERVERS: b-1.msk.example.internal:9098
+        SPRING_KAFKA_CONSUMER_GROUP_ID: loan-lifecycle
+        KAFKA_LISTENER_CONCURRENCY: "2"
+        SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL: SASL_SSL
+        SPRING_KAFKA_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: https
+        spring.kafka.consumer.max_poll_records: "100"
+      extraEnv:
+        - name: APP_KAFKA_SASL_NOTE
+          value: names outside spring.kafka are not Kafka client settings
+    asserts:
+      - notFailedTemplate: {}
+  # JVM options.
+  - it: rejects javaToolOptions with -Djava.security.auth.login.config (JVM-wide JAAS file)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-XX:MaxRAMPercentage=75 -Djava.security.auth.login.config=./client.conf"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention .*mongodb, spring.main, sasl, jaas, java.security.auth"
+  - it: rejects config JDK_JAVA_OPTIONS with -Djava.security.auth.login.config== (replacing form)
+    template: templates/deployment.yaml
+    set:
+      config.JDK_JAVA_OPTIONS: "-Djava.security.auth.login.config==./client.conf"
+    asserts:
+      - failedTemplate:
+          errorPattern: "config.JDK_JAVA_OPTIONS must not mention .*java.security.auth"
+  - it: rejects extraEnv JAVA_TOOL_OPTIONS with -Djava..security.auth.login.config (empty element)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: JAVA_TOOL_OPTIONS
+          value: "-Djava..security.auth.login.config=./client.conf"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv.JAVA_TOOL_OPTIONS must not mention .*java.security.auth"
+  - it: rejects extraEnv _JAVA_OPTIONS with a sasl mention (-Dzookeeper.sasl.client)
+    template: templates/deployment.yaml
+    set:
+      extraEnv:
+        - name: _JAVA_OPTIONS
+          value: "-Dzookeeper.sasl.client=false"
+    asserts:
+      - failedTemplate:
+          errorPattern: "extraEnv._JAVA_OPTIONS must not mention .*sasl"
+  - it: rejects javaToolOptions with a jaas mention
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dapp.jaas.file=./client.conf"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention .*jaas"
+  - it: still rejects javaToolOptions with -Dspring.kafka.properties.sasl.jaas.config (kafka mention)
+    template: templates/deployment.yaml
+    set:
+      javaToolOptions: "-Dspring.kafka.properties.sasl.jaas.config=x"
+    asserts:
+      - failedTemplate:
+          errorPattern: "javaToolOptions must not mention"

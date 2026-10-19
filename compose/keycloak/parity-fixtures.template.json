@@ -1,0 +1,493 @@
+{
+  "_comment": "Parity test actors for the local/ephemeral compose stack only (compose/scripts/init-env.sh --parity-fixtures). Layered onto the identity repo realm by the parity-fixtures-import service after realm-import; never imported anywhere else. Customer actors (customer, other-customer, customer-owner) are members of /customers (the group the customer service fine-grained admin permission covers, and parity-suite gets the same view/manage-members grant from parity-admin-permissions.json); staff actors are not. init-env renders it into .cache/parity/ and adds the realm LDAP federation as disabled (no OpenLDAP in compose). TPP-001 and TPP-002 are Keycloak-mode open-finance TPPs and parity-channel is a confidential stand-in for the first-party channel fintechbankx-mobile (all private_key_jwt, DPoP-bound, client credentials only): init-env generates one key pair each at runtime (private JWK only in .env); the renderer adds the public JWKS, copies audiences and scopes from the realm (of-tpp-conformance-template, fintechbankx-mobile), adds the fbx_client_type claim and defines the API scopes the realm lacks. The parity-psu-* scopes put a fixed customer_id (the PSU) into a client-credentials token when requested.",
+  "realm": "fintechbankx",
+  "users": [
+    {
+      "username": "parity-banker",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Banker",
+      "email": "parity-banker@parity.invalid",
+      "realmRoles": [
+        "banker"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_BANKER)",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "parity-admin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Admin",
+      "email": "parity-admin@parity.invalid",
+      "realmRoles": [
+        "admin"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_ADMIN)",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "parity-loan-officer",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Loan Officer",
+      "email": "parity-loan-officer@parity.invalid",
+      "realmRoles": [
+        "loan_officer"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_LOAN_OFFICER)",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "parity-compliance-officer",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Compliance Officer",
+      "email": "parity-compliance-officer@parity.invalid",
+      "realmRoles": [
+        "compliance_officer"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_COMPLIANCE_OFFICER)",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "parity-auditor",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Auditor",
+      "email": "parity-auditor@parity.invalid",
+      "realmRoles": [
+        "auditor"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_AUDITOR)",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "parity-customer",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Customer",
+      "email": "parity-customer@parity.invalid",
+      "realmRoles": [
+        "customer"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_CUSTOMER)",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/customers"
+      ],
+      "attributes": {
+        "customer_id": [
+          "CUST-12345678"
+        ]
+      }
+    },
+    {
+      "username": "parity-other-customer",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Other Customer",
+      "email": "parity-other-customer@parity.invalid",
+      "realmRoles": [
+        "customer"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_OTHER_CUSTOMER)",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/customers"
+      ],
+      "attributes": {
+        "customer_id": [
+          "CUST-99999999"
+        ]
+      }
+    },
+    {
+      "username": "parity-customer-owner",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Parity",
+      "lastName": "Customer Owner",
+      "email": "parity-customer-owner@parity.invalid",
+      "realmRoles": [
+        "customer"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "$(env:PARITY_PASSWORD_CUSTOMER_OWNER)",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/customers"
+      ]
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "parity-psu-PSU-001",
+      "description": "Parity only: customer_id=PSU-001 (the PSU) in client-credentials tokens of the client that requests this scope.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "customer_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "customer_id",
+            "claim.value": "PSU-001",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "parity-psu-CORP-001",
+      "description": "Parity only: customer_id=CORP-001 (the PSU) in client-credentials tokens of the client that requests this scope.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "customer_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "customer_id",
+            "claim.value": "CORP-001",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "parity-psu-PSU-PARITY-LIST",
+      "description": "Parity only: customer_id=PSU-PARITY-LIST (the PSU) in client-credentials tokens of the client that requests this scope.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "customer_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "customer_id",
+            "claim.value": "PSU-PARITY-LIST",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "parity-psu-CUST-12345678",
+      "description": "Parity only: customer_id=CUST-12345678 (the PSU) in client-credentials tokens of the client that requests this scope.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "customer_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "customer_id",
+            "claim.value": "CUST-12345678",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "parity-suite",
+      "name": "Regression parity suite (ephemeral only)",
+      "description": "Confidential client of the monolith-vs-services parity suite. Ephemeral/local compose fixture only; never part of the identity repo's realm. Password grant is enabled here and nowhere else.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:PARITY_SECRET_PARITY_SUITE)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "parity-test",
+        "access.token.lifespan": "300",
+        "use.refresh.tokens": "false",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-svc-ln-loan-lifecycle",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-ln-loan-lifecycle",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-initiation-settlement",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-initiation-settlement",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-cus-profile-kyc",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cus-profile-kyc",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-rsk-decisioning",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-rsk-decisioning",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-cmp-evidence",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cmp-evidence",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "roles",
+        "profile",
+        "email",
+        "customer-id"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "TPP-001",
+      "name": "Regression parity TPP-001 (ephemeral only)",
+      "description": "Open-finance TPP actor of the parity suite (PARITY_TPP_*, formerly parity-tpp; may act for the PSUs of the parity-psu-* scopes): private_key_jwt (PS256) client authentication, DPoP-bound access tokens, client credentials only. Ephemeral/local compose fixture only; its key pair is generated per environment and never committed.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-jwt",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "open-finance-tpp",
+        "fbx.tpp.token-binding": "dpop",
+        "dpop.bound.access.tokens": "true",
+        "use.jwks.url": "false",
+        "use.jwks.string": "true",
+        "token.endpoint.auth.signing.alg": "PS256",
+        "access.token.signed.response.alg": "PS256",
+        "access.token.lifespan": "300",
+        "use.refresh.tokens": "false",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "optionalClientScopes": [
+        "parity-psu-PSU-001",
+        "parity-psu-CORP-001",
+        "parity-psu-PSU-PARITY-LIST"
+      ]
+    },
+    {
+      "clientId": "TPP-002",
+      "name": "Regression parity TPP-002 (ephemeral only)",
+      "description": "Open-finance TPP actor of the parity suite (PARITY_TPP_OTHER_*, the other TPP for cross-TPP denial cases): private_key_jwt (PS256) client authentication, DPoP-bound access tokens, client credentials only. Ephemeral/local compose fixture only; its key pair is generated per environment and never committed.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-jwt",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "open-finance-tpp",
+        "fbx.tpp.token-binding": "dpop",
+        "dpop.bound.access.tokens": "true",
+        "use.jwks.url": "false",
+        "use.jwks.string": "true",
+        "token.endpoint.auth.signing.alg": "PS256",
+        "access.token.signed.response.alg": "PS256",
+        "access.token.lifespan": "300",
+        "use.refresh.tokens": "false",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "parity-channel",
+      "name": "Regression parity first-party channel (ephemeral only)",
+      "description": "Confidential stand-in for the public PKCE client fintechbankx-mobile: same audiences and default scopes, and a token claim fbx_client_type with the mobile client type, so open-finance TPP paths refuse it as a channel. azp is parity-channel. private_key_jwt (PS256), DPoP-bound, client credentials only; key pair generated per environment, never committed.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-jwt",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "parity-channel",
+        "fbx.parity.channel-of": "fintechbankx-mobile",
+        "dpop.bound.access.tokens": "true",
+        "use.jwks.url": "false",
+        "use.jwks.string": "true",
+        "token.endpoint.auth.signing.alg": "PS256",
+        "access.token.signed.response.alg": "PS256",
+        "access.token.lifespan": "300",
+        "use.refresh.tokens": "false",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "optionalClientScopes": [
+        "parity-psu-CUST-12345678",
+        "payments"
+      ]
+    }
+  ]
+}

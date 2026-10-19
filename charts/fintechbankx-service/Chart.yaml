@@ -1,0 +1,17 @@
+apiVersion: v2
+name: fintechbankx-service
+description: >-
+  Generic Helm chart for a FinTechBankX Spring Boot service on EKS: API on 8080,
+  actuator on 8081, HPA, PDB, zone spread, ExternalSecret, IRSA, ServiceMonitor,
+  NetworkPolicy and Istio-ready labels. Proposed; owned by the DevSecOps Enablement Squad.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+keywords:
+  - fintechbankx
+  - spring-boot
+  - eks
+annotations:
+  fintechbankx.io/owning-squad: DevSecOps Enablement Squad
+  fintechbankx.io/source: "enterprise-loan-management-system services/helm/open-finance-service + loan-lifecycle-core deploy/helm"

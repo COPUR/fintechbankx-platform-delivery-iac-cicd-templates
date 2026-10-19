@@ -1,0 +1,266 @@
+{
+  "realm": "fintechbankx",
+  "enabled": true,
+  "adminPermissionsEnabled": true,
+  "clients": [
+    {
+      "clientId": "svc-ln-loan-lifecycle",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_LN_LOAN_LIFECYCLE)"
+    },
+    {
+      "clientId": "svc-cus-profile-kyc",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_CUS_PROFILE_KYC)"
+    },
+    {
+      "clientId": "fintechbankx-web",
+      "redirectUris": [
+        "$(env:FBX_WEB_REDIRECT_URI)"
+      ],
+      "webOrigins": [
+        "$(env:FBX_WEB_ORIGIN)"
+      ],
+      "attributes": {
+        "post.logout.redirect.uris": "$(env:FBX_WEB_POST_LOGOUT_REDIRECT_URI)"
+      }
+    },
+    {
+      "clientId": "fintechbankx-staff-web",
+      "redirectUris": [
+        "$(env:FBX_STAFF_WEB_REDIRECT_URI)"
+      ],
+      "webOrigins": [
+        "$(env:FBX_STAFF_WEB_ORIGIN)"
+      ],
+      "attributes": {
+        "post.logout.redirect.uris": "$(env:FBX_STAFF_WEB_POST_LOGOUT_REDIRECT_URI)"
+      }
+    },
+    {
+      "clientId": "fintechbankx-mobile",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "$(env:FBX_MOBILE_REDIRECT_URI)"
+      ],
+      "attributes": {
+        "fbx.client-type": "first-party-public",
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-svc-pay-initiation-settlement",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-initiation-settlement",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-request-to-pay",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-request-to-pay",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-cus-profile-kyc",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cus-profile-kyc",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email",
+        "customer-id"
+      ],
+      "optionalClientScopes": [
+        "offline_access"
+      ]
+    },
+    {
+      "clientId": "of-tpp-conformance-template",
+      "enabled": false,
+      "clientAuthenticatorType": "client-jwt",
+      "attributes": {
+        "fbx.client-type": "open-finance-tpp",
+        "dpop.bound.access.tokens": "true",
+        "token.endpoint.auth.signing.alg": "PS256"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-svc-of-consent-authorization",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-consent-authorization",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-of-personal-financial-data",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-personal-financial-data",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "acr"
+      ],
+      "optionalClientScopes": []
+    }
+  ],
+  "groups": [
+    {
+      "name": "staff",
+      "path": "/staff",
+      "subGroups": [
+        {
+          "name": "fbx-banker",
+          "path": "/staff/fbx-banker",
+          "realmRoles": [
+            "banker"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "customers",
+      "path": "/customers",
+      "realmRoles": [
+        "customer"
+      ],
+      "subGroups": []
+    }
+  ],
+  "components": {
+    "org.keycloak.storage.UserStorageProvider": [
+      {
+        "name": "fbx-directory",
+        "config": {
+          "connectionUrl": [
+            "$(env:LDAP_CONNECTION_URL)"
+          ],
+          "bindDn": [
+            "$(env:LDAP_BIND_DN)"
+          ],
+          "bindCredential": [
+            "$(env:LDAP_BIND_CREDENTIAL)"
+          ],
+          "startTls": [
+            "$(env:LDAP_START_TLS)"
+          ],
+          "vendor": [
+            "$(env:LDAP_VENDOR)"
+          ],
+          "usersDn": [
+            "$(env:LDAP_USERS_DN)"
+          ],
+          "usernameLDAPAttribute": [
+            "$(env:LDAP_USERNAME_ATTRIBUTE)"
+          ],
+          "rdnLDAPAttribute": [
+            "$(env:LDAP_RDN_ATTRIBUTE)"
+          ],
+          "uuidLDAPAttribute": [
+            "$(env:LDAP_UUID_ATTRIBUTE)"
+          ],
+          "userObjectClasses": [
+            "$(env:LDAP_USER_OBJECT_CLASSES)"
+          ],
+          "customUserSearchFilter": [
+            "$(env:LDAP_USER_SEARCH_FILTER)"
+          ],
+          "groupsDn": [
+            "$(env:LDAP_GROUPS_DN)"
+          ],
+          "groupObjectClasses": [
+            "$(env:LDAP_GROUP_OBJECT_CLASSES)"
+          ]
+        }
+      }
+    ]
+  },
+  "clientScopes": [
+    {
+      "name": "customer-id",
+      "protocol": "openid-connect",
+      "protocolMappers": [
+        {
+          "name": "customer_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "customer_id",
+            "claim.name": "customer_id",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "userProfile": {
+    "attributes": [
+      {
+        "name": "username"
+      },
+      {
+        "name": "email"
+      },
+      {
+        "name": "firstName"
+      },
+      {
+        "name": "lastName"
+      },
+      {
+        "name": "customer_id",
+        "permissions": {
+          "view": [
+            "admin",
+            "user"
+          ],
+          "edit": [
+            "admin"
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+# Exemptions for the publication guardrails secret scan. One line per exemption:
+# file<TAB>exact line text<TAB>reason. A hit is dropped only when its file and whole line are listed.
+compose/scripts/apply-sql-fixtures.sh	    PGPASSWORD="$cred" PGOPTIONS="-c search_path=$schema" \	hands the generated local credential from the .env file to psql; no literal value
+compose/scripts/apply-sql-fixtures.sh	    bash "$compose_dir/fbx-local.sh" compose exec -T -e PGPASSWORD="$cred" -e PGOPTIONS="-c search_path=$schema" postgres \	hands the generated local credential from the .env file to psql in the container; no literal value
+compose/test/parity.test.mjs	    ["payment-initiation-settlement-service__SPRING_DATASOURCE_PASSWORD=<db-password>", /credential/],	test input with a placeholder value, followed by the expected error pattern
+compose/test/parity.test.mjs	    ["consent-authorization-service__OPENFINANCE_INTERNAL_PASSWORD=<internal-password>", /credential/],	test input with a placeholder value, followed by the expected error pattern
+compose/test/compose.test.mjs	      PGHOST: pg.host, PGPORT: pg.port, PGUSER: pg.user, PGPASSWORD: pg.cred, PGDATABASE: "postgres" };	test hands the throwaway test database credential variable to psql; no literal value
+compose/test/compose.test.mjs	      const asSvc = { PGUSER: s.role, PGPASSWORD: env[s.credVar], PGDATABASE: s.database };	test hands the generated credential variable to psql; no literal value
+compose/test/compose.test.mjs	    PGHOST: pg.host, PGPORT: pg.port, PGUSER: pg.user, PGPASSWORD: pg.cred, PGDATABASE: "postgres" };	test hands the throwaway test database credential variable to psql; no literal value
+compose/test/compose.test.mjs	    PGUSER: "customer_profile_app", PGPASSWORD: env.FBX_DB_CRED_CUS_PROFILE_KYC, PGDATABASE: "db_cus_profile_kyc_local" } });	test hands the generated credential variable to psql; no literal value
+.github/workflows/db-migration-verify.yml	          POSTGRES_PASSWORD: migration_verify	throwaway password of the CI-only PostgreSQL service container
+.github/workflows/db-migration-verify.yml	      PGPASSWORD: migration_verify	throwaway password of the CI-only PostgreSQL service container
+.github/workflows/db-migration-verify.yml	      FLYWAY_PASSWORD: migration_verify	throwaway password of the CI-only PostgreSQL service container
+.github/workflows/delivery-templates-ci.yml	          POSTGRES_PASSWORD: ci-only-throwaway	throwaway password of the CI-only PostgreSQL service container
+.github/workflows/delivery-templates-ci.yml	      FBX_TEST_PGPASSWORD: ci-only-throwaway	throwaway password of the CI-only PostgreSQL service container
+.github/workflows/java-service-ci.yml	          POSTGRES_PASSWORD: ${{ inputs.postgres-user }}	GitHub expression for the CI-only PostgreSQL service container; no literal value
+.github/workflows/java-service-ci.yml	      TEST_DB_PASSWORD: ${{ inputs.postgres-enabled && inputs.postgres-user || '' }}	GitHub expression for the CI-only PostgreSQL service container; no literal value
+ci/templates/microservice/Jenkinsfile	                  if command -v docker >/dev/null 2>&1 && [ -n "${DOCKER_REGISTRY:-}" ] && [ -n "${DOCKER_USERNAME:-}" ] && [ -n "${DOCKER_PASSWORD:-}" ]; then	shell test for an empty DOCKER_PASSWORD; no value
