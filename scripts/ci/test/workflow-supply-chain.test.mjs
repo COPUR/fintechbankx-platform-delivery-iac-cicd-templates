@@ -351,7 +351,9 @@ test("helm-deploy render guard reads the templates of vendored subchart archives
   }
   const r = runRenderGuard(ok, { ...base, "charts/clean-1.0.0.tgz": clean });
   assert.equal(r.status, 0, "a vendored subchart without lookup passes" + r.stdout + r.stderr);
-  assert.throws(() => packChart("svc", { ...base, "charts/broken-1.0.0.tgz": "not a gzip archive\n" }), /error unpacking broken-1\.0\.0\.tgz/, "helm package fails on an archive it cannot read");
+  // The wording differs between helm versions: some name the archive ("error unpacking
+  // broken-1.0.0.tgz in svc"), the pinned HELM_VERSION reports only the gzip error.
+  assert.throws(() => packChart("svc", { ...base, "charts/broken-1.0.0.tgz": "not a gzip archive\n" }), /error unpacking (subchart )?broken-1\.0\.0\.tgz|gzip: invalid header/, "helm package fails on an archive it cannot read");
 });
 
 // helm package never leaves an archive in the bundle; the guard still opens a charts/<dep>.tgz,
